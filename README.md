@@ -177,7 +177,7 @@ go run ./cmd/server
 
 ### Déploiement sur le VPS OVH
 
-Le backend écoute en clair sur `127.0.0.1:8080` et nginx fait le TLS devant, sur
+Le backend écoute en clair sur `127.0.0.1:9087` et nginx fait le TLS devant, sur
 le sous-domaine `cerveau.neurorun.fr`. **Le webhook Meta exige un HTTPS valide**,
 c'est ce qui rend cette étape obligatoire pour WhatsApp.
 
@@ -222,7 +222,8 @@ docker compose up -d
 Le `600` compte : ce fichier contient la `MASTER_KEY` qui déchiffre tous tes
 identifiants Gandi, Slack et WhatsApp.
 
-Le conteneur publie son port sur `127.0.0.1:8080` uniquement. C'est délibéré :
+Le conteneur publie son port sur `127.0.0.1:9087` uniquement (8080 dans le
+conteneur), pour cohabiter avec `neurorun-back` déjà sur 9081. C'est délibéré :
 sans ce préfixe, Docker écrit ses propres règles iptables et exposerait l'API en
 clair sur Internet **en contournant ufw**.
 
