@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const apiBase = "https://slack.com/api/"
@@ -333,20 +334,61 @@ func (c *Client) userName(ctx context.Context, id string) string {
 		User struct {
 			RealName string `json:"real_name"`
 			Name     string `json:"name"`
+			Profile  struct {
+				RealNameNormalized string `json:"real_name_normalized"`
+				RealName           string `json:"real_name"`
+				DisplayName        string `json:"display_name"`
+			} `json:"profile"`
 		} `json:"user"`
 	}
 	name := id
 	if err := c.call(ctx, "users.info", url.Values{"user": {id}}, &res); err == nil {
-		if res.User.RealName != "" {
-			name = res.User.RealName
-		} else if res.User.Name != "" {
-			name = res.User.Name
+		// Du plus complet au moins complet : `real_name` au premier niveau est
+		// souvent vide, et `name` n'est que le pseudo — d'où des prénoms seuls
+		// là où le mail affiche « Prénom Nom ».
+		for _, candidate := range []string{
+			res.User.Profile.RealNameNormalized,
+			res.User.Profile.RealName,
+			res.User.RealName,
+			res.User.Profile.DisplayName,
+			res.User.Name,
+		} {
+			if strings.TrimSpace(candidate) != "" {
+				name = candidate
+				break
+			}
 		}
 	}
+	name = firstName(name)
 	c.mu.Lock()
 	c.userNames[id] = name
 	c.mu.Unlock()
 	return name
+}
+
+// firstName ne garde que le prénom.
+//
+// Sur Slack on parle de collègues qu'on nomme par leur prénom : « Olivier t'a
+// écrit » sonne juste, « Olivier Dupont t'a écrit » sonne comme un rapport. Les
+// mails gardent le nom complet, où l'expéditeur peut être un inconnu.
+func firstName(full string) string {
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return full
+	}
+	if fields := strings.Fields(full); len(fields) > 1 {
+		return fields[0]
+	}
+	// Pseudo du type « olivier.dupont » ou « olivier_dupont ».
+	for _, sep := range []string{".", "_", "-"} {
+		if head, _, found := strings.Cut(full, sep); found && head != "" {
+			full = head
+			break
+		}
+	}
+	// Un pseudo tout en minuscules se prononce mieux avec une capitale.
+	r := []rune(full)
+	return string(unicode.ToUpper(r[0])) + string(r[1:])
 }
 
 type apiResponse struct {

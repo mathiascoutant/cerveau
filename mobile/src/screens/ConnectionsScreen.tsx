@@ -14,6 +14,7 @@ import { theme } from '../theme';
 export function ConnectionsScreen() {
   const [connections, setConnections] = useState<Record<string, Connection>>({});
   const [serverUrl, setServerUrl] = useState('');
+  const [name, setName] = useState('');
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarUsable, setCalendarUsable] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -33,6 +34,10 @@ export function ConnectionsScreen() {
 
   useEffect(() => {
     void getApiUrl().then(setServerUrl);
+    void api
+      .me()
+      .then((me) => setName(me.name ?? ''))
+      .catch(() => undefined);
     void refresh();
   }, [refresh]);
 
@@ -88,6 +93,25 @@ export function ConnectionsScreen() {
             run('server', async () => {
               await setApiUrl(serverUrl);
               await api.status();
+            })
+          }
+        />
+      </Card>
+
+      <Card>
+        <Label>Ton prénom</Label>
+        <Subtitle>
+          Raoul s'en sert pour s'adresser à toi. Il calque aussi son ton sur le tien : détendu si tu
+          l'es, sobre si tu vas droit au but.
+        </Subtitle>
+        <Field placeholder="Mathias" value={name} onChangeText={setName} autoCapitalize="words" />
+        <Button
+          label="Enregistrer"
+          variant="ghost"
+          loading={busy === 'name'}
+          onPress={() =>
+            run('name', async () => {
+              await api.setName(name.trim());
             })
           }
         />

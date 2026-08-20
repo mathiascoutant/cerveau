@@ -39,6 +39,9 @@ type Config struct {
 	PublicBaseURL string
 
 	DefaultTimezone string
+	// Prénom utilisé quand l'utilisateur n'en a pas encore enregistré depuis
+	// l'app. Pratique pour un déploiement mono-utilisateur.
+	DefaultUserName string
 }
 
 func Load() (Config, error) {
@@ -59,6 +62,7 @@ func Load() (Config, error) {
 		SlackClientSecret:   env("SLACK_CLIENT_SECRET", ""),
 		PublicBaseURL:       strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
 		DefaultTimezone:     env("DEFAULT_TIMEZONE", "Europe/Paris"),
+		DefaultUserName:     env("DEFAULT_USER_NAME", ""),
 	}
 
 	var missing []string

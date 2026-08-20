@@ -106,11 +106,16 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
 	defer cancel()
 
+	name := user.Name
+	if name == "" {
+		name = s.cfg.DefaultUserName
+	}
+
 	result, err := s.engine.Ask(ctx, s.toolbox(user), assistant.Request{
 		Text:     transcript,
 		Now:      now,
 		Timezone: tz,
-		UserName: user.Name,
+		UserName: name,
 		History:  history,
 	})
 	if err != nil {
