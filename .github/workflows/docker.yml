@@ -7,6 +7,9 @@ on:
     # quand seul mobile/ change.
     paths:
       - 'backend/**'
+      # Les fichiers de déploiement sont lus sur le VPS, pas embarqués dans
+      # l'image : les modifier ne justifie pas un rebuild.
+      - '!backend/deploy/**'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
 
