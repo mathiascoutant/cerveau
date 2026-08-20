@@ -69,6 +69,13 @@ type CalendarEvent struct {
 	UpdatedAt  time.Time     `bson:"updated_at" json:"-"`
 }
 
+// KnownPlace : un lieu vu dans le calendrier, avec l'intitulé du rendez-vous qui
+// s'y tenait. Sert à retrouver une adresse à partir d'un nom prononcé à l'oral.
+type KnownPlace struct {
+	Titre   string `json:"titre"`
+	Adresse string `json:"adresse"`
+}
+
 // WhatsAppMessage : messages entrants collectés via le webhook Meta. L'API
 // WhatsApp ne donne pas d'historique ni de statut "non lu" — on le tient nous-mêmes.
 type WhatsAppMessage struct {

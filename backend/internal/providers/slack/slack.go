@@ -49,15 +49,19 @@ type Client struct {
 	token string
 	http  *http.Client
 
-	mu        sync.Mutex
-	userNames map[string]string
+	mu           sync.Mutex
+	userNames    map[string]string
+	channelNames map[string]string
+	self         string
+	selfResolved bool
 }
 
 func New(token string) *Client {
 	return &Client{
-		token:     token,
-		http:      &http.Client{Timeout: 20 * time.Second},
-		userNames: map[string]string{},
+		token:        token,
+		http:         &http.Client{Timeout: 20 * time.Second},
+		userNames:    map[string]string{},
+		channelNames: map[string]string{},
 	}
 }
 
@@ -299,7 +303,7 @@ func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activ
 		if m.User != "" {
 			author = c.userName(ctx, m.User)
 		}
-		act.Messages = append(act.Messages, fmt.Sprintf("%s : %s", author, truncate(m.Text, 180)))
+		act.Messages = append(act.Messages, fmt.Sprintf("%s : %s", author, truncate(c.renderText(ctx, m.Text), 180)))
 		if ts := parseSlackTS(m.TS); ts.After(act.Latest) {
 			act.Latest = ts
 		}
@@ -312,10 +316,60 @@ func (c *Client) label(ctx context.Context, conv conversation) string {
 	case conv.IsIM:
 		return "DM " + c.userName(ctx, conv.User)
 	case conv.IsMPIM:
-		return "Groupe " + conv.Name
+		return "Groupe " + c.groupLabel(ctx, conv.Name)
 	default:
 		return "#" + conv.Name
 	}
+}
+
+// groupLabel rend prononçable le nom interne d'un DM de groupe. Slack le
+// nomme « mpdm-mathias--olivier--jean-1 » : c'est un identifiant, pas quelque
+// chose qu'on annonce à voix haute.
+func (c *Client) groupLabel(ctx context.Context, raw string) string {
+	if !strings.HasPrefix(raw, "mpdm-") {
+		return raw
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(raw, "mpdm-"), "-1")
+	self := c.selfHandle(ctx)
+
+	names := make([]string, 0, 4)
+	for _, handle := range strings.Split(body, "--") {
+		// L'utilisateur fait partie du groupe, mais se citer lui-même dans le
+		// nom de la conversation n'apprend rien.
+		if handle == "" || (self != "" && handle == self) {
+			continue
+		}
+		names = append(names, firstName(handle))
+	}
+	switch len(names) {
+	case 0:
+		return raw
+	case 1:
+		return names[0]
+	default:
+		return strings.Join(names[:len(names)-1], ", ") + " et " + names[len(names)-1]
+	}
+}
+
+// selfHandle renvoie le pseudo Slack de l'utilisateur courant, résolu une fois
+// par client. Une chaîne vide en cas d'échec : c'est un confort d'affichage,
+// pas une donnée dont dépend une réponse.
+func (c *Client) selfHandle(ctx context.Context) string {
+	c.mu.Lock()
+	if c.selfResolved {
+		defer c.mu.Unlock()
+		return c.self
+	}
+	c.mu.Unlock()
+
+	_, user, err := c.TestConnection(ctx)
+	if err != nil {
+		return ""
+	}
+	c.mu.Lock()
+	c.self, c.selfResolved = user, true
+	c.mu.Unlock()
+	return user
 }
 
 func (c *Client) userName(ctx context.Context, id string) string {
@@ -341,7 +395,7 @@ func (c *Client) userName(ctx context.Context, id string) string {
 			} `json:"profile"`
 		} `json:"user"`
 	}
-	name := id
+	var name string
 	if err := c.call(ctx, "users.info", url.Values{"user": {id}}, &res); err == nil {
 		// Du plus complet au moins complet : `real_name` au premier niveau est
 		// souvent vide, et `name` n'est que le pseudo — d'où des prénoms seuls
@@ -358,6 +412,12 @@ func (c *Client) userName(ctx context.Context, id string) string {
 				break
 			}
 		}
+	}
+	// Un identifiant brut ne doit jamais ressortir : « U5G2I82BU t'a écrit »
+	// n'a aucun sens à l'oral. Et l'échec n'est pas mis en cache, il peut être
+	// passager — au prochain passage on retentera d'avoir le prénom.
+	if strings.TrimSpace(name) == "" {
+		return "quelqu'un"
 	}
 	name = firstName(name)
 	c.mu.Lock()

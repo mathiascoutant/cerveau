@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -249,6 +250,41 @@ func (s *Store) EventsBetween(ctx context.Context, userID bson.ObjectID, from, t
 	}
 	var out []CalendarEvent
 	return out, cur.All(ctx, &out)
+}
+
+// KnownPlaces renvoie les lieux déjà rencontrés dans le calendrier, du plus
+// récent au plus ancien.
+//
+// C'est le carnet d'adresses gratuit de Raoul : si l'utilisateur a déjà eu un
+// rendez-vous chez PXCom, l'adresse exacte est dans le miroir de l'agenda. Ça
+// évite d'envoyer Waze chercher un nom d'entreprise à l'aveugle.
+func (s *Store) KnownPlaces(ctx context.Context, userID bson.ObjectID) ([]KnownPlace, error) {
+	cur, err := s.events().Find(ctx,
+		bson.M{"user_id": userID, "location": bson.M{"$nin": bson.A{"", nil}}},
+		options.Find().
+			SetSort(bson.D{{Key: "start", Value: -1}}).
+			SetProjection(bson.M{"title": 1, "location": 1}).
+			SetLimit(300),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var events []CalendarEvent
+	if err := cur.All(ctx, &events); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool, len(events))
+	out := make([]KnownPlace, 0, len(events))
+	for _, e := range events {
+		addr := strings.TrimSpace(e.Location)
+		if addr == "" || seen[addr] {
+			continue
+		}
+		seen[addr] = true
+		out = append(out, KnownPlace{Titre: e.Title, Adresse: addr})
+	}
+	return out, nil
 }
 
 func (s *Store) InsertEvent(ctx context.Context, e CalendarEvent) error {

@@ -38,6 +38,7 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"slack_non_lus":        nil,
 		"whatsapp_non_lus":     nil,
 		"lire_canal_slack":     {"canal"},
+		"lancer_navigation":    {"destination"},
 		"creer_evenement":      {"titre", "debut", "fin"},
 	}
 	if len(tools) != len(want) {

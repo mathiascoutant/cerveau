@@ -95,7 +95,7 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		}
 		out = append(out, Message{
 			Auteur: author,
-			Texte:  truncate(m.Text, 400),
+			Texte:  truncate(c.renderText(ctx, m.Text), 400),
 			Quand:  parseSlackTS(m.TS).Local().Format("02/01 15h04"),
 		})
 	}
