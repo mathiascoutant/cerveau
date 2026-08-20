@@ -9,12 +9,14 @@ import {
   requestCalendarAccess,
   syncCalendar,
 } from '../lib/calendar';
+import { frenchVoices } from '../lib/speech';
 import { theme } from '../theme';
 
 export function ConnectionsScreen() {
   const [connections, setConnections] = useState<Record<string, Connection>>({});
   const [serverUrl, setServerUrl] = useState('');
   const [name, setName] = useState('');
+  const [voice, setVoice] = useState<string | null>(null);
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarUsable, setCalendarUsable] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -37,6 +39,9 @@ export function ConnectionsScreen() {
     void api
       .me()
       .then((me) => setName(me.name ?? ''))
+      .catch(() => undefined);
+    void frenchVoices()
+      .then((v) => setVoice(v[0] ? `${v[0].name} (${v[0].quality})` : null))
       .catch(() => undefined);
     void refresh();
   }, [refresh]);
@@ -115,6 +120,15 @@ export function ConnectionsScreen() {
             })
           }
         />
+      </Card>
+
+      <Card>
+        <Label>Voix de Raoul</Label>
+        <Subtitle>
+          {voice
+            ? `Voix retenue : ${voice}. Pour une voix nettement plus naturelle, télécharge une voix française Premium dans Réglages → Accessibilité → Contenu énoncé → Voix → Français, puis relance l'app.`
+            : "Aucune voix française détectée sur cet appareil. Ajoute-en une dans Réglages → Accessibilité → Contenu énoncé → Voix → Français."}
+        </Subtitle>
       </Card>
 
       <CalendarSection

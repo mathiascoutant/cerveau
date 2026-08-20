@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as Speech from 'expo-speech';
+import { speak, stopSpeaking } from '../lib/speech';
 
 import { api, AssistantAnswer } from '../api';
 import { applyActions } from '../lib/calendar';
@@ -230,7 +230,7 @@ export function useRaoul() {
     mode.current = 'off';
     clearTimers();
     SpeechRecognition?.abort();
-    Speech.stop();
+    stopSpeaking();
     setPartial('');
     setState('off');
   }, [clearTimers]);
@@ -258,7 +258,7 @@ export function useRaoul() {
     return () => {
       clearTimers();
       SpeechRecognition?.abort();
-      Speech.stop();
+      stopSpeaking();
     };
   }, [clearTimers]);
 
@@ -292,14 +292,4 @@ function currentCommand(
   return full.slice(anchor.current);
 }
 
-function speak(text: string): Promise<void> {
-  return new Promise((resolve) => {
-    Speech.speak(text, {
-      language: 'fr-FR',
-      rate: 1.0,
-      onDone: () => resolve(),
-      onStopped: () => resolve(),
-      onError: () => resolve(),
-    });
-  });
-}
+
