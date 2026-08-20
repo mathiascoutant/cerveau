@@ -94,6 +94,15 @@ type Interaction struct {
 	CreatedAt  time.Time     `bson:"created_at" json:"created_at"`
 }
 
+// Digest : synthèse de la journée, mise en cache pour ne pas relancer le
+// modèle à chaque ouverture de l'onglet.
+type Digest struct {
+	ID          bson.ObjectID `bson:"_id,omitempty" json:"-"`
+	UserID      bson.ObjectID `bson:"user_id" json:"-"`
+	Summary     string        `bson:"summary" json:"summary"`
+	GeneratedAt time.Time     `bson:"generated_at" json:"generated_at"`
+}
+
 // Action : instruction renvoyée à l'app mobile (ex. écrire dans le calendrier du
 // téléphone, que seule l'app peut faire).
 type Action struct {

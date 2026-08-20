@@ -219,6 +219,59 @@ func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, erro
 	return result, nil
 }
 
+// DigestInput regroupe ce qui a été collecté pour la synthèse du jour.
+type DigestInput struct {
+	Emails    []EmailView    `json:"mails_non_lus"`
+	Slack     []SlackView    `json:"slack"`
+	WhatsApp  []WhatsAppView `json:"whatsapp"`
+	Events    []EventView    `json:"agenda_du_jour"`
+	Manquants []string       `json:"sources_indisponibles,omitempty"`
+}
+
+// Summarize produit le résumé de la journée. Pas d'outils ici : les données
+// sont déjà rassemblées, un seul appel suffit et la latence reste basse.
+func (e *Engine) Summarize(ctx context.Context, in DigestInput, now time.Time, tz, userName string) (string, error) {
+	who := userName
+	if who == "" {
+		who = "ton interlocuteur"
+	}
+
+	instructions := fmt.Sprintf(`Tu es Raoul, l'assistant personnel de %[1]s. Nous sommes le %[2]s, il est %[3]s (fuseau %[4]s).
+
+On te donne l'état brut de sa journée : agenda, mails non lus, Slack, WhatsApp. Rédige le point du jour.
+
+Tu t'adresses à lui DIRECTEMENT et tu le tutoies : « tu as rendez-vous », jamais « %[1]s a rendez-vous ». Ne parle pas de lui à la troisième personne, il te lit.
+
+Trois à six phrases, en français, sans liste à puces, sans markdown, sans emoji. Ce texte se lit dans l'app plutôt qu'il ne se prononce : il peut être un peu plus dense qu'une réponse vocale, mais reste des phrases.
+
+Ordre : d'abord ce qui l'engage aujourd'hui (rendez-vous, échéances), ensuite ce qui attend une réponse. Nomme les personnes et les objets. Les notifications automatiques, newsletters et résumés de plateformes ne sont pas détaillés : tu les comptes en une demi-phrase et tu passes.
+
+N'énonce jamais un zéro. Ce qui est vide ne se mentionne pas — pas de « zéro autre élément », pas de « rien d'autre à signaler » ajouté pour meubler. Si la journée entière est vide, une seule phrase suffit à le dire.
+
+N'invente rien : tout ce que tu écris vient des données fournies. Si une source est indisponible, signale-le en une demi-phrase, une seule fois, à la fin.`,
+		who,
+		now.Format("Monday 2 January 2006"),
+		now.Format("15h04"),
+		tz,
+	)
+
+	resp, err := e.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model:        e.model,
+		Instructions: openai.String(instructions),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: []responses.ResponseInputItemUnionParam{
+				responses.ResponseInputItemParamOfMessage(encode(in), responses.EasyInputMessageRoleUser),
+			},
+		},
+		Reasoning: shared.ReasoningParam{Effort: e.effort},
+		Store:     openai.Bool(false),
+	})
+	if err != nil {
+		return "", fmt.Errorf("synthèse : %w", err)
+	}
+	return strings.TrimSpace(resp.OutputText()), nil
+}
+
 func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, name, rawInput string) (string, *store.Action, error) {
 	switch name {
 	case "consulter_calendrier":

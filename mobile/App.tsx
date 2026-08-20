@@ -5,11 +5,12 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { AssistantScreen } from './src/screens/AssistantScreen';
 import { ConnectionsScreen } from './src/screens/ConnectionsScreen';
+import { JournalScreen } from './src/screens/JournalScreen';
 import { openSession } from './src/api';
 import { syncCalendar } from './src/lib/calendar';
 import { theme } from './src/theme';
 
-type Tab = 'raoul' | 'acces';
+type Tab = 'raoul' | 'journal' | 'acces';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('raoul');
@@ -60,12 +61,15 @@ export default function App() {
           </View>
         ) : tab === 'raoul' ? (
           <AssistantScreen />
+        ) : tab === 'journal' ? (
+          <JournalScreen />
         ) : (
           <ConnectionsScreen />
         )}
 
         <View style={styles.tabbar}>
           <TabButton label="Raoul" active={tab === 'raoul'} onPress={() => setTab('raoul')} />
+          <TabButton label="Journal" active={tab === 'journal'} onPress={() => setTab('journal')} />
           <TabButton label="Accès" active={tab === 'acces'} onPress={() => setTab('acces')} />
         </View>
       </SafeAreaView>

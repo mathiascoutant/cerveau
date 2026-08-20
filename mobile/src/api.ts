@@ -28,6 +28,36 @@ export type AssistantAction = {
   payload: Record<string, any>;
 };
 
+export type EmailItem = { de: string; objet: string; recu: string };
+export type SlackItem = {
+  canal: string;
+  type?: string;
+  non_lus?: number;
+  messages_recents?: number;
+  mentions?: number;
+  extraits?: string[];
+};
+export type WhatsAppItem = { de: string; message: string; recu: string };
+export type EventItem = { titre: string; debut: string; fin: string; lieu?: string };
+
+export type Digest = {
+  summary: string;
+  generated_at: string;
+  stale: boolean;
+  emails: EmailItem[];
+  slack: SlackItem[];
+  whatsapp: WhatsAppItem[];
+  events: EventItem[];
+  unavailable?: string[];
+};
+
+export type Interaction = {
+  transcript: string;
+  reply: string;
+  actions?: AssistantAction[];
+  created_at: string;
+};
+
 export type AssistantAnswer = {
   transcript: string;
   reply: string;
@@ -180,6 +210,12 @@ export const api = {
     request<{ name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) }),
 
   status: () => request<{ sources: SourceStatus[] }>('/status'),
+
+  /** Synthèse du jour + aperçu des sources. `refresh` force la régénération. */
+  digest: (refresh = false) =>
+    request<Digest>(`/digest${refresh ? '?refresh=1' : ''}`),
+
+  history: () => request<{ interactions: Interaction[] }>('/history'),
 
   connections: () => request<{ connections: Connection[] }>('/connections'),
 

@@ -45,6 +45,7 @@ func (s *Store) whatsapp() *mongo.Collection    { return s.db.Collection("whatsa
 func (s *Store) interactions() *mongo.Collection {
 	return s.db.Collection("interactions")
 }
+func (s *Store) digests() *mongo.Collection { return s.db.Collection("digests") }
 
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	// Un builder d'options par index : le driver mémorise le nom auto-généré,
@@ -73,6 +74,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		}},
 		{s.whatsapp(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}}},
 		{s.interactions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
+		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 	}
 	for _, spec := range specs {
 		if _, err := spec.col.Indexes().CreateOne(ctx, spec.model); err != nil {
@@ -312,6 +314,26 @@ func (s *Store) RecentInteractions(ctx context.Context, userID bson.ObjectID, li
 	}
 	var out []Interaction
 	return out, cur.All(ctx, &out)
+}
+
+// SaveDigest remplace la synthèse de l'utilisateur.
+func (s *Store) SaveDigest(ctx context.Context, userID bson.ObjectID, summary string) error {
+	_, err := s.digests().UpdateOne(ctx,
+		bson.M{"user_id": userID},
+		bson.M{"$set": bson.M{"summary": summary, "generated_at": time.Now()}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+// LatestDigest renvoie ErrNotFound si aucune synthèse n'a encore été produite.
+func (s *Store) LatestDigest(ctx context.Context, userID bson.ObjectID) (*Digest, error) {
+	var d Digest
+	err := s.digests().FindOne(ctx, bson.M{"user_id": userID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	return &d, err
 }
 
 func randomToken() (string, error) {
