@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, Field, Label, StatusDot, Subtitle, Title } from '../components/ui';
 import { api, Connection, detectedApiUrl, getApiUrl, Provider, setApiUrl } from '../api';
@@ -121,6 +121,12 @@ export function ConnectionsScreen() {
       <SlackSection
         connection={connections.slack}
         busy={busy === 'slack'}
+        onAuthorize={() =>
+          run('slack', async () => {
+            const { url } = await api.startSlackOAuth();
+            await Linking.openURL(url);
+          })
+        }
         onConnect={(token) =>
           run('slack', async () => {
             await api.connectSlack(token);
@@ -254,15 +260,18 @@ function GandiSection({
 function SlackSection({
   connection,
   busy,
+  onAuthorize,
   onConnect,
   onDisconnect,
 }: {
   connection?: Connection;
   busy: boolean;
+  onAuthorize: () => void;
   onConnect: (token: string) => void;
   onDisconnect: () => void;
 }) {
   const [token, setToken] = useState('');
+  const [manual, setManual] = useState(false);
   const connected = connection?.status === 'connected';
 
   return (
@@ -270,14 +279,20 @@ function SlackSection({
       <SectionHeader
         title="Slack"
         connection={connection}
-        hint="Token utilisateur (xoxp-…), pas un bot token : seul un token utilisateur sait ce que TU n'as pas lu."
+        hint="Raoul lit uniquement ce que TU n'as pas lu, avec tes propres droits. Il n'écrit jamais dans Slack."
       />
       {connected ? (
         <Button label="Déconnecter" variant="danger" loading={busy} onPress={onDisconnect} />
-      ) : (
+      ) : manual ? (
         <>
           <Field placeholder="xoxp-…" value={token} onChangeText={setToken} secureTextEntry />
           <Button label="Connecter Slack" loading={busy} onPress={() => onConnect(token.trim())} />
+          <Button label="Revenir à l'autorisation" variant="ghost" onPress={() => setManual(false)} />
+        </>
+      ) : (
+        <>
+          <Button label="Autoriser avec Slack" loading={busy} onPress={onAuthorize} />
+          <Button label="Coller un token à la main" variant="ghost" onPress={() => setManual(true)} />
         </>
       )}
     </Card>

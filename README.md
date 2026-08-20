@@ -73,13 +73,25 @@ Le mot de passe est demandé en saisie masquée, donc il ne finit pas dans
 l'historique du shell. En cas de succès, la commande affiche le nombre de non-lus
 et la liste exacte que Raoul verra.
 
-### 4. Slack — se saisit **dans l'app**
+### 4. Slack — deux valeurs dans `.env`, puis un clic dans l'app
 
-1. <https://api.slack.com/apps> › **Create New App › From scratch**
-2. Nomme-la « Raoul », choisis ton workspace
-3. Menu de gauche › **OAuth & Permissions**
-4. Descends jusqu'à **Scopes** › section **User Token Scopes**
-   (⚠️ *User*, pas *Bot* — c'est le piège classique) › *Add an OAuth Scope* ×9 :
+Le plus simple est le flux OAuth : tu cliques « Autoriser avec Slack » dans
+l'app, tu valides côté Slack, et le token revient chiffré en base sans jamais
+passer par un copier-coller.
+
+1. <https://api.slack.com/apps> › ton app › **Basic Information › App Credentials**
+   → récupère le **Client ID** et le **Client Secret**, à mettre dans le `.env`
+   du VPS (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`).
+2. **OAuth & Permissions › Redirect URLs** → ajoute exactement :
+
+```
+https://cerveau.neurorun.fr/oauth/slack/callback
+```
+
+   Sans ça l'échange échoue en `bad_redirect_uri`. L'URL doit correspondre au
+   caractère près à `PUBLIC_BASE_URL` + `/oauth/slack/callback`.
+3. **OAuth & Permissions › Portées des jetons d'utilisateur** (⚠️ *utilisateur*,
+   pas *bot*) → les 9 scopes :
 
 ```
 channels:history  channels:read
@@ -89,13 +101,20 @@ mpim:history      mpim:read
 users:read
 ```
 
-5. Remonte en haut de la page › **Install to Workspace** › autoriser
-6. Copie le **User OAuth Token**, celui qui commence par `xoxp-`
-   (pas le *Bot User OAuth Token* en `xoxb-`)
+4. Redémarre le conteneur (`docker compose up -d`), puis dans l'app :
+   **Accès › Slack › Autoriser avec Slack**.
 
-> Pourquoi un token utilisateur : seul un `xoxp` expose `last_read` /
+> Pourquoi des scopes utilisateur : seul un token `xoxp` expose `last_read` /
 > `unread_count_display`, c'est-à-dire ce que **toi** tu n'as pas lu. Un bot token
-> ne sait pas ça — le backend refuse d'ailleurs tout token qui ne commence pas par `xoxp-`.
+> ne sait pas ça.
+
+> Si ton espace de travail exige l'approbation d'un administrateur pour installer
+> des applications, le flux OAuth ne la contourne pas : l'écran de consentement
+> proposera une demande d'approbation. Un admin de l'espace peut s'auto-approuver
+> depuis `/apps/manage/requests`.
+
+L'ancienne méthode reste disponible — « Coller un token à la main » dans l'app,
+si tu as déjà un `xoxp-` sous la main.
 
 ### 5. WhatsApp Business — 4 valeurs, 3 endroits différents
 

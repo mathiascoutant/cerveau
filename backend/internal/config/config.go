@@ -31,6 +31,13 @@ type Config struct {
 	WhatsAppVerifyToken string
 	WhatsAppAppSecret   string
 
+	// Slack OAuth : évite le copier-coller manuel du token xoxp-.
+	SlackClientID     string
+	SlackClientSecret string
+
+	// URL publique du backend, pour construire le redirect_uri OAuth.
+	PublicBaseURL string
+
 	DefaultTimezone string
 }
 
@@ -48,6 +55,9 @@ func Load() (Config, error) {
 		STTModel:            env("STT_MODEL", "whisper-1"),
 		WhatsAppVerifyToken: env("WHATSAPP_VERIFY_TOKEN", ""),
 		WhatsAppAppSecret:   env("WHATSAPP_APP_SECRET", ""),
+		SlackClientID:       env("SLACK_CLIENT_ID", ""),
+		SlackClientSecret:   env("SLACK_CLIENT_SECRET", ""),
+		PublicBaseURL:       strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
 		DefaultTimezone:     env("DEFAULT_TIMEZONE", "Europe/Paris"),
 	}
 
@@ -65,6 +75,17 @@ func Load() (Config, error) {
 		return c, fmt.Errorf("variables d'environnement manquantes : %s", strings.Join(missing, ", "))
 	}
 	return c, nil
+}
+
+// SlackOAuthEnabled : le flux n'est proposé que si tout est renseigné.
+func (c Config) SlackOAuthEnabled() bool {
+	return c.SlackClientID != "" && c.SlackClientSecret != "" && c.PublicBaseURL != ""
+}
+
+// SlackRedirectURI doit correspondre exactement à l'URL déclarée dans
+// « Redirect URLs » côté Slack, sinon l'échange échoue en bad_redirect_uri.
+func (c Config) SlackRedirectURI() string {
+	return c.PublicBaseURL + "/oauth/slack/callback"
 }
 
 func env(key, def string) string {

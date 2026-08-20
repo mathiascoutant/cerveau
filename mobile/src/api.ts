@@ -189,6 +189,10 @@ export const api = {
       body: JSON.stringify({ email, password, host }),
     }),
 
+  /** Démarre le flux OAuth : renvoie l'URL de consentement à ouvrir. */
+  startSlackOAuth: () =>
+    request<{ url: string }>('/connections/slack/oauth', { method: 'POST' }),
+
   connectSlack: (userToken: string) =>
     request<Connection>('/connections/slack', {
       method: 'PUT',

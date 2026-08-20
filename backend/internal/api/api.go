@@ -20,6 +20,8 @@ type Server struct {
 	cipher *cryptoutil.Cipher
 	engine *assistant.Engine
 	stt    *stt.Client
+
+	pending *pendingOAuth
 }
 
 func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *Server {
@@ -29,6 +31,8 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *S
 		cipher: cipher,
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort),
 		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
+
+		pending: newPendingOAuth(),
 	}
 }
 
@@ -43,6 +47,10 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// Retour d'autorisation Slack : c'est le navigateur qui arrive, l'identité
+	// vient du paramètre state, pas d'un token d'appareil.
+	r.Get("/oauth/slack/callback", s.handleSlackOAuthCallback)
 
 	// Webhook Meta : pas de token utilisateur, authentifié par signature HMAC.
 	r.Route("/webhooks/whatsapp", func(r chi.Router) {
@@ -64,6 +72,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/connections", s.handleListConnections)
 			r.Put("/connections/gandi", s.handleConnectGandi)
 			r.Put("/connections/slack", s.handleConnectSlack)
+			r.Post("/connections/slack/oauth", s.handleSlackOAuthStart)
 			r.Put("/connections/whatsapp", s.handleConnectWhatsApp)
 			r.Delete("/connections/{provider}", s.handleDisconnect)
 
