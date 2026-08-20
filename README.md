@@ -190,17 +190,17 @@ c'est ce qui rend cette étape obligatoire pour WhatsApp.
 Ajoute un `AAAA` vers l'IPv6 si le VPS en a une. Attends que ça résolve
 (`dig +short cerveau.neurorun.fr`) avant de lancer certbot, sinon la validation échoue.
 
-**2. Préparer la machine**
+**2. Récupérer le code**
 
 ```bash
-sudo useradd --system --home /opt/cerveau --shell /usr/sbin/nologin cerveau
-sudo mkdir -p /opt/cerveau && sudo chown cerveau:cerveau /opt/cerveau
+mkdir -p ~/projects && cd ~/projects
+git clone https://github.com/mathiascoutant/cerveau.git
 ```
 
-Copie le `.env` (celui de ton Mac, adapté) dans `/opt/cerveau/.env`, puis :
+Dépose ton `.env` dans `~/projects/cerveau/backend/.env`, puis verrouille-le :
 
 ```bash
-sudo chown cerveau:cerveau /opt/cerveau/.env && sudo chmod 600 /opt/cerveau/.env
+chmod 600 ~/projects/cerveau/backend/.env
 ```
 
 Le `600` compte : ce fichier contient la `MASTER_KEY` qui déchiffre tous tes
@@ -209,7 +209,8 @@ identifiants Gandi, Slack et WhatsApp.
 **3. nginx + TLS**
 
 ```bash
-sudo cp backend/deploy/nginx-cerveau.conf /etc/nginx/sites-available/cerveau.neurorun.fr
+sudo cp ~/projects/cerveau/backend/deploy/nginx-cerveau.conf \
+        /etc/nginx/sites-available/cerveau.neurorun.fr
 sudo ln -s /etc/nginx/sites-available/cerveau.neurorun.fr /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d cerveau.neurorun.fr
@@ -218,18 +219,32 @@ sudo certbot --nginx -d cerveau.neurorun.fr
 Certbot réécrit le vhost avec le bloc TLS et la redirection 80 → 443, exactement
 comme il l'a fait pour `neurorun.fr`.
 
-**4. Service**
+**4. Le binaire** — deux options.
+
+*Avec Go sur le serveur :*
 
 ```bash
-sudo cp backend/deploy/cerveau.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now cerveau
+cd ~/projects/cerveau/backend && go build -o cerveau ./cmd/server
 ```
 
-**5. Déployer depuis le Mac**
+*Sans toolchain sur le serveur* — compilation croisée depuis le Mac :
 
 ```bash
 cd backend && make deploy VPS=ubuntu@cerveau.neurorun.fr
 ```
+
+**5. Service**
+
+```bash
+sudo cp ~/projects/cerveau/backend/deploy/cerveau.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cerveau
+sudo systemctl status cerveau --no-pager
+```
+
+L'unité tourne sous l'utilisateur `ubuntu` et pointe vers
+`/home/ubuntu/projects/cerveau/backend`. Si tu clones ailleurs, ajuste les trois
+chemins du fichier — et laisse `ProtectHome=false`, sans quoi systemd cache
+`/home` au service et le démarrage échoue avec un `status=200/CHDIR` peu parlant.
 
 Vérifie ensuite : `curl https://cerveau.neurorun.fr/health` doit répondre `ok`.
 

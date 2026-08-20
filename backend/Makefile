@@ -24,13 +24,13 @@ gandi-check:
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/cerveau-linux ./cmd/server
 
-# Déploiement : make deploy VPS=ubuntu@cerveau.neurorun.fr
-# Le binaire est remplacé puis le service redémarré ; l'ancien reste en place
-# jusqu'au mv, donc l'interruption se compte en millisecondes.
+# Déploiement sans toolchain Go sur le serveur : on y envoie le binaire déjà
+# compilé. Usage : make deploy VPS=ubuntu@cerveau.neurorun.fr
+REMOTE_DIR ?= /home/ubuntu/projects/cerveau/backend
+
 deploy: linux
 	scp bin/cerveau-linux $(VPS):/tmp/cerveau.new
-	ssh $(VPS) 'sudo mv /tmp/cerveau.new /opt/cerveau/cerveau \
-		&& sudo chown cerveau:cerveau /opt/cerveau/cerveau \
-		&& sudo chmod 755 /opt/cerveau/cerveau \
+	ssh $(VPS) 'mv /tmp/cerveau.new $(REMOTE_DIR)/cerveau \
+		&& chmod 755 $(REMOTE_DIR)/cerveau \
 		&& sudo systemctl restart cerveau \
 		&& sleep 2 && sudo systemctl status cerveau --no-pager | head -12'

@@ -52,7 +52,7 @@
       ]
     ],
     "extra": {
-      "defaultApiUrl": "http://localhost:8080",
+      "defaultApiUrl": "https://cerveau.neurorun.fr",
       "eas": {
         "projectId": ""
       }

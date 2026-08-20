@@ -40,20 +40,25 @@ let cachedApiUrl: string | null = null;
 
 /**
  * En développement, le téléphone ne sait évidemment pas joindre le `localhost`
- * du Mac. On déduit l'adresse du serveur de l'IP qui sert déjà le bundle Expo :
+ * du Mac : on déduit l'adresse du serveur de l'IP qui sert déjà le bundle Expo,
  * même machine, port 8080. Zéro configuration pour tester en local.
+ *
+ * En build de production (TestFlight), on prend l'adresse du VPS déclarée dans
+ * app.json. Dans les deux cas l'utilisateur peut la remplacer depuis l'onglet
+ * Accès, et son choix est prioritaire.
  */
 function defaultApiUrl(): string {
   const configured = Constants.expoConfig?.extra?.defaultApiUrl as string | undefined;
-  if (configured && !/localhost|127\.0\.0\.1/.test(configured)) return configured;
 
-  const hostUri =
-    Constants.expoConfig?.hostUri ??
-    (Constants as any).expoGoConfig?.debuggerHost ??
-    (Constants as any).manifest2?.extra?.expoGo?.debuggerHost;
+  if (__DEV__) {
+    const hostUri =
+      Constants.expoConfig?.hostUri ??
+      (Constants as any).expoGoConfig?.debuggerHost ??
+      (Constants as any).manifest2?.extra?.expoGo?.debuggerHost;
 
-  const host = typeof hostUri === 'string' ? hostUri.split(':')[0] : null;
-  if (host) return `http://${host}:8080`;
+    const host = typeof hostUri === 'string' ? hostUri.split(':')[0] : null;
+    if (host) return `http://${host}:8080`;
+  }
 
   return configured ?? 'http://localhost:8080';
 }

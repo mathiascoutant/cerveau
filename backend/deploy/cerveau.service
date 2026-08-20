@@ -1,7 +1,9 @@
-; Unité systemd pour le VPS OVH.
-; Installation :
-;   sudo cp deploy/cerveau.service /etc/systemd/system/
-;   sudo systemctl daemon-reload && sudo systemctl enable --now cerveau
+# Unité systemd pour le VPS OVH.
+#
+# Suppose le dépôt cloné dans /home/ubuntu/projects/cerveau et le binaire
+# compilé dans backend/. Installation :
+#   sudo cp backend/deploy/cerveau.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cerveau
 [Unit]
 Description=Cerveau — API de l'assistant Raoul
 After=network-online.target
@@ -9,20 +11,23 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=cerveau
-Group=cerveau
-WorkingDirectory=/opt/cerveau
-EnvironmentFile=/opt/cerveau/.env
-ExecStart=/opt/cerveau/cerveau
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/projects/cerveau/backend
+EnvironmentFile=/home/ubuntu/projects/cerveau/backend/.env
+ExecStart=/home/ubuntu/projects/cerveau/backend/cerveau
 Restart=always
 RestartSec=5
 
-; Durcissement : le service n'a besoin ni du disque ni de privilèges.
+; Durcissement raisonnable pour un service qui n'écrit rien sur disque.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/cerveau
+ProtectSystem=full
+
+; ProtectHome DOIT rester à false : le binaire, le .env et le répertoire de
+; travail vivent tous dans /home/ubuntu. Le passer à true rend le service
+; incapable de démarrer, avec une erreur peu parlante (status=200/CHDIR).
+ProtectHome=false
 
 [Install]
 WantedBy=multi-user.target
