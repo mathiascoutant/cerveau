@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Raoul",
+    "slug": "cerveau",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "raoul",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.mathiascoutant.cerveau",
+      "buildNumber": "1",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "NSCalendarsFullAccessUsageDescription": "Raoul lit ton agenda pour savoir si un créneau est libre, et y ajoute les rendez-vous que tu valides.",
+        "NSCalendarsUsageDescription": "Raoul lit ton agenda pour savoir si un créneau est libre, et y ajoute les rendez-vous que tu valides.",
+        "NSRemindersFullAccessUsageDescription": "Raoul peut créer des rappels liés à tes rendez-vous.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.mathiascoutant.cerveau",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0E14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Raoul a besoin du micro pour t'entendre dire « OK Raoul ».",
+          "speechRecognitionPermission": "Raoul transcrit ta voix sur l'appareil pour comprendre ta demande."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Raoul consulte ton agenda pour vérifier tes disponibilités et y placer tes rendez-vous."
+        }
+      ]
+    ],
+    "extra": {
+      "defaultApiUrl": "http://localhost:8080",
+      "eas": {
+        "projectId": ""
+      }
+    }
+  }
+}

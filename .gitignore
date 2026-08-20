@@ -1,0 +1,27 @@
+# Secrets — ne doivent jamais partir sur le dépôt
+.env
+*.env.local
+
+# Go
+backend/bin/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Builds natifs (générés par prebuild, régénérables)
+mobile/ios/
+mobile/android/
+
+# macOS
+.DS_Store
+
+# Réglages Claude Code locaux : contiennent des commandes autorisées,
+# parfois avec des identifiants en clair.
+.claude/settings.local.json
