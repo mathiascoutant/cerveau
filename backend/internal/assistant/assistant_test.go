@@ -35,6 +35,7 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 	want := map[string][]string{
 		"consulter_calendrier": {"debut", "fin"},
 		"mails_non_lus":        nil,
+		"lire_mail":            nil,
 		"slack_non_lus":        nil,
 		"whatsapp_non_lus":     nil,
 		"lire_canal_slack":     {"canal"},

@@ -27,6 +27,7 @@ const maxIterations = 8
 type Toolbox interface {
 	CalendarEvents(ctx context.Context, start, end time.Time) ([]EventView, error)
 	UnreadEmails(ctx context.Context, limit int) ([]EmailView, error)
+	ReadEmail(ctx context.Context, query string, unreadOnly bool) (EmailContentView, error)
 	UnreadSlack(ctx context.Context, limit int) ([]SlackView, error)
 	ReadSlackChannel(ctx context.Context, name string, limit int) (SlackChannelView, error)
 	UnreadWhatsApp(ctx context.Context, limit int) ([]WhatsAppView, error)
@@ -46,6 +47,18 @@ type EmailView struct {
 	De    string `json:"de"`
 	Objet string `json:"objet"`
 	Recu  string `json:"recu"`
+}
+
+// EmailContentView est un mail avec son contenu, rapatrié à la demande. La
+// liste des non-lus ne descend que les enveloppes : lire un corps coûte un
+// aller-retour IMAP de plus, on ne le fait que si on le demande.
+type EmailContentView struct {
+	De      string `json:"de"`
+	Objet   string `json:"objet"`
+	Recu    string `json:"recu"`
+	Contenu string `json:"contenu"`
+	// Tronque : vrai si le mail était trop long pour être rendu en entier.
+	Tronque bool `json:"tronque,omitempty"`
 }
 
 // SlackView distingue deux réalités que l'API Slack ne traite pas pareil :
@@ -326,6 +339,20 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		}
 		return encode(mails), nil, nil
 
+	case "lire_mail":
+		var in struct {
+			Recherche string `json:"recherche"`
+			NonLu     bool   `json:"non_lu"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		mail, err := tb.ReadEmail(ctx, in.Recherche, in.NonLu)
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(mail), nil, nil
+
 	case "slack_non_lus":
 		limit := limitOf(rawInput, 10)
 		threads, err := tb.UnreadSlack(ctx, limit)
@@ -453,6 +480,14 @@ func toolDefinitions() []responses.ToolUnionParam {
 			}),
 		),
 		tool(
+			"lire_mail",
+			"Ouvre UN mail et renvoie son contenu, pour pouvoir le lire ou le résumer. C'est le seul outil qui donne le corps d'un message — mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
+			object(map[string]any{
+				"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). Vide pour prendre le mail le plus récent."),
+				"non_lu":    map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
+			}),
+		),
+		tool(
 			"slack_non_lus",
 			"État de Slack : conversations avec des messages non lus, DM comme canaux, avec un extrait. Le champ mentions indique que l'utilisateur y est cité nommément, ce qui est plus urgent qu'un simple non-lu. Si une entrée porte messages_recents au lieu de non_lus, c'est que l'état de lecture était indisponible pour cette conversation : parle alors d'activité récente, pas de non-lus.",
 			object(map[string]any{
@@ -506,7 +541,7 @@ Contexte temporel : nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule t
 
 Tes sources, auxquelles tu accèdes par tes outils — jamais par déduction :
 - le calendrier du téléphone (consulter_calendrier, creer_evenement) ;
-- la boîte mail Gandi (mails_non_lus) ;
+- la boîte mail Gandi (mails_non_lus pour la liste, lire_mail pour ouvrir un message) ;
 - Slack (slack_non_lus pour ce qu'il n'a pas lu, lire_canal_slack pour lire une conversation précise) ;
 - WhatsApp Business (whatsapp_non_lus) ;
 - Waze sur son téléphone (lancer_navigation).
@@ -552,6 +587,14 @@ Donne d'abord le volume, puis trie. Ce qui compte est détaillé, le reste est c
 Exemple de ton, à ne pas recopier comme un modèle : « Sept mails, dont deux qui comptent. Untel te relance sur le devis, et Machin veut une réponse avant ce soir. Sur Slack, Olivier t'a écrit trois fois à propos du déploiement. Le reste c'est de la notif. »
 
 Ce que tu considères urgent : une demande explicite avec échéance, une relance, un rendez-vous confirmé ou déplacé, une mention nominative sur Slack. Ce qui ne l'est pas : notifications automatiques, newsletters, résumés hebdomadaires, mises à jour de plateformes. Dis franchement quand le reste n'a aucun intérêt.
+
+QUAND IL DEMANDE DE LIRE UN MAIL
+
+« Lis-moi mon dernier mail », « qu'est-ce que dit celui d'Olivier », « ça raconte quoi » : tu appelles lire_mail. mails_non_lus ne suffit pas, il ne contient aucun contenu.
+
+Tu dis d'abord de qui vient le mail et de quand il date, puis tu le restitues. Un mail court se lit presque tel quel ; un mail long se résume — tu gardes ce qui engage l'utilisateur, tu jettes les signatures, les mentions légales et les liens de désinscription. Personne ne veut entendre « ce message et ses pièces jointes sont confidentiels ».
+
+Ce que tu ne lis jamais à voix haute : les URL, les identifiants, les codes à usage unique. Tu dis qu'il y a un lien, tu ne l'épelles pas.
 
 QUAND IL DEMANDE À ÊTRE EMMENÉ QUELQUE PART
 

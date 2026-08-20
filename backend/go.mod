@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
+	github.com/emersion/go-message v0.18.2
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/joho/godotenv v1.5.1
 	github.com/openai/openai-go/v3 v3.52.0
@@ -12,7 +13,6 @@ require (
 )
 
 require (
-	github.com/emersion/go-message v0.18.2 // indirect
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/klauspost/compress v1.17.6 // indirect
 	github.com/tidwall/gjson v1.19.0 // indirect

@@ -30,12 +30,14 @@ func (c Credentials) host() string {
 	return c.Host
 }
 
-// Message est la vue simplifiée d'un mail non lu qu'on donne à l'assistant.
+// Message est la vue d'un mail donnée à l'assistant. Body n'est rempli que par
+// Read : la liste des non-lus ne rapatrie que les enveloppes, c'est ce qui la
+// garde rapide.
 type Message struct {
 	Subject string    `json:"subject"`
 	From    string    `json:"from"`
 	Date    time.Time `json:"date"`
-	Snippet string    `json:"snippet,omitempty"`
+	Body    string    `json:"body,omitempty"`
 }
 
 // TestConnection vérifie les identifiants sans rien lire d'autre.

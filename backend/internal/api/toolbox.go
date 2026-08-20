@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
@@ -67,6 +68,30 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 		})
 	}
 	return out, nil
+}
+
+// ReadEmail rapatrie le corps d'un mail. Séparé de UnreadEmails à dessein :
+// descendre un corps coûte un aller-retour IMAP de plus, et la plupart des
+// questions n'en ont pas besoin.
+func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bool) (assistant.EmailContentView, error) {
+	creds, err := t.srv.gandiCreds(ctx, t.user)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return assistant.EmailContentView{}, errors.New("la boîte mail Gandi n'est pas connectée")
+		}
+		return assistant.EmailContentView{}, err
+	}
+	msg, err := gandi.Read(ctx, creds, query, unreadOnly)
+	if err != nil {
+		return assistant.EmailContentView{}, err
+	}
+	return assistant.EmailContentView{
+		De:      msg.From,
+		Objet:   msg.Subject,
+		Recu:    msg.Date.In(t.location()).Format("02/01 15h04"),
+		Contenu: msg.Body,
+		Tronque: strings.HasSuffix(msg.Body, "…"),
+	}, nil
 }
 
 func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.SlackView, error) {
