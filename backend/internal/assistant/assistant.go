@@ -28,6 +28,7 @@ type Toolbox interface {
 	CalendarEvents(ctx context.Context, start, end time.Time) ([]EventView, error)
 	UnreadEmails(ctx context.Context, limit int) ([]EmailView, error)
 	UnreadSlack(ctx context.Context, limit int) ([]SlackView, error)
+	ReadSlackChannel(ctx context.Context, name string, limit int) (SlackChannelView, error)
 	UnreadWhatsApp(ctx context.Context, limit int) ([]WhatsAppView, error)
 	CreateEvent(ctx context.Context, draft EventDraft) (store.Action, error)
 }
@@ -59,6 +60,18 @@ type SlackView struct {
 	// Mentions : nombre de fois où l'utilisateur est cité nommément.
 	Mentions int      `json:"mentions,omitempty"`
 	Extraits []string `json:"extraits,omitempty"`
+}
+
+// SlackChannelView est le contenu d'une conversation lue à la demande.
+type SlackChannelView struct {
+	Canal    string             `json:"canal"`
+	Messages []SlackMessageView `json:"messages"`
+}
+
+type SlackMessageView struct {
+	Auteur string `json:"auteur"`
+	Texte  string `json:"texte"`
+	Quand  string `json:"quand"`
 }
 
 type WhatsAppView struct {
@@ -266,6 +279,26 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		}
 		return encode(msgs), nil, nil
 
+	case "lire_canal_slack":
+		var in struct {
+			Canal  string `json:"canal"`
+			Limite int    `json:"limite"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(in.Canal) == "" {
+			return "", nil, fmt.Errorf("nom de canal manquant")
+		}
+		view, err := tb.ReadSlackChannel(ctx, in.Canal, in.Limite)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(view.Messages) == 0 {
+			return "Conversation « " + view.Canal + " » trouvée, mais aucun message lisible récemment.", nil, nil
+		}
+		return encode(view), nil, nil
+
 	case "creer_evenement":
 		var in struct {
 			Titre string `json:"titre"`
@@ -347,6 +380,14 @@ func toolDefinitions() []responses.ToolUnionParam {
 			object(map[string]any{
 				"limite": map[string]any{"type": "integer", "description": "Nombre maximum de messages (défaut 15)"},
 			}),
+		),
+		tool(
+			"lire_canal_slack",
+			"Lit les derniers messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu ou le dernier message d'un canal, d'un groupe ou d'une discussion précise. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct.",
+			object(map[string]any{
+				"canal":  str("Nom de la conversation, du canal ou de la personne"),
+				"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 10, maximum 30)"},
+			}, "canal"),
 		),
 		tool(
 			"creer_evenement",

@@ -102,6 +102,29 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 	return out, nil
 }
 
+// ReadSlackChannel lit une conversation à la demande, sans condition de
+// non-lu : c'est ce qui permet de répondre à « le dernier message dans #X ».
+func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit int) (assistant.SlackChannelView, error) {
+	creds, err := t.srv.slackCreds(ctx, t.user)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return assistant.SlackChannelView{}, errors.New("Slack n'est pas connecté")
+		}
+		return assistant.SlackChannelView{}, err
+	}
+	label, messages, err := slack.New(creds.UserToken).ReadConversation(ctx, name, limit)
+	if err != nil {
+		return assistant.SlackChannelView{}, err
+	}
+	out := assistant.SlackChannelView{Canal: label}
+	for _, m := range messages {
+		out.Messages = append(out.Messages, assistant.SlackMessageView{
+			Auteur: m.Auteur, Texte: m.Texte, Quand: m.Quand,
+		})
+	}
+	return out, nil
+}
+
 func (t *userToolbox) UnreadWhatsApp(ctx context.Context, limit int) ([]assistant.WhatsAppView, error) {
 	if _, err := t.srv.whatsappCreds(ctx, t.user); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
