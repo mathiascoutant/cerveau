@@ -69,7 +69,9 @@ type Activity struct {
 	Unread int `json:"non_lus,omitempty"`
 	// Recent est le nombre de messages récents dans un canal, sur la fenêtre
 	// demandée. Ce n'est PAS un compteur de non-lus.
-	Recent   int       `json:"messages_recents,omitempty"`
+	Recent int `json:"messages_recents,omitempty"`
+	// Mentions : nombre de fois où l'utilisateur est cité nommément.
+	Mentions int       `json:"mentions,omitempty"`
 	Latest   time.Time `json:"-"`
 	Messages []string  `json:"extraits,omitempty"`
 }
@@ -126,6 +128,10 @@ func (c *Client) RecentActivity(ctx context.Context, maxThreads int, window time
 		warning  string
 	}
 
+	// Chemin privilégié : l'état de lecture réel, tel que l'affiche le client
+	// Slack. S'il est indisponible, on retombe sur l'activité récente.
+	counts, countsErr := c.clientCounts(ctx)
+
 	results := make([]outcome, len(convs.Channels))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -137,7 +143,15 @@ func (c *Client) RecentActivity(ctx context.Context, maxThreads int, window time
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			act, err := c.inspect(ctx, conv, window)
+			var (
+				act *Activity
+				err error
+			)
+			if state, ok := counts[conv.ID]; ok {
+				act, err = c.inspectWithReadState(ctx, conv, state)
+			} else {
+				act, err = c.inspect(ctx, conv, window)
+			}
 			if err != nil {
 				results[i] = outcome{warning: fmt.Sprintf("%s : %v", c.label(ctx, conv), err)}
 				return
@@ -172,7 +186,42 @@ func (c *Client) RecentActivity(ctx context.Context, maxThreads int, window time
 	if len(warnings) > 3 {
 		warnings = append(warnings[:3], fmt.Sprintf("… et %d autres conversations illisibles", len(warnings)-3))
 	}
+	if countsErr != nil {
+		warnings = append(warnings, "état de lecture des canaux indisponible ("+countsErr.Error()+
+			") : les canaux sont remontés en activité récente, pas en non-lus")
+	}
 	return out, warnings, nil
+}
+
+// inspectWithReadState exploite l'état de lecture réel : ce qui remonte est
+// vraiment non lu, canaux compris.
+func (c *Client) inspectWithReadState(ctx context.Context, conv conversation, state readState) (*Activity, error) {
+	if !state.HasUnreads && state.MentionCount == 0 {
+		return nil, nil
+	}
+
+	kind := "canal"
+	if conv.IsIM || conv.IsMPIM {
+		kind = "dm"
+	}
+	act := &Activity{Channel: c.label(ctx, conv), Kind: kind}
+
+	params := url.Values{"channel": {conv.ID}, "limit": {"5"}}
+	if state.LastRead != "" {
+		params.Set("oldest", state.LastRead)
+	}
+	if err := c.fillMessages(ctx, params, act); err != nil {
+		return nil, err
+	}
+	if len(act.Messages) == 0 && state.MentionCount == 0 {
+		return nil, nil
+	}
+
+	act.Unread = len(act.Messages)
+	if state.MentionCount > 0 {
+		act.Mentions = state.MentionCount
+	}
+	return act, nil
 }
 
 // inspect renvoie nil si la conversation n'a rien à signaler.

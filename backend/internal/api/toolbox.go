@@ -95,6 +95,7 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 			Type:            th.Kind,
 			NonLus:          th.Unread,
 			MessagesRecents: th.Recent,
+			Mentions:        th.Mentions,
 			Extraits:        th.Messages,
 		})
 	}

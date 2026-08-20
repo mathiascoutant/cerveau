@@ -54,9 +54,11 @@ type SlackView struct {
 	Type  string `json:"type"` // "dm" ou "canal"
 	// NonLus : uniquement pour les DM.
 	NonLus int `json:"non_lus,omitempty"`
-	// MessagesRecents : uniquement pour les canaux, sur les dernières heures.
-	MessagesRecents int      `json:"messages_recents,omitempty"`
-	Extraits        []string `json:"extraits,omitempty"`
+	// MessagesRecents : repli quand l'état de lecture est indisponible.
+	MessagesRecents int `json:"messages_recents,omitempty"`
+	// Mentions : nombre de fois où l'utilisateur est cité nommément.
+	Mentions int      `json:"mentions,omitempty"`
+	Extraits []string `json:"extraits,omitempty"`
 }
 
 type WhatsAppView struct {
@@ -334,7 +336,7 @@ func toolDefinitions() []responses.ToolUnionParam {
 		),
 		tool(
 			"slack_non_lus",
-			"État de Slack. Les messages directs remontent avec un vrai compteur de non-lus (champ non_lus). Les canaux remontent seulement l'activité récente des dernières heures (champ messages_recents) : Slack n'expose pas l'état de lecture des canaux. Ne présente jamais l'activité d'un canal comme un message non lu.",
+			"État de Slack : conversations avec des messages non lus, DM comme canaux, avec un extrait. Le champ mentions indique que l'utilisateur y est cité nommément, ce qui est plus urgent qu'un simple non-lu. Si une entrée porte messages_recents au lieu de non_lus, c'est que l'état de lecture était indisponible pour cette conversation : parle alors d'activité récente, pas de non-lus.",
 			object(map[string]any{
 				"limite": map[string]any{"type": "integer", "description": "Nombre maximum de conversations (défaut 10)"},
 			}),
