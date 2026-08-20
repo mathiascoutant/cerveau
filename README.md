@@ -221,17 +221,24 @@ comme il l'a fait pour `neurorun.fr`.
 
 **4. Le binaire** — deux options.
 
-*Avec Go sur le serveur :*
+*Sans rien installer sur le serveur* (recommandé) — compilation croisée depuis
+le Mac, qui envoie le binaire prêt à l'emploi :
+
+```bash
+cd backend && make deploy VPS=ubuntu@cerveau.neurorun.fr
+```
+
+*Avec Go sur le serveur* — il faut **Go 1.25 ou plus récent** (plancher imposé
+par `openai-go` et `golang.org/x/term`) :
 
 ```bash
 cd ~/projects/cerveau/backend && go build -o cerveau ./cmd/server
 ```
 
-*Sans toolchain sur le serveur* — compilation croisée depuis le Mac :
-
-```bash
-cd backend && make deploy VPS=ubuntu@cerveau.neurorun.fr
-```
+Si Go tente de télécharger une toolchain et se prend un `403 Forbidden`, c'est
+que la version installée est trop ancienne et que le proxy Go est inaccessible
+depuis le VPS. Vérifie avec `go version` : en dessous de 1.25, passe par la
+compilation croisée ci-dessus plutôt que d'installer Go sur le serveur.
 
 **5. Service**
 
