@@ -16,7 +16,7 @@ export function ConnectionsScreen() {
   const [connections, setConnections] = useState<Record<string, Connection>>({});
   const [serverUrl, setServerUrl] = useState('');
   const [name, setName] = useState('');
-  const [voice, setVoice] = useState<string | null>(null);
+  const [voices, setVoices] = useState<{ label: string; best: boolean }[] | null>(null);
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarUsable, setCalendarUsable] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -41,8 +41,15 @@ export function ConnectionsScreen() {
       .then((me) => setName(me.name ?? ''))
       .catch(() => undefined);
     void frenchVoices()
-      .then((v) => setVoice(v[0] ? `${v[0].name} (${v[0].quality})` : null))
-      .catch(() => undefined);
+      .then((list) =>
+        setVoices(
+          list.map((v, i) => ({
+            label: `${v.name} · ${v.quality} · ${v.language}`,
+            best: i === 0,
+          })),
+        ),
+      )
+      .catch(() => setVoices([]));
     void refresh();
   }, [refresh]);
 
@@ -124,11 +131,33 @@ export function ConnectionsScreen() {
 
       <Card>
         <Label>Voix de Raoul</Label>
-        <Subtitle>
-          {voice
-            ? `Voix retenue : ${voice}. Pour une voix nettement plus naturelle, télécharge une voix française Premium dans Réglages → Accessibilité → Contenu énoncé → Voix → Français, puis relance l'app.`
-            : "Aucune voix française détectée sur cet appareil. Ajoute-en une dans Réglages → Accessibilité → Contenu énoncé → Voix → Français."}
-        </Subtitle>
+        {voices === null ? (
+          <Subtitle>Lecture des voix disponibles…</Subtitle>
+        ) : voices.length === 0 ? (
+          <Subtitle>
+            Aucune voix française détectée sur cet appareil. Sur iOS, les voix se téléchargent
+            depuis Réglages → Accessibilité, section Vision → Contenu énoncé → Voix → Français. Selon
+            la version, l'entrée peut s'appeler « Parole » ou se trouver sous Réglages → Général →
+            Accessibilité.
+          </Subtitle>
+        ) : (
+          <>
+            <Subtitle>
+              {voices.length} voix française(s) installée(s). Raoul utilise la première.
+            </Subtitle>
+            {voices.slice(0, 8).map((v) => (
+              <Text key={v.label} style={v.best ? styles.voiceBest : styles.voice}>
+                {v.best ? '▸ ' : '  '}
+                {v.label}
+              </Text>
+            ))}
+            <Subtitle>
+              Une voix « Premium » ou « Enhanced » sonne nettement mieux qu'une « Default ». Si tu
+              n'as que des Default, ajoutes-en une depuis les réglages d'accessibilité d'iOS, puis
+              relance l'app.
+            </Subtitle>
+          </>
+        )}
       </Card>
 
       <CalendarSection
@@ -389,4 +418,6 @@ const styles = StyleSheet.create({
   badge: { color: theme.colors.textMuted, fontSize: 12, flexShrink: 1 },
   error: { color: theme.colors.danger, fontSize: 12 },
   notice: { color: theme.colors.warning, fontSize: 13, lineHeight: 19 },
+  voice: { color: theme.colors.textMuted, fontSize: 12, fontFamily: 'Menlo' },
+  voiceBest: { color: theme.colors.success, fontSize: 12, fontFamily: 'Menlo' },
 });
