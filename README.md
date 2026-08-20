@@ -294,12 +294,28 @@ Raoul répond sur les mails/Slack/WhatsApp mais ne peut ni vérifier ni créer d
 
 ### Le vrai truc : dev build
 
+**En local, avec Xcode** — le plus rapide pour itérer, et ça permet de tester le
+vocal dans le simulateur (qui utilise le micro du Mac) :
+
 ```bash
 cd mobile
+LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 npx expo run:ios --device "iPhone 17 Pro"
+```
+
+⚠️ Le préfixe de locale n'est pas décoratif. Sans `LANG` en UTF-8, CocoaPods
+casse avec `Unicode Normalization not appropriate for ASCII-8BIT
+(Encoding::CompatibilityError)` dans `Pod::Config#installation_root`, puis
+xcodebuild échoue sur « The sandbox is not in sync with the Podfile.lock ». La
+seconde erreur masque la première, qui est la vraie cause. Sur un shell sans
+`LANG` défini — le cas par défaut de zsh sur macOS — ça arrive systématiquement.
+
+**Sur ton iPhone, via EAS** :
+
+```bash
 eas build --profile development --platform ios
 ```
 
-Installe le build sur ton iPhone, puis :
+Installe le build sur l'appareil, puis :
 
 ```bash
 npx expo start --dev-client
