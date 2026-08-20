@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
@@ -76,17 +77,25 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 		}
 		return nil, err
 	}
-	threads, err := slack.New(creds.UserToken).UnreadMessages(ctx, limit)
+	threads, warnings, err := slack.New(creds.UserToken).RecentActivity(ctx, limit, slack.DefaultChannelWindow)
 	if err != nil {
 		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderSlack, err.Error())
 		return nil, err
 	}
+	// Une conversation illisible (scope manquant) ne doit pas se traduire par un
+	// silencieux « aucun message » : on la remonte au modèle.
+	for _, w := range warnings {
+		slog.Warn("slack : conversation ignorée", "detail", w)
+	}
+
 	out := make([]assistant.SlackView, 0, len(threads))
 	for _, th := range threads {
 		out = append(out, assistant.SlackView{
-			Canal:    th.Channel,
-			NonLus:   th.Count,
-			Extraits: th.Messages,
+			Canal:           th.Channel,
+			Type:            th.Kind,
+			NonLus:          th.Unread,
+			MessagesRecents: th.Recent,
+			Extraits:        th.Messages,
 		})
 	}
 	return out, nil

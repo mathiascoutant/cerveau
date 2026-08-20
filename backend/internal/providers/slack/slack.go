@@ -1,6 +1,16 @@
-// Package slack lit les conversations non lues via l'API Slack, avec un token
-// utilisateur (xoxp-…). Un bot token ne convient pas : seul un token utilisateur
-// expose « ce que MOI je n'ai pas lu » (last_read / unread_count_display).
+// Package slack lit l'activité Slack avec un token utilisateur (xoxp-…).
+//
+// Attention à une limite de l'API : `conversations.info` ne renvoie
+// `unread_count_display` et `last_read` QUE pour les messages directs. Pour les
+// canaux, Slack n'expose pas l'état de lecture par utilisateur. On distingue
+// donc deux notions :
+//
+//   - les DM et DM de groupe : vrai « non lu », fiable ;
+//   - les canaux : activité récente sur une fenêtre de temps, qui est la
+//     meilleure approximation disponible de « ce que tu n'as peut-être pas vu ».
+//
+// Cette distinction est remontée telle quelle à l'assistant, pour qu'il ne
+// présente pas une activité récente comme un message non lu.
 package slack
 
 import (
@@ -12,10 +22,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const apiBase = "https://slack.com/api/"
+
+// Fenêtre par défaut pour l'activité des canaux.
+const DefaultChannelWindow = 18 * time.Hour
+
+// Nombre de conversations inspectées en parallèle. Slack limite à environ 50
+// requêtes par minute sur ces méthodes : rester modeste évite les 429.
+const concurrency = 5
 
 // Scopes utilisateur à demander lors de la création de l'app Slack.
 var RequiredScopes = []string{
@@ -29,7 +47,8 @@ var RequiredScopes = []string{
 type Client struct {
 	token string
 	http  *http.Client
-	// cache des noms d'utilisateurs, pour éviter un users.info par message
+
+	mu        sync.Mutex
 	userNames map[string]string
 }
 
@@ -41,13 +60,18 @@ func New(token string) *Client {
 	}
 }
 
-// Unread est un fil de discussion contenant des messages non lus.
-type Unread struct {
-	Channel  string    `json:"channel"`
-	IsDM     bool      `json:"is_dm"`
-	Count    int       `json:"unread_count"`
-	Latest   time.Time `json:"latest"`
-	Messages []string  `json:"messages"`
+// Activity décrit une conversation qui mérite l'attention de l'utilisateur.
+type Activity struct {
+	Channel string `json:"canal"`
+	// "dm" (message direct ou de groupe) ou "canal".
+	Kind string `json:"type"`
+	// Unread n'est renseigné que pour les DM : c'est un vrai compteur de non-lus.
+	Unread int `json:"non_lus,omitempty"`
+	// Recent est le nombre de messages récents dans un canal, sur la fenêtre
+	// demandée. Ce n'est PAS un compteur de non-lus.
+	Recent   int       `json:"messages_recents,omitempty"`
+	Latest   time.Time `json:"-"`
+	Messages []string  `json:"extraits,omitempty"`
 }
 
 // TestConnection valide le token et renvoie le nom du workspace.
@@ -63,22 +87,30 @@ func (c *Client) TestConnection(ctx context.Context) (team string, user string, 
 	return res.Team, res.User, nil
 }
 
-// UnreadMessages parcourt les conversations de l'utilisateur et renvoie celles
-// qui ont des messages non lus, la plus récente en premier.
-func (c *Client) UnreadMessages(ctx context.Context, maxThreads int) ([]Unread, error) {
+type conversation struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	IsIM   bool   `json:"is_im"`
+	IsMPIM bool   `json:"is_mpim"`
+	User   string `json:"user"`
+}
+
+// RecentActivity renvoie les DM non lus et les canaux actifs récemment.
+//
+// Le second retour liste les avertissements (conversations illisibles, scope
+// manquant…). Les taire donnerait un « aucun message » trompeur, alors que le
+// problème est un droit absent.
+func (c *Client) RecentActivity(ctx context.Context, maxThreads int, window time.Duration) ([]Activity, []string, error) {
 	if maxThreads <= 0 {
 		maxThreads = 10
+	}
+	if window <= 0 {
+		window = DefaultChannelWindow
 	}
 
 	var convs struct {
 		apiResponse
-		Channels []struct {
-			ID     string `json:"id"`
-			Name   string `json:"name"`
-			IsIM   bool   `json:"is_im"`
-			IsMPIM bool   `json:"is_mpim"`
-			User   string `json:"user"`
-		} `json:"channels"`
+		Channels []conversation `json:"channels"`
 	}
 	err := c.call(ctx, "users.conversations", url.Values{
 		"types":            {"public_channel,private_channel,im,mpim"},
@@ -86,11 +118,68 @@ func (c *Client) UnreadMessages(ctx context.Context, maxThreads int) ([]Unread, 
 		"limit":            {"200"},
 	}, &convs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var out []Unread
-	for _, conv := range convs.Channels {
+	type outcome struct {
+		activity *Activity
+		warning  string
+	}
+
+	results := make([]outcome, len(convs.Channels))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for i, conv := range convs.Channels {
+		wg.Add(1)
+		go func(i int, conv conversation) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			act, err := c.inspect(ctx, conv, window)
+			if err != nil {
+				results[i] = outcome{warning: fmt.Sprintf("%s : %v", c.label(ctx, conv), err)}
+				return
+			}
+			results[i] = outcome{activity: act}
+		}(i, conv)
+	}
+	wg.Wait()
+
+	var out []Activity
+	var warnings []string
+	for _, r := range results {
+		if r.warning != "" {
+			warnings = append(warnings, r.warning)
+		}
+		if r.activity != nil {
+			out = append(out, *r.activity)
+		}
+	}
+
+	// Les DM d'abord — un message direct engage davantage qu'un canal actif —
+	// puis du plus récent au plus ancien.
+	sort.Slice(out, func(i, j int) bool {
+		if (out[i].Kind == "dm") != (out[j].Kind == "dm") {
+			return out[i].Kind == "dm"
+		}
+		return out[i].Latest.After(out[j].Latest)
+	})
+	if len(out) > maxThreads {
+		out = out[:maxThreads]
+	}
+	if len(warnings) > 3 {
+		warnings = append(warnings[:3], fmt.Sprintf("… et %d autres conversations illisibles", len(warnings)-3))
+	}
+	return out, warnings, nil
+}
+
+// inspect renvoie nil si la conversation n'a rien à signaler.
+func (c *Client) inspect(ctx context.Context, conv conversation, window time.Duration) (*Activity, error) {
+	isDM := conv.IsIM || conv.IsMPIM
+
+	if isDM {
 		var info struct {
 			apiResponse
 			Channel struct {
@@ -99,61 +188,97 @@ func (c *Client) UnreadMessages(ctx context.Context, maxThreads int) ([]Unread, 
 			} `json:"channel"`
 		}
 		if err := c.call(ctx, "conversations.info", url.Values{"channel": {conv.ID}}, &info); err != nil {
-			continue // un canal illisible ne doit pas casser tout le bilan
+			return nil, err
 		}
 		if info.Channel.UnreadCount == 0 {
-			continue
+			return nil, nil
 		}
-
-		label := "#" + conv.Name
-		if conv.IsIM {
-			label = "DM " + c.userName(ctx, conv.User)
-		} else if conv.IsMPIM {
-			label = "Groupe " + conv.Name
-		}
-
-		u := Unread{Channel: label, IsDM: conv.IsIM || conv.IsMPIM, Count: info.Channel.UnreadCount}
-
-		var hist struct {
-			apiResponse
-			Messages []struct {
-				User string `json:"user"`
-				Text string `json:"text"`
-				TS   string `json:"ts"`
-			} `json:"messages"`
+		act := &Activity{
+			Channel: c.label(ctx, conv),
+			Kind:    "dm",
+			Unread:  info.Channel.UnreadCount,
 		}
 		params := url.Values{"channel": {conv.ID}, "limit": {"5"}}
 		if info.Channel.LastRead != "" {
 			params.Set("oldest", info.Channel.LastRead)
 		}
-		if err := c.call(ctx, "conversations.history", params, &hist); err == nil {
-			for _, m := range hist.Messages {
-				if strings.TrimSpace(m.Text) == "" {
-					continue
-				}
-				u.Messages = append(u.Messages, fmt.Sprintf("%s : %s", c.userName(ctx, m.User), truncate(m.Text, 180)))
-				if ts := parseSlackTS(m.TS); ts.After(u.Latest) {
-					u.Latest = ts
-				}
-			}
-		}
-		out = append(out, u)
+		c.fillMessages(ctx, params, act)
+		return act, nil
 	}
 
-	sort.Slice(out, func(i, j int) bool { return out[i].Latest.After(out[j].Latest) })
-	if len(out) > maxThreads {
-		out = out[:maxThreads]
+	// Canaux : Slack n'expose pas l'état de lecture, on regarde l'activité
+	// récente sur la fenêtre demandée.
+	oldest := time.Now().Add(-window)
+	params := url.Values{
+		"channel": {conv.ID},
+		"limit":   {"5"},
+		"oldest":  {fmt.Sprintf("%d", oldest.Unix())},
 	}
-	return out, nil
+	act := &Activity{Channel: c.label(ctx, conv), Kind: "canal"}
+	if err := c.fillMessages(ctx, params, act); err != nil {
+		return nil, err
+	}
+	if len(act.Messages) == 0 {
+		return nil, nil
+	}
+	act.Recent = len(act.Messages)
+	return act, nil
+}
+
+func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activity) error {
+	var hist struct {
+		apiResponse
+		Messages []struct {
+			User    string `json:"user"`
+			BotID   string `json:"bot_id"`
+			Text    string `json:"text"`
+			Subtype string `json:"subtype"`
+			TS      string `json:"ts"`
+		} `json:"messages"`
+	}
+	if err := c.call(ctx, "conversations.history", params, &hist); err != nil {
+		return err
+	}
+	for _, m := range hist.Messages {
+		// Les entrées/sorties de canal et autres événements système ne sont pas
+		// des messages à lire.
+		if m.Subtype != "" || strings.TrimSpace(m.Text) == "" {
+			continue
+		}
+		author := "un bot"
+		if m.User != "" {
+			author = c.userName(ctx, m.User)
+		}
+		act.Messages = append(act.Messages, fmt.Sprintf("%s : %s", author, truncate(m.Text, 180)))
+		if ts := parseSlackTS(m.TS); ts.After(act.Latest) {
+			act.Latest = ts
+		}
+	}
+	return nil
+}
+
+func (c *Client) label(ctx context.Context, conv conversation) string {
+	switch {
+	case conv.IsIM:
+		return "DM " + c.userName(ctx, conv.User)
+	case conv.IsMPIM:
+		return "Groupe " + conv.Name
+	default:
+		return "#" + conv.Name
+	}
 }
 
 func (c *Client) userName(ctx context.Context, id string) string {
 	if id == "" {
 		return "quelqu'un"
 	}
+	c.mu.Lock()
 	if n, ok := c.userNames[id]; ok {
+		c.mu.Unlock()
 		return n
 	}
+	c.mu.Unlock()
+
 	var res struct {
 		apiResponse
 		User struct {
@@ -169,7 +294,9 @@ func (c *Client) userName(ctx context.Context, id string) string {
 			name = res.User.Name
 		}
 	}
+	c.mu.Lock()
 	c.userNames[id] = name
+	c.mu.Unlock()
 	return name
 }
 
@@ -177,6 +304,8 @@ type apiResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error"`
 }
+
+func (a apiResponse) status() (bool, string) { return a.OK, a.Error }
 
 func (c *Client) call(ctx context.Context, method string, params url.Values, out any) error {
 	if params == nil {
@@ -198,7 +327,6 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("slack %s : réponse illisible : %w", method, err)
 	}
-	// Toutes les réponses embarquent apiResponse : on relit ok/error par assertion.
 	if r, ok := out.(interface{ status() (bool, string) }); ok {
 		if ok2, e := r.status(); !ok2 {
 			return fmt.Errorf("slack %s : %s", method, e)
@@ -206,8 +334,6 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 	}
 	return nil
 }
-
-func (a apiResponse) status() (bool, string) { return a.OK, a.Error }
 
 func parseSlackTS(ts string) time.Time {
 	sec, _, _ := strings.Cut(ts, ".")

@@ -46,10 +46,17 @@ type EmailView struct {
 	Recu  string `json:"recu"`
 }
 
+// SlackView distingue deux réalités que l'API Slack ne traite pas pareil :
+// les DM ont un vrai compteur de non-lus, les canaux non — pour eux on ne
+// dispose que de l'activité récente.
 type SlackView struct {
-	Canal    string   `json:"canal"`
-	NonLus   int      `json:"non_lus"`
-	Extraits []string `json:"extraits,omitempty"`
+	Canal string `json:"canal"`
+	Type  string `json:"type"` // "dm" ou "canal"
+	// NonLus : uniquement pour les DM.
+	NonLus int `json:"non_lus,omitempty"`
+	// MessagesRecents : uniquement pour les canaux, sur les dernières heures.
+	MessagesRecents int      `json:"messages_recents,omitempty"`
+	Extraits        []string `json:"extraits,omitempty"`
 }
 
 type WhatsAppView struct {
@@ -327,7 +334,7 @@ func toolDefinitions() []responses.ToolUnionParam {
 		),
 		tool(
 			"slack_non_lus",
-			"Récupère les conversations Slack contenant des messages non lus, avec un extrait des derniers messages.",
+			"État de Slack. Les messages directs remontent avec un vrai compteur de non-lus (champ non_lus). Les canaux remontent seulement l'activité récente des dernières heures (champ messages_recents) : Slack n'expose pas l'état de lecture des canaux. Ne présente jamais l'activité d'un canal comme un message non lu.",
 			object(map[string]any{
 				"limite": map[string]any{"type": "integer", "description": "Nombre maximum de conversations (défaut 10)"},
 			}),
