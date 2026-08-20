@@ -190,70 +190,66 @@ c'est ce qui rend cette étape obligatoire pour WhatsApp.
 Ajoute un `AAAA` vers l'IPv6 si le VPS en a une. Attends que ça résolve
 (`dig +short cerveau.neurorun.fr`) avant de lancer certbot, sinon la validation échoue.
 
-**2. Récupérer le code**
+**2. Le registre d'images**
+
+Chaque push sur `main` touchant `backend/` déclenche
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml), qui publie
+`ghcr.io/mathiascoutant/cerveau:latest`.
+
+⚠️ **Les images ghcr sont privées par défaut, même pour un dépôt public.** Après
+le premier build, va sur la page du package (onglet *Packages* du dépôt) →
+*Package settings* → *Change visibility* → **Public**. Sinon il faut
+authentifier le VPS :
 
 ```bash
-mkdir -p ~/projects && cd ~/projects
-git clone https://github.com/mathiascoutant/cerveau.git
+echo <PAT_read:packages> | docker login ghcr.io -u mathiascoutant --password-stdin
 ```
 
-Dépose ton `.env` dans `~/projects/cerveau/backend/.env`, puis verrouille-le :
+**3. Le VPS**
 
 ```bash
-chmod 600 ~/projects/cerveau/backend/.env
+mkdir -p ~/projects/cerveau && cd ~/projects/cerveau
+curl -O https://raw.githubusercontent.com/mathiascoutant/cerveau/main/backend/deploy/docker-compose.yml
+```
+
+Dépose ton `.env` **à côté** du `docker-compose.yml`, puis verrouille-le :
+
+```bash
+chmod 600 .env
+docker compose up -d
 ```
 
 Le `600` compte : ce fichier contient la `MASTER_KEY` qui déchiffre tous tes
 identifiants Gandi, Slack et WhatsApp.
 
-**3. nginx + TLS**
+Le conteneur publie son port sur `127.0.0.1:8080` uniquement. C'est délibéré :
+sans ce préfixe, Docker écrit ses propres règles iptables et exposerait l'API en
+clair sur Internet **en contournant ufw**.
+
+**4. nginx + TLS**
 
 ```bash
-sudo cp ~/projects/cerveau/backend/deploy/nginx-cerveau.conf \
-        /etc/nginx/sites-available/cerveau.neurorun.fr
+sudo curl -o /etc/nginx/sites-available/cerveau.neurorun.fr \
+  https://raw.githubusercontent.com/mathiascoutant/cerveau/main/backend/deploy/nginx-cerveau.conf
 sudo ln -s /etc/nginx/sites-available/cerveau.neurorun.fr /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 sudo certbot --nginx -d cerveau.neurorun.fr
 ```
 
-Certbot réécrit le vhost avec le bloc TLS et la redirection 80 → 443, exactement
-comme il l'a fait pour `neurorun.fr`.
+Certbot réécrit le vhost avec le bloc TLS et la redirection 80 → 443, comme il
+l'a fait pour `neurorun.fr`.
 
-**4. Le binaire** — deux options.
-
-*Sans rien installer sur le serveur* (recommandé) — compilation croisée depuis
-le Mac, qui envoie le binaire prêt à l'emploi :
+**5. Mettre à jour**
 
 ```bash
-cd backend && make deploy VPS=ubuntu@cerveau.neurorun.fr
+cd ~/projects/cerveau && docker compose pull && docker compose up -d
 ```
 
-*Avec Go sur le serveur* — il faut **Go 1.25 ou plus récent** (plancher imposé
-par `openai-go` et `golang.org/x/term`) :
+Vérifie : `curl https://cerveau.neurorun.fr/health` doit répondre `ok`.
 
-```bash
-cd ~/projects/cerveau/backend && go build -o cerveau ./cmd/server
-```
-
-Si Go tente de télécharger une toolchain et se prend un `403 Forbidden`, c'est
-que la version installée est trop ancienne et que le proxy Go est inaccessible
-depuis le VPS. Vérifie avec `go version` : en dessous de 1.25, passe par la
-compilation croisée ci-dessus plutôt que d'installer Go sur le serveur.
-
-**5. Service**
-
-```bash
-sudo cp ~/projects/cerveau/backend/deploy/cerveau.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now cerveau
-sudo systemctl status cerveau --no-pager
-```
-
-L'unité tourne sous l'utilisateur `ubuntu` et pointe vers
-`/home/ubuntu/projects/cerveau/backend`. Si tu clones ailleurs, ajuste les trois
-chemins du fichier — et laisse `ProtectHome=false`, sans quoi systemd cache
-`/home` au service et le démarrage échoue avec un `status=200/CHDIR` peu parlant.
-
-Vérifie ensuite : `curl https://cerveau.neurorun.fr/health` doit répondre `ok`.
+> Alternative sans Docker : `backend/deploy/cerveau.service` (systemd) plus
+> `make deploy VPS=ubuntu@…` depuis le poste de développement, qui envoie un
+> binaire statique compilé en croisé. Utile si tu ne veux pas de Docker sur le VPS.
 
 Enfin, dans l'app mobile, onglet **Accès** → remplace l'adresse du serveur par
 `https://cerveau.neurorun.fr`.

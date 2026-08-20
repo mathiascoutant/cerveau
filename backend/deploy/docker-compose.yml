@@ -1,0 +1,26 @@
+# À déposer sur le VPS, par exemple dans ~/projects/cerveau/
+# avec le .env à côté. Mise à jour :
+#   docker compose pull && docker compose up -d
+services:
+  cerveau:
+    image: ghcr.io/mathiascoutant/cerveau:latest
+    container_name: cerveau
+    restart: unless-stopped
+
+    # Le .env contient MASTER_KEY et les clés d'API : chmod 600 à côté.
+    env_file: .env
+
+    # Publié UNIQUEMENT sur la boucle locale : nginx fait le TLS devant.
+    # Sans le préfixe 127.0.0.1, Docker ouvrirait le port 8080 sur Internet
+    # en contournant ton pare-feu, et l'API serait joignable en clair.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    environment:
+      TZ: Europe/Paris
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
