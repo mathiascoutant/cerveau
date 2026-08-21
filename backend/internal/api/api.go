@@ -12,6 +12,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/stt"
+	"github.com/mathiascoutant/cerveau/backend/internal/tts"
 )
 
 type Server struct {
@@ -20,8 +21,10 @@ type Server struct {
 	cipher *cryptoutil.Cipher
 	engine *assistant.Engine
 	stt    *stt.Client
+	tts    *tts.Client
 
 	pending *pendingOAuth
+	speech  *speechTickets
 }
 
 func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *Server {
@@ -31,8 +34,10 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *S
 		cipher: cipher,
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort),
 		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
+		tts:    tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel),
 
 		pending: newPendingOAuth(),
+		speech:  newSpeechTickets(),
 	}
 }
 
@@ -62,6 +67,11 @@ func (s *Server) Routes() http.Handler {
 		// Pas de login : l'app poste son identifiant d'appareil et reçoit un token.
 		r.Post("/session", s.handleSession)
 
+		// Hors du groupe authentifié : le lecteur audio natif ne sait pas
+		// poser d'en-tête Authorization. Le ticket, aléatoire et à usage
+		// unique, tient lieu d'autorisation (voir handlers_speech.go).
+		r.Get("/speech/{ticket}", s.handleSpeechStream)
+
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireUser)
 
@@ -85,6 +95,7 @@ func (s *Server) Routes() http.Handler {
 
 			r.Post("/assistant/ask", s.handleAsk)
 			r.Post("/assistant/voice", s.handleVoice)
+			r.Post("/assistant/speech", s.handleSpeak)
 		})
 	})
 

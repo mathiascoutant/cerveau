@@ -27,6 +27,11 @@ type Config struct {
 	STTAPIKey  string
 	STTModel   string
 
+	// Synthèse vocale ElevenLabs. Sans clé, l'app retombe sur la voix système.
+	ElevenLabsAPIKey  string
+	ElevenLabsVoiceID string
+	ElevenLabsModel   string
+
 	// WhatsApp Business Cloud API (Meta).
 	WhatsAppVerifyToken string
 	WhatsAppAppSecret   string
@@ -56,6 +61,9 @@ func Load() (Config, error) {
 		STTBaseURL:          strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
 		STTAPIKey:           env("STT_API_KEY", ""),
 		STTModel:            env("STT_MODEL", "whisper-1"),
+		ElevenLabsAPIKey:    env("ELEVENLABS_API_KEY", ""),
+		ElevenLabsVoiceID:   env("ELEVENLABS_VOICE_ID", ""),
+		ElevenLabsModel:     env("ELEVENLABS_MODEL", ""),
 		WhatsAppVerifyToken: env("WHATSAPP_VERIFY_TOKEN", ""),
 		WhatsAppAppSecret:   env("WHATSAPP_APP_SECRET", ""),
 		SlackClientID:       env("SLACK_CLIENT_ID", ""),
