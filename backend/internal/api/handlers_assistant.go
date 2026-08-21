@@ -92,9 +92,12 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		now = time.Now()
 	}
 
-	// Un peu de contexte conversationnel : les deux derniers échanges.
+	// Contexte conversationnel. L'app garde désormais la conversation ouverte
+	// après le premier « OK Raoul » : les tours s'enchaînent sans réveil, et
+	// deux échanges de mémoire ne suffisaient plus à suivre un fil — ni même à
+	// se souvenir de quel Cyril on vient de parler.
 	var history []assistant.Turn
-	if past, err := s.store.RecentInteractions(r.Context(), user.ID, 2); err == nil {
+	if past, err := s.store.RecentInteractions(r.Context(), user.ID, 6); err == nil {
 		for i := len(past) - 1; i >= 0; i-- {
 			history = append(history, assistant.Turn{
 				User:      past[i].Transcript,

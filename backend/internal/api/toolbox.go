@@ -58,13 +58,12 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderGandi, err.Error())
 		return nil, err
 	}
-	loc := t.location()
 	out := make([]assistant.EmailView, 0, len(mails))
 	for _, m := range mails {
 		out = append(out, assistant.EmailView{
 			De:    m.From,
 			Objet: m.Subject,
-			Recu:  m.Date.In(loc).Format("02/01 15h04"),
+			Recu:  t.when(m.Date),
 		})
 	}
 	return out, nil
@@ -83,12 +82,18 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 	}
 	msg, err := gandi.Read(ctx, creds, query, unreadOnly)
 	if err != nil {
+		var amb *gandi.AmbiguousSenderError
+		if errors.As(err, &amb) {
+			return assistant.EmailContentView{}, &assistant.AmbiguousError{
+				Quoi: "expéditeur", Recherche: amb.Query, Choix: amb.Senders,
+			}
+		}
 		return assistant.EmailContentView{}, err
 	}
 	return assistant.EmailContentView{
 		De:      msg.From,
 		Objet:   msg.Subject,
-		Recu:    msg.Date.In(t.location()).Format("02/01 15h04"),
+		Recu:    t.when(msg.Date),
 		Contenu: msg.Body,
 		Tronque: strings.HasSuffix(msg.Body, "…"),
 	}, nil
@@ -121,6 +126,7 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 			NonLus:          th.Unread,
 			MessagesRecents: th.Recent,
 			Mentions:        th.Mentions,
+			Dernier:         t.when(th.Latest),
 			Extraits:        th.Messages,
 		})
 	}
@@ -139,12 +145,18 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 	}
 	label, messages, err := slack.New(creds.UserToken).ReadConversation(ctx, name, limit)
 	if err != nil {
+		var amb *slack.AmbiguousConversationError
+		if errors.As(err, &amb) {
+			return assistant.SlackChannelView{}, &assistant.AmbiguousError{
+				Quoi: "conversation", Recherche: amb.Query, Choix: amb.Choices,
+			}
+		}
 		return assistant.SlackChannelView{}, err
 	}
 	out := assistant.SlackChannelView{Canal: label}
 	for _, m := range messages {
 		out.Messages = append(out.Messages, assistant.SlackMessageView{
-			Auteur: m.Auteur, Texte: m.Texte, Quand: m.Quand,
+			Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand),
 		})
 	}
 	return out, nil
@@ -161,7 +173,6 @@ func (t *userToolbox) UnreadWhatsApp(ctx context.Context, limit int) ([]assistan
 	if err != nil {
 		return nil, err
 	}
-	loc := t.location()
 	out := make([]assistant.WhatsAppView, 0, len(msgs))
 	for _, m := range msgs {
 		from := m.FromName
@@ -171,7 +182,7 @@ func (t *userToolbox) UnreadWhatsApp(ctx context.Context, limit int) ([]assistan
 		out = append(out, assistant.WhatsAppView{
 			De:      from,
 			Message: m.Body,
-			Recu:    m.Timestamp.In(loc).Format("02/01 15h04"),
+			Recu:    t.when(m.Timestamp),
 		})
 	}
 	return out, nil
@@ -218,6 +229,13 @@ func (t *userToolbox) CreateEvent(ctx context.Context, draft assistant.EventDraf
 			"notes":       draft.Note,
 		},
 	}, nil
+}
+
+// when met en mots un horodatage, dans le fuseau de l'utilisateur et par
+// rapport à maintenant. Tout ce qui descend une date au modèle passe par ici :
+// le modèle recopie, il ne calcule pas.
+func (t *userToolbox) when(ts time.Time) string {
+	return assistant.When(ts, time.Now(), t.location())
 }
 
 func (t *userToolbox) location() *time.Location {

@@ -34,10 +34,14 @@ func (c Credentials) host() string {
 // Read : la liste des non-lus ne rapatrie que les enveloppes, c'est ce qui la
 // garde rapide.
 type Message struct {
-	Subject string    `json:"subject"`
-	From    string    `json:"from"`
-	Date    time.Time `json:"date"`
-	Body    string    `json:"body,omitempty"`
+	Subject string `json:"subject"`
+	From    string `json:"from"`
+	// FromAddr est l'adresse brute. Elle ne sert pas à l'affichage mais à
+	// distinguer deux expéditeurs qui portent le même prénom : « Cyril » et
+	// « Cyril » ne se séparent que par leur adresse.
+	FromAddr string    `json:"-"`
+	Date     time.Time `json:"date"`
+	Body     string    `json:"body,omitempty"`
 }
 
 // TestConnection vérifie les identifiants sans rien lire d'autre.
@@ -96,9 +100,10 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 			continue
 		}
 		out = append(out, Message{
-			Subject: strings.TrimSpace(m.Envelope.Subject),
-			From:    formatAddresses(m.Envelope.From),
-			Date:    m.Envelope.Date,
+			Subject:  strings.TrimSpace(m.Envelope.Subject),
+			From:     formatAddresses(m.Envelope.From),
+			FromAddr: firstAddress(m.Envelope.From),
+			Date:     m.Envelope.Date,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
@@ -135,6 +140,14 @@ func dial(ctx context.Context, creds Credentials) (*imapclient.Client, error) {
 		return nil, fmt.Errorf("identifiants Gandi refusés : %w", err)
 	}
 	return c, nil
+}
+
+// firstAddress rend l'adresse du premier expéditeur, sans le nom affiché.
+func firstAddress(addrs []imap.Address) string {
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0].Addr()
 }
 
 func formatAddresses(addrs []imap.Address) string {

@@ -104,11 +104,33 @@ func candidates(c *imapclient.Client, total uint32, unreadOnly bool) ([]uint32, 
 	return nums, nil
 }
 
+// AmbiguousSenderError signale que la recherche désigne plusieurs personnes.
+//
+// « le dernier mail de Cyril » n'a pas de réponse quand deux Cyril écrivent :
+// en choisir un au hasard donne une réponse fausse avec l'aplomb d'une vraie.
+// On remonte donc les candidats pour que Raoul demande lequel.
+type AmbiguousSenderError struct {
+	Query   string
+	Senders []string
+}
+
+func (e *AmbiguousSenderError) Error() string {
+	return fmt.Sprintf("plusieurs expéditeurs correspondent à %q : %s",
+		e.Query, strings.Join(e.Senders, " ; "))
+}
+
+// Nombre d'expéditeurs proposés au choix. Au-delà, la question devient une
+// liste qu'on ne peut pas écouter.
+const maxAmbiguousSenders = 5
+
 // pick choisit le mail visé parmi les candidats.
 //
 // L'appariement se fait ici plutôt qu'en SEARCH IMAP : la demande vient d'une
 // dictée vocale, donc sans accents fiables ni casse, et SEARCH impose un jeu de
 // caractères que tous les serveurs ne gèrent pas pareil.
+//
+// L'expéditeur prime sur l'objet : « le mail de Cyril » ne doit pas rendre un
+// mail de quelqu'un d'autre dont l'objet contient « Cyril ».
 func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, error) {
 	fetched, err := c.Fetch(imap.SeqSetNum(nums...), &imap.FetchOptions{Envelope: true}).Collect()
 	if err != nil {
@@ -126,9 +148,10 @@ func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, e
 		}
 		list = append(list, candidate{
 			msg: Message{
-				Subject: strings.TrimSpace(f.Envelope.Subject),
-				From:    formatAddresses(f.Envelope.From),
-				Date:    f.Envelope.Date,
+				Subject:  strings.TrimSpace(f.Envelope.Subject),
+				From:     formatAddresses(f.Envelope.From),
+				FromAddr: firstAddress(f.Envelope.From),
+				Date:     f.Envelope.Date,
 			},
 			seqNum: f.SeqNum,
 		})
@@ -147,13 +170,67 @@ func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, e
 	if want == "" {
 		return list[0].msg, list[0].seqNum, nil
 	}
+
+	// Les expéditeurs distincts qui correspondent, dans l'ordre de fraîcheur.
+	var senders []string
+	seen := map[string]bool{}
+	var first candidate
 	for _, c := range list {
-		if strings.Contains(normalizeQuery(c.msg.From), want) ||
-			strings.Contains(normalizeQuery(c.msg.Subject), want) {
+		if !strings.Contains(normalizeQuery(c.msg.From), want) &&
+			!strings.Contains(normalizeQuery(c.msg.FromAddr), want) {
+			continue
+		}
+		key := senderKey(c.msg)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if len(senders) == 0 {
+			first = c
+		}
+		if len(senders) < maxAmbiguousSenders {
+			senders = append(senders, describeSender(c.msg))
+		}
+	}
+
+	switch {
+	case len(senders) == 1:
+		return first.msg, first.seqNum, nil
+	case len(senders) > 1:
+		return Message{}, 0, &AmbiguousSenderError{Query: query, Senders: senders}
+	}
+
+	// Personne ne correspond : on retombe sur l'objet.
+	for _, c := range list {
+		if strings.Contains(normalizeQuery(c.msg.Subject), want) {
 			return c.msg, c.seqNum, nil
 		}
 	}
 	return Message{}, 0, fmt.Errorf("aucun mail récent ne correspond à %q", query)
+}
+
+// senderKey identifie une personne. L'adresse fait foi quand elle existe : deux
+// « Cyril » ne se distinguent que par elle.
+func senderKey(m Message) string {
+	if m.FromAddr != "" {
+		return normalizeQuery(m.FromAddr)
+	}
+	return normalizeQuery(m.From)
+}
+
+// describeSender rend le candidat prononçable : « Cyril Martin (cyril@x.fr) ».
+func describeSender(m Message) string {
+	name := strings.TrimSpace(m.From)
+	addr := strings.TrimSpace(m.FromAddr)
+	switch {
+	case name == "" && addr == "":
+		return "expéditeur inconnu"
+	case addr == "" || strings.EqualFold(name, addr):
+		return name
+	case name == "":
+		return addr
+	}
+	return name + " (" + addr + ")"
 }
 
 // extractText tire le texte lisible d'un mail brut.

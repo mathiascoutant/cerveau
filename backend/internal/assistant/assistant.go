@@ -7,6 +7,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -43,6 +44,8 @@ type EventView struct {
 	Journee bool   `json:"journee_entiere,omitempty"`
 }
 
+// EmailView est une enveloppe de mail. Recu est déjà exprimé par rapport à
+// maintenant (« hier à 16h30 ») : voir When, le modèle ne doit pas recalculer.
 type EmailView struct {
 	De    string `json:"de"`
 	Objet string `json:"objet"`
@@ -72,7 +75,11 @@ type SlackView struct {
 	// MessagesRecents : repli quand l'état de lecture est indisponible.
 	MessagesRecents int `json:"messages_recents,omitempty"`
 	// Mentions : nombre de fois où l'utilisateur est cité nommément.
-	Mentions int      `json:"mentions,omitempty"`
+	Mentions int `json:"mentions,omitempty"`
+	// Dernier : quand remonte le message le plus récent de la conversation,
+	// déjà situé par rapport à maintenant. Sans lui, « le dernier message de
+	// Machin » n'avait aucune date à laquelle se raccrocher.
+	Dernier  string   `json:"dernier,omitempty"`
 	Extraits []string `json:"extraits,omitempty"`
 }
 
@@ -113,6 +120,35 @@ type EventDraft struct {
 	Fin   time.Time
 	Lieu  string
 	Note  string
+}
+
+// AmbiguousError dit qu'une recherche désigne plusieurs personnes.
+//
+// « le dernier mail de Cyril » n'a pas de réponse quand deux Cyril écrivent.
+// Trancher au hasard produirait une réponse fausse énoncée avec l'aplomb d'une
+// vraie — le pire cas pour un assistant qu'on écoute sans vérifier. L'outil
+// remonte donc les candidats, et Raoul pose la question.
+type AmbiguousError struct {
+	// Quoi : « expéditeur » ou « conversation ».
+	Quoi      string
+	Recherche string
+	Choix     []string
+}
+
+func (e *AmbiguousError) Error() string {
+	return fmt.Sprintf("plusieurs %ss correspondent à %q : %s",
+		e.Quoi, e.Recherche, strings.Join(e.Choix, " ; "))
+}
+
+// instruction est ce que le modèle reçoit à la place du résultat : pas une
+// erreur à annoncer, une question à poser.
+func (e *AmbiguousError) instruction() string {
+	return fmt.Sprintf(
+		"Recherche ambiguë. Plusieurs %ss correspondent à « %s » : %s.\n"+
+			"Ne choisis surtout pas toi-même et n'invente aucun contenu : demande à l'utilisateur "+
+			"duquel il parle, en une phrase courte, en citant ce qui les distingue (nom complet, "+
+			"domaine de l'adresse, canal). Quand il répond, rappelle le même outil avec sa précision.",
+		e.Quoi, e.Recherche, strings.Join(e.Choix, " ; "))
 }
 
 // Request est une demande adressée à Raoul.
@@ -228,8 +264,15 @@ func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, erro
 			}
 			result.Steps = append(result.Steps, call.Name)
 			if err != nil {
-				slog.Warn("outil en échec", "outil", call.Name, "err", err)
-				payload = "Erreur : " + err.Error()
+				var amb *AmbiguousError
+				if errors.As(err, &amb) {
+					// Ce n'est pas une panne : l'outil a fait son travail et
+					// rend la main pour qu'on lève le doute.
+					payload = amb.instruction()
+				} else {
+					slog.Warn("outil en échec", "outil", call.Name, "err", err)
+					payload = "Erreur : " + err.Error()
+				}
 			}
 			// L'appel doit être rejoué dans l'entrée avant son résultat, sinon
 			// le modèle ne sait pas à quoi le rattacher.
@@ -485,13 +528,13 @@ func toolDefinitions() []responses.ToolUnionParam {
 			"lire_mail",
 			"Ouvre UN mail et renvoie son contenu, pour pouvoir le lire ou le résumer. C'est le seul outil qui donne le corps d'un message — mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 			object(map[string]any{
-				"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). Vide pour prendre le mail le plus récent."),
+				"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 				"non_lu":    map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
 			}),
 		),
 		tool(
 			"slack_non_lus",
-			"État de Slack : conversations avec des messages non lus, DM comme canaux, avec un extrait. Le champ mentions indique que l'utilisateur y est cité nommément, ce qui est plus urgent qu'un simple non-lu. Si une entrée porte messages_recents au lieu de non_lus, c'est que l'état de lecture était indisponible pour cette conversation : parle alors d'activité récente, pas de non-lus.",
+			"État de Slack : conversations avec des messages non lus, DM comme canaux, avec un extrait. Le champ mentions indique que l'utilisateur y est cité nommément, ce qui est plus urgent qu'un simple non-lu. Si une entrée porte messages_recents au lieu de non_lus, c'est que l'état de lecture était indisponible pour cette conversation : parle alors d'activité récente, pas de non-lus. Le champ dernier dit quand remonte le message le plus récent, déjà situé par rapport à maintenant : recopie-le, ne le recalcule pas.",
 			object(map[string]any{
 				"limite": map[string]any{"type": "integer", "description": "Nombre maximum de conversations (défaut 10)"},
 			}),
@@ -507,7 +550,7 @@ func toolDefinitions() []responses.ToolUnionParam {
 			"lire_canal_slack",
 			"Lit les derniers messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu ou le dernier message d'un canal, d'un groupe ou d'une discussion précise. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct.",
 			object(map[string]any{
-				"canal":  str("Nom de la conversation, du canal ou de la personne"),
+				"canal":  str("Nom de la conversation, du canal ou de la personne. Si plusieurs correspondent, l'outil le dit au lieu de choisir : demande laquelle, puis rappelle avec le nom exact."),
 				"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 10, maximum 30)"},
 			}, "canal"),
 		),
@@ -630,6 +673,22 @@ QUAND IL DEMANDE SI UN CRÉNEAU EST POSSIBLE
 5. Si c'est impossible, ne crée rien et propose le créneau libre le plus proche.
 
 Règle absolue : répondre « oui, c'est possible » sans avoir appelé creer_evenement est une erreur. Un créneau que tu valides se termine toujours par un événement posé dans le calendrier. Si la durée n'est pas précisée, prends une heure.
+
+QUAND TU N'ES PAS SÛR DE QUI IL PARLE
+
+Si un outil te répond que la recherche est ambiguë — deux Cyril qui écrivent, deux conversations au même nom — tu ne tranches pas. Tu poses la question, courte, en citant ce qui les sépare : « Cyril Martin ou Cyril Dubois ? », « celui de chez Orange ou celui de la compta ? ». Puis tu rappelles l'outil avec sa réponse.
+
+C'est le seul cas où tu as le droit de rendre la main sans avoir répondu. Il vaut mille fois mieux qu'une réponse sûre d'elle sur le mauvais Cyril : il t'écoute sans vérifier, une erreur d'identité passe inaperçue et se propage.
+
+N'anticipe pas ce cas : tant qu'un outil ne te signale rien, tu réponds directement. On ne demande pas confirmation par précaution, seulement quand le doute est réel.
+
+LES DATES ET LES HEURES
+
+Chaque mail, message et extrait descend avec un champ qui dit QUAND, déjà situé par rapport à maintenant et dans son fuseau : « hier à 16h30 », « il y a 25 minutes », « lundi dernier à 14h00 ». Tu le recopies, tu ne le recalcules pas. Tu n'as aucune soustraction à faire, et tu n'as pas le droit d'en faire une : c'est ainsi qu'un mail d'hier après-midi devient « de ce matin », et une erreur pareille ruine la confiance dans tout le reste de ta réponse.
+
+Quand tu reformules, reste dans ce que dit le champ. « hier à 16h30 » peut devenir « hier après-midi », jamais « ce matin » ni « tout à l'heure ». Si le champ est vide, tu ne dis rien de la date — tu ne la devines pas.
+
+Le calendrier est la seule exception : ses horaires descendent en ISO 8601 parce que tu dois comparer des créneaux. Là, tu calcules.
 
 HONNÊTETÉ
 
