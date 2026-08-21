@@ -20,12 +20,13 @@ import (
 var ErrDisabled = errors.New("synthèse vocale non configurée (ELEVENLABS_API_KEY)")
 
 const (
-	baseURL = "https://api.elevenlabs.io/v1"
+	defaultBaseURL = "https://api.elevenlabs.io/v1"
 
-	// DefaultVoiceID : « George », grave et posé, tient bien le français.
-	// N'importe quel identifiant de la bibliothèque ElevenLabs peut le
-	// remplacer via ELEVENLABS_VOICE_ID.
-	DefaultVoiceID = "JBFqnCBsd6RMkjVDRZzb"
+	// DefaultVoiceID : « Eric », posé et sans aspérité. Les voix françaises de
+	// la Voice Library sonneraient mieux, mais l'API les refuse tant que le
+	// compte est en gratuit. N'importe quel identifiant peut le remplacer via
+	// ELEVENLABS_VOICE_ID.
+	DefaultVoiceID = "cjVigY5qzO86Huf0OWal"
 
 	// DefaultModel : turbo répond en ~250 ms là où multilingual_v2 demande
 	// plus d'une seconde, pour une qualité très proche. Sur un assistant qu'on
@@ -44,6 +45,8 @@ type Client struct {
 	apiKey  string
 	voiceID string
 	model   string
+	// baseURL n'est remplacé que par les tests.
+	baseURL string
 	http    *http.Client
 }
 
@@ -58,6 +61,7 @@ func New(apiKey, voiceID, model string) *Client {
 		apiKey:  apiKey,
 		voiceID: voiceID,
 		model:   model,
+		baseURL: defaultBaseURL,
 		// Généreux : le corps est lu en continu pendant la synthèse, le délai
 		// couvre donc toute la lecture d'une réponse longue.
 		http: &http.Client{Timeout: 120 * time.Second},
@@ -94,7 +98,7 @@ func (c *Client) Speak(ctx context.Context, text string) (io.ReadCloser, error) 
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", baseURL, c.voiceID, outputFormat)
+	url := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", c.baseURL, c.voiceID, outputFormat)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err

@@ -55,10 +55,24 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
+
+	// L'app a besoin de savoir quelle voix va parler pour l'afficher dans
+	// l'écran Accès. C'est de la configuration serveur, elle voyage ici plutôt
+	// que dans /status, qui interroge les quatre sources et met des secondes.
+	voice := map[string]any{"engine": "device"}
+	if s.tts.Enabled() {
+		voice = map[string]any{
+			"engine":   "elevenlabs",
+			"voice_id": s.tts.VoiceID(),
+			"model":    s.tts.Model(),
+		}
+	}
+
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"name":     user.Name,
 		"timezone": user.Timezone,
 		"since":    user.CreatedAt,
+		"voice":    voice,
 	})
 }
 
@@ -143,16 +157,5 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	out = append(out, calStatus)
 
-	// L'écran Accès affiche quelle voix parle réellement : ElevenLabs si le
-	// serveur a une clé, sinon la voix système du téléphone.
-	voice := map[string]any{"engine": "device"}
-	if s.tts.Enabled() {
-		voice = map[string]any{
-			"engine":   "elevenlabs",
-			"voice_id": s.tts.VoiceID(),
-			"model":    s.tts.Model(),
-		}
-	}
-
-	httpx.JSON(w, http.StatusOK, map[string]any{"sources": out, "voice": voice})
+	httpx.JSON(w, http.StatusOK, map[string]any{"sources": out})
 }
