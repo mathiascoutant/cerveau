@@ -49,6 +49,7 @@ func (s *Store) interactions() *mongo.Collection {
 }
 func (s *Store) digests() *mongo.Collection     { return s.db.Collection("digests") }
 func (s *Store) emailDrafts() *mongo.Collection { return s.db.Collection("email_drafts") }
+func (s *Store) taskLists() *mongo.Collection   { return s.db.Collection("task_lists") }
 
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	// Un builder d'options par index : le driver mémorise le nom auto-généré,
@@ -373,6 +374,30 @@ func (s *Store) LatestDigest(ctx context.Context, userID bson.ObjectID) (*Digest
 		return nil, ErrNotFound
 	}
 	return &d, err
+}
+
+// SaveTasks remplace la liste « à traiter » de l'utilisateur.
+func (s *Store) SaveTasks(ctx context.Context, userID bson.ObjectID, payload, fingerprint string) error {
+	_, err := s.taskLists().UpdateOne(ctx,
+		bson.M{"user_id": userID},
+		bson.M{"$set": bson.M{
+			"payload":      payload,
+			"fingerprint":  fingerprint,
+			"generated_at": time.Now(),
+		}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+// LatestTasks renvoie ErrNotFound si aucune liste n'a encore été produite.
+func (s *Store) LatestTasks(ctx context.Context, userID bson.ObjectID) (*TaskList, error) {
+	var t TaskList
+	err := s.taskLists().FindOne(ctx, bson.M{"user_id": userID}).Decode(&t)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	return &t, err
 }
 
 // SearchInteractions retrouve des échanges passés par leur contenu.

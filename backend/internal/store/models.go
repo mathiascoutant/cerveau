@@ -110,6 +110,20 @@ type Digest struct {
 	GeneratedAt time.Time     `bson:"generated_at" json:"generated_at"`
 }
 
+// TaskList est la liste « à traiter » telle que le modèle l'a produite.
+//
+// Fingerprint est l'empreinte des messages qui l'ont produite. C'est elle qui
+// décide de régénérer ou non : tant que les messages non traités sont les
+// mêmes, la liste est forcément la même, et la recalculer coûterait un appel au
+// modèle pour réécrire mot pour mot ce qui est déjà en base.
+type TaskList struct {
+	ID          bson.ObjectID `bson:"_id,omitempty" json:"-"`
+	UserID      bson.ObjectID `bson:"user_id" json:"-"`
+	Payload     string        `bson:"payload" json:"-"`
+	Fingerprint string        `bson:"fingerprint" json:"-"`
+	GeneratedAt time.Time     `bson:"generated_at" json:"generated_at"`
+}
+
 // Action : instruction renvoyée à l'app mobile (ex. écrire dans le calendrier du
 // téléphone, que seule l'app peut faire).
 type Action struct {

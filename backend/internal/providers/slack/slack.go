@@ -53,6 +53,7 @@ type Client struct {
 	userNames    map[string]string
 	channelNames map[string]string
 	self         string
+	selfID       string
 	selfResolved bool
 }
 
@@ -85,12 +86,16 @@ type Activity struct {
 func (c *Client) TestConnection(ctx context.Context) (team string, user string, err error) {
 	var res struct {
 		apiResponse
-		Team string `json:"team"`
-		User string `json:"user"`
+		Team   string `json:"team"`
+		User   string `json:"user"`
+		UserID string `json:"user_id"`
 	}
 	if err := c.call(ctx, "auth.test", nil, &res); err != nil {
 		return "", "", err
 	}
+	c.mu.Lock()
+	c.self, c.selfID, c.selfResolved = res.User, res.UserID, true
+	c.mu.Unlock()
 	return res.Team, res.User, nil
 }
 
@@ -215,7 +220,7 @@ func (c *Client) inspectWithReadState(ctx context.Context, conv conversation, st
 	if state.LastRead != "" {
 		params.Set("oldest", state.LastRead)
 	}
-	if err := c.fillMessages(ctx, params, act); err != nil {
+	if _, err := c.fillMessages(ctx, params, act); err != nil {
 		return nil, err
 	}
 	if len(act.Messages) == 0 && state.MentionCount == 0 {
@@ -256,7 +261,7 @@ func (c *Client) inspect(ctx context.Context, conv conversation, window time.Dur
 		if info.Channel.LastRead != "" {
 			params.Set("oldest", info.Channel.LastRead)
 		}
-		c.fillMessages(ctx, params, act)
+		_, _ = c.fillMessages(ctx, params, act)
 		return act, nil
 	}
 
@@ -269,17 +274,26 @@ func (c *Client) inspect(ctx context.Context, conv conversation, window time.Dur
 		"oldest":  {fmt.Sprintf("%d", oldest.Unix())},
 	}
 	act := &Activity{Channel: c.label(ctx, conv), Kind: "canal"}
-	if err := c.fillMessages(ctx, params, act); err != nil {
+	mentions, err := c.fillMessages(ctx, params, act)
+	if err != nil {
 		return nil, err
 	}
 	if len(act.Messages) == 0 {
 		return nil, nil
 	}
 	act.Recent = len(act.Messages)
+	act.Mentions = mentions
 	return act, nil
 }
 
-func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activity) error {
+// fillMessages remplit les extraits et renvoie le nombre de messages où
+// l'utilisateur est cité nommément.
+//
+// Ce comptage est un repli : quand `client.counts` répond, c'est lui qui fait
+// foi. Mais cette méthode n'est pas documentée et peut disparaître, et sans
+// elle un canal ne remonterait plus jamais aucune mention — donc plus jamais
+// rien dans la liste « à traiter », qui ne retient des canaux que les mentions.
+func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activity) (int, error) {
 	var hist struct {
 		apiResponse
 		Messages []struct {
@@ -291,13 +305,20 @@ func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activ
 		} `json:"messages"`
 	}
 	if err := c.call(ctx, "conversations.history", params, &hist); err != nil {
-		return err
+		return 0, err
 	}
+	tag := c.mentionTag(ctx)
+	mentions := 0
 	for _, m := range hist.Messages {
 		// Les entrées/sorties de canal et autres événements système ne sont pas
 		// des messages à lire.
 		if m.Subtype != "" || strings.TrimSpace(m.Text) == "" {
 			continue
+		}
+		// Sur le texte BRUT : après rendu, l'identifiant est devenu un prénom
+		// qui se confond avec le reste de la phrase.
+		if tag != "" && strings.Contains(m.Text, tag) {
+			mentions++
 		}
 		author := "un bot"
 		if m.User != "" {
@@ -308,7 +329,7 @@ func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activ
 			act.Latest = ts
 		}
 	}
-	return nil
+	return mentions, nil
 }
 
 func (c *Client) label(ctx context.Context, conv conversation) string {
@@ -362,14 +383,35 @@ func (c *Client) selfHandle(ctx context.Context) string {
 	}
 	c.mu.Unlock()
 
-	_, user, err := c.TestConnection(ctx)
-	if err != nil {
+	if _, user, err := c.TestConnection(ctx); err == nil {
+		return user
+	}
+	return ""
+}
+
+// mentionTag est le motif exact d'une citation nominative dans le mrkdwn brut :
+// « <@U04C7HJ8P> ». On le cherche avant tout rendu, parce que le rendu remplace
+// l'identifiant par un prénom et qu'un prénom se confond avec le texte autour.
+//
+// Ni <!here> ni <!channel> n'en font partie. Interpeller un canal entier n'est
+// pas interpeller quelqu'un, et les compter reviendrait à remonter comme
+// urgents tous les « bonjour à tous » du matin.
+func (c *Client) mentionTag(ctx context.Context) string {
+	c.mu.Lock()
+	id, resolved := c.selfID, c.selfResolved
+	c.mu.Unlock()
+	if !resolved {
+		if _, _, err := c.TestConnection(ctx); err != nil {
+			return ""
+		}
+		c.mu.Lock()
+		id = c.selfID
+		c.mu.Unlock()
+	}
+	if id == "" {
 		return ""
 	}
-	c.mu.Lock()
-	c.self, c.selfResolved = user, true
-	c.mu.Unlock()
-	return user
+	return "<@" + id + ">"
 }
 
 func (c *Client) userName(ctx context.Context, id string) string {

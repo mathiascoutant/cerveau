@@ -2,20 +2,19 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
 	"github.com/mathiascoutant/cerveau/backend/internal/triage"
 )
-
-// Nombre d'entrées rendues à l'app. L'écran d'accueil montre une petite liste,
-// pas une boîte de réception : au-delà d'une dizaine, on ne la lit plus, on la
-// balaie — et un écran qu'on balaie ne sert plus à décider quoi faire.
-const urgentLimit = 8
 
 // Profondeur d'inspection. On regarde large avant de filtrer serré : le tri
 // écarte l'essentiel, donc se limiter à quinze mails en entrée reviendrait
@@ -23,45 +22,47 @@ const urgentLimit = 8
 const (
 	urgentMailDepth  = 40
 	urgentSlackDepth = 30
+	// Messages descendus au modèle. Au-delà il ne synthétise plus, il résume.
+	urgentMessages = 18
 )
 
-type urgentItem struct {
-	Source string `json:"source"` // "mail" | "slack"
-	Titre  string `json:"titre"`
-	De     string `json:"de,omitempty"`
-	Apercu string `json:"apercu,omitempty"`
-	// Quand est déjà mis en mots dans le fuseau de l'utilisateur : l'app
-	// affiche, elle ne recalcule pas.
-	Quand  string `json:"quand,omitempty"`
-	Motif  string `json:"motif"` // "direct" | "dm" | "mention"
-	Compte int    `json:"compte,omitempty"`
-}
+// Filet de sécurité du cache. L'empreinte des messages suffit d'ordinaire à
+// décider ; cette durée rattrape le cas où rien n'a bougé mais où le temps, lui,
+// a passé — « répondre avant ce soir » ne veut plus dire la même chose demain.
+const tasksMaxAge = 6 * time.Hour
 
 type urgentResponse struct {
-	Items []urgentItem `json:"items"`
+	Taches []assistant.TaskView `json:"taches"`
 	// Sources réellement interrogées : sans elles, une liste vide serait
-	// ambiguë — « rien d'urgent » et « rien de branché » se ressemblent trop.
+	// ambiguë — « rien à traiter » et « rien de branché » se ressemblent trop.
 	Sources     []string  `json:"sources"`
 	Unavailable []string  `json:"unavailable,omitempty"`
 	GeneratedAt time.Time `json:"generated_at"`
 }
 
-// handleUrgent rend ce qui n'a pas encore été traité et qui s'adresse
-// personnellement à l'utilisateur : mails dont il est le destinataire nommé,
-// messages privés et mentions Slack.
+// handleUrgent rend ce qu'il reste à faire, pas ce qu'il reste à lire.
 //
-// Aucun appel au modèle ici. Les règles sont dans internal/triage, elles sont
-// déterministes et testées : l'écran d'accueil doit s'afficher tout de suite,
-// et « suis-je dans le champ À ? » ne demande pas de savoir raisonner.
+// Deux étages, et la séparation est volontaire :
+//
+//   - le tri (internal/triage) écarte tout ce qui ne s'adresse pas
+//     personnellement à l'utilisateur. Déterministe, testé, sans modèle : « suis-je
+//     dans le champ À ? » ne demande pas de savoir raisonner, et un filtre qui
+//     change d'avis d'un appel à l'autre n'est pas un filtre ;
+//   - la synthèse (assistant.Tasks) fait ce qu'aucune règle ne sait faire :
+//     reconnaître que trois messages parlent du même sujet, écarter ce qui
+//     n'attend aucune action, et nommer ce qui reste en six mots.
+//
+// L'appel au modèle est mis en cache sur l'empreinte des messages : tant que
+// rien de neuf n'est arrivé, la liste ne peut pas avoir changé.
 func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 
 	tb := s.toolbox(user)
 	src := s.sources(ctx, user)
 
-	out := urgentResponse{Items: []urgentItem{}, Sources: []string{}, GeneratedAt: time.Now()}
+	out := urgentResponse{Taches: []assistant.TaskView{}, Sources: []string{}, GeneratedAt: time.Now()}
 
 	var (
 		mu       sync.Mutex
@@ -107,18 +108,92 @@ func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	for _, item := range triage.Merge(urgentLimit, fromMail, fromChat) {
-		out.Items = append(out.Items, urgentItem{
-			Source: item.Source,
-			Titre:  item.Titre,
-			De:     item.De,
-			Apercu: item.Apercu,
-			Quand:  tb.when(item.Quand),
-			Motif:  string(item.Motif),
-			Compte: item.Compte,
+	retained := triage.Merge(urgentMessages, fromMail, fromChat)
+	if len(retained) == 0 {
+		httpx.JSON(w, http.StatusOK, out)
+		return
+	}
+
+	messages := make([]assistant.MessageView, 0, len(retained))
+	for _, item := range retained {
+		messages = append(messages, assistant.MessageView{
+			Origine: origin(item),
+			De:      item.De,
+			Titre:   item.Titre,
+			Extrait: item.Apercu,
+			Quand:   tb.when(item.Quand),
 		})
 	}
+
+	print := fingerprint(retained)
+	cached, err := s.store.LatestTasks(ctx, user.ID)
+	fresh := err == nil && cached.Fingerprint == print && time.Since(cached.GeneratedAt) < tasksMaxAge
+	if fresh && r.URL.Query().Get("refresh") == "" {
+		if err := json.Unmarshal([]byte(cached.Payload), &out.Taches); err == nil {
+			out.GeneratedAt = cached.GeneratedAt
+			httpx.JSON(w, http.StatusOK, out)
+			return
+		}
+		// Cache illisible (format d'une version précédente) : on régénère.
+	}
+
+	name := user.Name
+	if name == "" {
+		name = s.cfg.DefaultUserName
+	}
+	tasks, genErr := s.engine.Tasks(ctx, messages, time.Now().In(tb.location()), tb.location().String(), name)
+	if genErr != nil {
+		// Une synthèse qui échoue ne doit pas vider l'écran : on rend la
+		// dernière liste connue plutôt qu'un « rien à traiter » mensonger.
+		if cached != nil {
+			if err := json.Unmarshal([]byte(cached.Payload), &out.Taches); err == nil {
+				out.GeneratedAt = cached.GeneratedAt
+				httpx.JSON(w, http.StatusOK, out)
+				return
+			}
+		}
+		httpx.Error(w, http.StatusBadGateway, "liste à traiter indisponible")
+		return
+	}
+
+	if tasks != nil {
+		out.Taches = tasks
+	}
+	if payload, err := json.Marshal(out.Taches); err == nil {
+		_ = s.store.SaveTasks(ctx, user.ID, string(payload), print)
+	}
 	httpx.JSON(w, http.StatusOK, out)
+}
+
+// origin nomme la provenance d'un message pour le modèle. Un mail dit « mail »,
+// une conversation Slack dit son canal — c'est ce qui permet à la source
+// affichée dans l'app de ressembler à ce que l'utilisateur voit dans Slack.
+func origin(item triage.Item) string {
+	if item.Source == "mail" {
+		return "mail"
+	}
+	return item.Titre
+}
+
+// fingerprint résume les messages retenus en une empreinte stable.
+//
+// Elle ne dépend que de ce qui identifie un message — sa provenance, son
+// expéditeur, son titre, son instant. Ni l'ordre d'arrivée des sources ni les
+// compteurs n'y entrent : ils bougent sans que rien de neuf ne soit arrivé, et
+// feraient rappeler le modèle pour rien.
+func fingerprint(items []triage.Item) string {
+	h := sha256.New()
+	for _, item := range items {
+		h.Write([]byte(item.Source))
+		h.Write([]byte{0})
+		h.Write([]byte(item.De))
+		h.Write([]byte{0})
+		h.Write([]byte(item.Titre))
+		h.Write([]byte{0})
+		h.Write([]byte(item.Quand.UTC().Format(time.RFC3339)))
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // triageMails traduit les messages IMAP dans le vocabulaire du tri. La
