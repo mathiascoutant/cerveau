@@ -6,6 +6,24 @@ const DEVICE_ID_KEY = 'cerveau.device_id';
 const TOKEN_KEY = 'cerveau.token';
 const API_URL_KEY = 'cerveau.api_url';
 
+/**
+ * Copie des identifiants lisible par l'intent Siri (plugins/ios/RaoulIntents.swift).
+ *
+ * Deux raisons de ne pas relire simplement TOKEN_KEY côté Swift :
+ * — l'adresse du serveur et le token doivent bouger ensemble, une seule entrée
+ *   les garde cohérents ;
+ * — surtout, l'accessibilité. Les entrées SecureStore sont par défaut en
+ *   `WHEN_UNLOCKED` : illisibles téléphone verrouillé, c'est-à-dire dans le
+ *   seul cas qui justifie l'intégration Siri. Celle-ci est en
+ *   `AFTER_FIRST_UNLOCK`, donc lisible dès le premier déverrouillage après
+ *   redémarrage — le minimum qu'iOS accepte de garder accessible en veille.
+ */
+const SIRI_KEY = 'cerveau.siri';
+const SIRI_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainService: 'raoul.siri',
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+};
+
 export type Provider = 'gandi' | 'slack' | 'whatsapp' | 'calendar';
 
 export type Connection = {
@@ -14,6 +32,13 @@ export type Connection = {
   label?: string;
   last_error?: string;
   updated_at: string;
+};
+
+/** Moteur de voix réellement utilisé, décidé par le serveur. */
+export type VoiceInfo = {
+  engine: 'elevenlabs' | 'device';
+  voice_id?: string;
+  model?: string;
 };
 
 export type SourceStatus = {
@@ -49,6 +74,25 @@ export type Digest = {
   whatsapp: WhatsAppItem[];
   events: EventItem[];
   unavailable?: string[];
+  /** Comptes réellement branchés : le reste ne s'affiche pas. */
+  sources?: Provider[];
+};
+
+/**
+ * Une réponse de mail rédigée par Raoul. Elle ne part jamais toute seule :
+ * l'app l'affiche, on la copie, on l'envoie depuis son client mail.
+ */
+export type EmailDraft = {
+  id: string;
+  to: string;
+  to_addr?: string;
+  subject: string;
+  body: string;
+  /** Code court de la langue du mail (« fr », « en »), pas celle de l'app. */
+  language?: string;
+  source_subject?: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Interaction = {
@@ -109,6 +153,28 @@ export async function setApiUrl(url: string): Promise<void> {
   const clean = url.trim().replace(/\/+$/, '');
   cachedApiUrl = clean;
   await SecureStore.setItemAsync(API_URL_KEY, clean);
+  await publishToSiri();
+}
+
+/**
+ * Dépose adresse + token là où l'intent Siri sait les lire. Appelé à chaque
+ * fois que l'un des deux change : sans ça, Siri continuerait de parler à
+ * l'ancien serveur avec un token périmé.
+ */
+async function publishToSiri(): Promise<void> {
+  try {
+    const apiUrl = await getApiUrl();
+    if (!cachedToken) return;
+    await SecureStore.setItemAsync(
+      SIRI_KEY,
+      JSON.stringify({ apiUrl, token: cachedToken }),
+      SIRI_OPTIONS,
+    );
+  } catch {
+    // Le trousseau peut refuser l'écriture (appareil verrouillé au lancement
+    // en fond). Siri gardera la version précédente, l'app republiera au
+    // prochain passage au premier plan.
+  }
 }
 
 /**
@@ -139,6 +205,7 @@ export async function openSession(): Promise<{ token: string; name?: string }> {
   const data = await res.json();
   cachedToken = data.token;
   await SecureStore.setItemAsync(TOKEN_KEY, data.token);
+  await publishToSiri();
   return { token: data.token, name: data.name };
 }
 
@@ -147,6 +214,9 @@ async function token(): Promise<string> {
   const stored = await SecureStore.getItemAsync(TOKEN_KEY);
   if (stored) {
     cachedToken = stored;
+    // Republication à chaque démarrage : c'est ce qui rattrape une entrée Siri
+    // absente (première mise à jour de l'app) ou laissée sur un ancien serveur.
+    await publishToSiri();
     return stored;
   }
   const session = await openSession();
@@ -156,6 +226,9 @@ async function token(): Promise<string> {
 export async function resetSession(): Promise<void> {
   cachedToken = null;
   await SecureStore.deleteItemAsync(TOKEN_KEY);
+  // Laisser la copie Siri derrière donnerait un assistant qui répond encore
+  // avec un token qu'on vient de révoquer.
+  await SecureStore.deleteItemAsync(SIRI_KEY, SIRI_OPTIONS);
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -183,12 +256,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         ...(init.headers ?? {}),
       },
     });
-    if (!retry.ok) throw new Error(await errorMessage(retry));
+    if (!retry.ok) throw new ApiError(retry.status, await errorMessage(retry));
     return retry.json() as Promise<T>;
   }
 
-  if (!res.ok) throw new Error(await errorMessage(res));
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
   return res.json() as Promise<T>;
+}
+
+/**
+ * Erreur HTTP qui garde son statut : l'appelant peut distinguer « le serveur
+ * ne sait pas faire » (501) d'un incident passager, et adapter son repli.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
 }
 
 async function errorMessage(res: Response): Promise<string> {
@@ -204,7 +290,7 @@ async function errorMessage(res: Response): Promise<string> {
 // --- Endpoints ---------------------------------------------------------------
 
 export const api = {
-  me: () => request<{ name?: string; timezone: string }>('/me'),
+  me: () => request<{ name?: string; timezone: string; voice?: VoiceInfo }>('/me'),
 
   setName: (name: string) =>
     request<{ name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) }),
@@ -261,6 +347,27 @@ export const api = {
       all_day: boolean;
     }>;
   }) => request<{ synced: number }>('/calendar/sync', { method: 'POST', body: JSON.stringify(payload) }),
+
+  /**
+   * Prépare la lecture d'un texte et renvoie le chemin du flux audio à jouer.
+   * Le texte ne transite jamais par l'URL : le serveur rend un ticket jetable.
+   */
+  speak: (text: string) =>
+    request<{ url: string; expires_in: number }>('/assistant/speech', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  drafts: () => request<{ drafts: EmailDraft[] }>('/drafts'),
+
+  updateDraft: (id: string, body: string, subject?: string) =>
+    request<EmailDraft>(`/drafts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body, subject }),
+    }),
+
+  deleteDraft: (id: string) =>
+    request<{ deleted: string }>(`/drafts/${id}`, { method: 'DELETE' }),
 
   ask: (text: string) =>
     request<AssistantAnswer>('/assistant/ask', {

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { speak, stopSpeaking } from '../lib/speech';
+import { speak, speakOnDevice, stopSpeaking } from '../lib/speech';
 
 import { api, AssistantAnswer } from '../api';
 import { applyActions } from '../lib/calendar';
-import { cleanCommand, findWake } from '../lib/wakeword';
+import { cleanCommand, findFarewell, findWake } from '../lib/wakeword';
 import {
   RecognitionOptions,
   SpeechRecognition,
@@ -31,6 +31,15 @@ export type Exchange = {
 const SILENCE_MS = 1700;
 /** Garde-fou : au-delà, on envoie ce qu'on a. */
 const MAX_COMMAND_MS = 25000;
+/**
+ * Battement entre la fin de la phrase de Raoul et la reprise du micro. Sans
+ * lui, la traîne de sa propre voix revient dans la reconnaissance et se fait
+ * traiter comme une demande.
+ */
+const ECHO_GUARD_MS = 400;
+
+/** Réponses à « merci Raoul » — jamais deux fois la même de suite. */
+const FAREWELLS = ['De rien.', 'Quand tu veux.', 'Ok.'];
 
 const RECOGNITION_OPTIONS: RecognitionOptions = {
   lang: 'fr-FR',
@@ -57,8 +66,14 @@ export function useRaoul() {
   const [partial, setPartial] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Exchange[]>([]);
+  const [inConversation, setInConversation] = useState(false);
 
   const mode = useRef<Mode>('off');
+  // conversing : « OK Raoul » a été dit et la conversation n'est pas refermée.
+  // Tant qu'il est vrai, tout ce qui est prononcé est une demande — plus besoin
+  // de réveiller Raoul à chaque phrase.
+  const conversing = useRef(false);
+  const lastFarewell = useRef(-1);
   const enabled = useRef(false); // l'utilisateur veut l'écoute permanente
   const finalized = useRef(''); // énoncés déjà finalisés depuis le démarrage
   const utterance = useRef(''); // énoncé en cours
@@ -97,6 +112,23 @@ export function useRaoul() {
     }
   }, [resetBuffers]);
 
+  /**
+   * Rend le micro après une réponse. Tant que la conversation est ouverte, on
+   * repart directement en écoute de commande : c'est ce qui évite d'avoir à
+   * redire « OK Raoul » à chaque phrase.
+   */
+  const resume = useCallback(() => {
+    clearTimers();
+    if (!enabled.current) {
+      setState('off');
+      return;
+    }
+    setTimeout(() => {
+      if (!enabled.current) return;
+      void startRecognition(conversing.current ? 'command' : 'wake');
+    }, ECHO_GUARD_MS);
+  }, [clearTimers, startRecognition]);
+
   /** Envoie la demande au backend, lit la réponse, applique les actions. */
   const submit = useCallback(
     async (question: string) => {
@@ -112,11 +144,18 @@ export function useRaoul() {
       } catch (err) {
         const message = (err as Error).message;
         setError(message);
-        await speak("Je n'ai pas réussi à joindre le serveur.");
-        if (enabled.current) void startRecognition('wake');
-        else setState('off');
+        await speakOnDevice("Je n'ai pas réussi à joindre le serveur.");
+        resume();
         return;
       }
+
+      // La voix démarre AVANT l'exécution des actions, et les deux courent en
+      // parallèle. C'est ce qui permet à Raoul de finir sa phrase quand une
+      // action ouvre Waze : iOS laisse tourner un son déjà en cours (mode
+      // audio en fond), mais rien ne garantit qu'on puisse en démarrer un une
+      // fois passé en arrière-plan.
+      setState('speaking');
+      const spoken = speak(answer.reply);
 
       let effects: string[] = [];
       if (answer.actions?.length) {
@@ -135,13 +174,10 @@ export function useRaoul() {
         ...prev,
       ]);
 
-      setState('speaking');
-      await speak(answer.reply);
-
-      if (enabled.current) void startRecognition('wake');
-      else setState('off');
+      await spoken;
+      resume();
     },
-    [clearTimers, startRecognition],
+    [clearTimers, resume],
   );
 
   const armSilence = useCallback(() => {
@@ -149,10 +185,52 @@ export function useRaoul() {
     silenceTimer.current = setTimeout(() => {
       const command = cleanCommand(currentCommand(finalized, utterance, anchor));
       if (command.length >= 2) void submit(command);
-      else if (enabled.current) void startRecognition('wake');
-      else setState('off');
+      else resume();
     }, SILENCE_MS);
-  }, [startRecognition, submit]);
+  }, [resume, submit]);
+
+  /**
+   * Garde-fou de longueur, armé au premier mot entendu et pas avant : en
+   * conversation ouverte, l'écoute peut rester silencieuse des heures, et un
+   * minuteur lancé à l'ouverture enverrait du vide.
+   */
+  const armMax = useCallback(() => {
+    if (maxTimer.current) return;
+    maxTimer.current = setTimeout(() => {
+      const command = cleanCommand(currentCommand(finalized, utterance, anchor));
+      if (command.length >= 2) void submit(command);
+    }, MAX_COMMAND_MS);
+  }, [submit]);
+
+  /**
+   * Referme la conversation sur « merci Raoul ». Ce qui précédait la formule
+   * reste une demande : on la traite avant de rendre la main.
+   */
+  const endConversation = useCallback(
+    (pending: string) => {
+      conversing.current = false;
+      setInConversation(false);
+      clearTimers();
+      mode.current = 'off';
+      SpeechRecognition?.abort();
+      setPartial('');
+
+      if (pending.length >= 2) {
+        void submit(pending); // submit reprendra en mode « wake »
+        return;
+      }
+
+      void (async () => {
+        setState('speaking');
+        let i = Math.floor(Math.random() * FAREWELLS.length);
+        if (i === lastFarewell.current) i = (i + 1) % FAREWELLS.length;
+        lastFarewell.current = i;
+        await speak(FAREWELLS[i]);
+        resume();
+      })();
+    },
+    [clearTimers, resume, submit],
+  );
 
   useSpeechEvent('result', (event) => {
     if (mode.current === 'off') return;
@@ -174,28 +252,41 @@ export function useRaoul() {
         if (full.length > 400) resetBuffers();
         return;
       }
+      // À partir d'ici la conversation est ouverte : les demandes suivantes
+      // n'auront plus besoin du mot d'activation.
+      conversing.current = true;
+      setInConversation(true);
       mode.current = 'command';
       anchor.current = match.endIndex;
       setState('listening');
-      if (maxTimer.current) clearTimeout(maxTimer.current);
-      maxTimer.current = setTimeout(() => {
-        const command = cleanCommand(currentCommand(finalized, utterance, anchor));
-        if (command.length >= 2) void submit(command);
-      }, MAX_COMMAND_MS);
+      armMax();
     }
 
     if (mode.current === 'command') {
-      setPartial(cleanCommand(currentCommand(finalized, utterance, anchor)));
+      const command = cleanCommand(currentCommand(finalized, utterance, anchor));
+
+      // « merci Raoul » referme la conversation. Ce qui la précède reste une
+      // demande à traiter.
+      const bye = findFarewell(command);
+      if (bye) {
+        endConversation(cleanCommand(command.slice(0, bye.startIndex)));
+        return;
+      }
+
+      setPartial(command);
+      if (command.length > 0) armMax();
       armSilence();
     }
   });
 
   useSpeechEvent('end', () => {
-    // iOS coupe régulièrement la session de reconnaissance : on la relance
-    // tant que l'utilisateur veut rester à l'écoute.
-    if (mode.current === 'wake' && enabled.current) {
+    // iOS coupe régulièrement la session de reconnaissance. On la relance dans
+    // le mode courant : en conversation ouverte, repartir en attente du mot
+    // d'activation obligerait à redire « OK Raoul » sans raison.
+    const current = mode.current;
+    if ((current === 'wake' || current === 'command') && enabled.current) {
       setTimeout(() => {
-        if (mode.current === 'wake' && enabled.current) void startRecognition('wake');
+        if (mode.current === current && enabled.current) void startRecognition(current);
       }, 400);
     }
   });
@@ -206,27 +297,52 @@ export function useRaoul() {
     setError(`${event.error} — ${event.message}`);
   });
 
-  const start = useCallback(async () => {
+  /** Vérifie que le micro est utilisable, et dit pourquoi il ne l'est pas. */
+  const ensureMic = useCallback(async () => {
     if (!SpeechRecognition) {
       setError(VOICE_UNAVAILABLE);
       return false;
     }
     const perms = await SpeechRecognition.requestPermissionsAsync();
     if (!perms.granted) {
-      setError("Accès au micro ou à la reconnaissance vocale refusé.");
+      setError('Accès au micro ou à la reconnaissance vocale refusé.');
       return false;
     }
     if (!SpeechRecognition.isRecognitionAvailable()) {
       setError('La reconnaissance vocale est indisponible sur cet appareil.');
       return false;
     }
+    return true;
+  }, []);
+
+  const start = useCallback(async () => {
+    if (!(await ensureMic())) return false;
     enabled.current = true;
     await startRecognition('wake');
     return true;
-  }, [startRecognition]);
+  }, [ensureMic, startRecognition]);
+
+  /**
+   * Entrée directe en conversation, sans mot d'activation : c'est ce que
+   * déclenche le widget de l'écran d'accueil, dont l'appui tient lieu de
+   * « OK Raoul ». La conversation reste ensuite ouverte comme si on l'avait dit.
+   */
+  const startConversation = useCallback(async () => {
+    if (!(await ensureMic())) return false;
+    enabled.current = true;
+    conversing.current = true;
+    setInConversation(true);
+    stopSpeaking();
+    SpeechRecognition?.abort();
+    await startRecognition('command');
+    armSilence();
+    return true;
+  }, [armSilence, ensureMic, startRecognition]);
 
   const stop = useCallback(() => {
     enabled.current = false;
+    conversing.current = false;
+    setInConversation(false);
     mode.current = 'off';
     clearTimers();
     SpeechRecognition?.abort();
@@ -237,19 +353,11 @@ export function useRaoul() {
 
   /** Bouton « appuyer pour parler » : on saute l'étape du mot d'activation. */
   const pushToTalk = useCallback(async () => {
-    if (!SpeechRecognition) {
-      setError(VOICE_UNAVAILABLE);
-      return;
-    }
-    const perms = await SpeechRecognition.requestPermissionsAsync();
-    if (!perms.granted) {
-      setError("Accès au micro refusé.");
-      return;
-    }
-    SpeechRecognition.abort();
+    if (!(await ensureMic())) return;
+    SpeechRecognition?.abort();
     await startRecognition('command');
     armSilence();
-  }, [armSilence, startRecognition]);
+  }, [armSilence, ensureMic, startRecognition]);
 
   /** Saisie clavier, pour tester sans parler. */
   const askText = useCallback((text: string) => submit(text), [submit]);
@@ -268,10 +376,12 @@ export function useRaoul() {
     error,
     history,
     start,
+    startConversation,
     stop,
     pushToTalk,
     askText,
     voiceAvailable,
+    inConversation,
     isEnabled: enabled,
   };
 }

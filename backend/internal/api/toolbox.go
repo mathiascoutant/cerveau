@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
@@ -90,13 +92,23 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		}
 		return assistant.EmailContentView{}, err
 	}
-	return assistant.EmailContentView{
-		De:      msg.From,
-		Objet:   msg.Subject,
-		Recu:    t.when(msg.Date),
-		Contenu: msg.Body,
-		Tronque: strings.HasSuffix(msg.Body, "…"),
-	}, nil
+	view := assistant.EmailContentView{
+		De:         msg.From,
+		Adresse:    msg.FromAddr,
+		Pour:       msg.To,
+		Copie:      msg.Cc,
+		Objet:      msg.Subject,
+		Recu:       t.when(msg.Date),
+		Contenu:    msg.Body,
+		Historique: msg.Quoted,
+		Tronque:    strings.HasSuffix(msg.Body, "…"),
+	}
+	for _, m := range msg.Thread {
+		view.Fil = append(view.Fil, assistant.ThreadView{
+			De: m.From, Recu: t.when(m.Date), Extrait: m.Excerpt,
+		})
+	}
+	return view, nil
 }
 
 func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.SlackView, error) {
@@ -229,6 +241,152 @@ func (t *userToolbox) CreateEvent(ctx context.Context, draft assistant.EventDraf
 			"notes":       draft.Note,
 		},
 	}, nil
+}
+
+// --- Réponses de mail -------------------------------------------------------
+
+// PrepareEmailReply range la réponse rédigée par le modèle, sans rien envoyer.
+//
+// La séparation est le cœur de la fonctionnalité : Raoul écrit, l'utilisateur
+// expédie. Un mail parti par erreur ne se rattrape pas, et un assistant qui
+// tient la plume n'a pas besoin de tenir aussi le bouton « envoyer ».
+func (t *userToolbox) PrepareEmailReply(ctx context.Context, draft assistant.EmailReplyDraft) (assistant.EmailDraftView, store.Action, error) {
+	body := strings.TrimSpace(draft.Corps)
+	if body == "" {
+		return assistant.EmailDraftView{}, store.Action{}, errors.New("le corps du mail est vide")
+	}
+	to := strings.TrimSpace(draft.Destinataire)
+	if to == "" {
+		to = strings.TrimSpace(draft.Adresse)
+	}
+	if to == "" {
+		return assistant.EmailDraftView{}, store.Action{}, errors.New("destinataire manquant")
+	}
+
+	subject := strings.TrimSpace(draft.Objet)
+	if subject == "" {
+		subject = replySubject(draft.MailSource)
+	}
+
+	saved, err := t.srv.store.SaveEmailDraft(ctx, store.EmailDraft{
+		UserID:        t.user.ID,
+		To:            to,
+		ToAddr:        strings.TrimSpace(draft.Adresse),
+		Subject:       subject,
+		Body:          body,
+		Language:      normalizeLang(draft.Langue),
+		SourceSubject: strings.TrimSpace(draft.MailSource),
+	})
+	if err != nil {
+		return assistant.EmailDraftView{}, store.Action{}, fmt.Errorf("enregistrement de la réponse : %w", err)
+	}
+	return t.draftView(saved), draftAction(saved), nil
+}
+
+func (t *userToolbox) FindEmailDrafts(ctx context.Context, query string) ([]assistant.EmailDraftView, error) {
+	drafts, err := t.srv.store.EmailDrafts(ctx, t.user.ID, query, 10)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]assistant.EmailDraftView, 0, len(drafts))
+	for _, d := range drafts {
+		out = append(out, t.draftView(d))
+	}
+	return out, nil
+}
+
+func (t *userToolbox) UpdateEmailDraft(ctx context.Context, id, subject, body string) (assistant.EmailDraftView, store.Action, error) {
+	oid, err := bson.ObjectIDFromHex(strings.TrimSpace(id))
+	if err != nil {
+		return assistant.EmailDraftView{}, store.Action{}, errors.New("identifiant de brouillon invalide : reprends celui rendu par chercher_brouillon")
+	}
+	updated, err := t.srv.store.UpdateEmailDraft(ctx, t.user.ID, oid, subject, strings.TrimSpace(body))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return assistant.EmailDraftView{}, store.Action{}, errors.New("cette réponse préparée n'existe plus")
+		}
+		return assistant.EmailDraftView{}, store.Action{}, err
+	}
+	return t.draftView(updated), draftAction(updated), nil
+}
+
+// SearchHistory est la mémoire longue : ce que la fenêtre de contexte a laissé
+// tomber reste retrouvable par son contenu.
+func (t *userToolbox) SearchHistory(ctx context.Context, query string, since time.Time) ([]assistant.MemoryView, error) {
+	past, err := t.srv.store.SearchInteractions(ctx, t.user.ID, query, since, 12)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]assistant.MemoryView, 0, len(past))
+	// Du plus ancien au plus récent : un fil se relit dans le sens où il s'est
+	// déroulé, sinon le modèle prend la fin pour le début.
+	for i := len(past) - 1; i >= 0; i-- {
+		out = append(out, assistant.MemoryView{
+			Quand:   t.when(past[i].CreatedAt),
+			Demande: past[i].Transcript,
+			Reponse: past[i].Reply,
+		})
+	}
+	return out, nil
+}
+
+func (t *userToolbox) draftView(d store.EmailDraft) assistant.EmailDraftView {
+	return assistant.EmailDraftView{
+		ID:           d.ID.Hex(),
+		Destinataire: d.To,
+		Adresse:      d.ToAddr,
+		Objet:        d.Subject,
+		Corps:        d.Body,
+		Langue:       d.Language,
+		MailSource:   d.SourceSubject,
+		Modifie:      t.when(d.UpdatedAt),
+	}
+}
+
+// draftAction prévient l'app qu'une réponse est prête. Elle n'écrit rien sur le
+// téléphone, contrairement à create_event : elle sert à l'annoncer et à
+// rafraîchir l'onglet Réponses.
+func draftAction(d store.EmailDraft) store.Action {
+	return store.Action{
+		Type: "email_draft",
+		Payload: map[string]any{
+			"id":      d.ID.Hex(),
+			"to":      d.To,
+			"subject": d.Subject,
+		},
+	}
+}
+
+// replySubject fabrique un objet quand le modèle n'en a pas donné. « Re: » n'est
+// pas traduit : c'est la convention de tous les clients mail, quelle que soit
+// la langue du message.
+func replySubject(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "Re:"
+	}
+	if strings.HasPrefix(strings.ToLower(source), "re:") {
+		return source
+	}
+	return "Re: " + source
+}
+
+// normalizeLang ramène « Anglais », « EN-US » ou « english » à « en ». Le champ
+// n'est qu'indicatif : il sert à l'affichage et à la voix, pas au routage.
+func normalizeLang(lang string) string {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	switch {
+	case lang == "":
+		return ""
+	case strings.HasPrefix(lang, "fr"), strings.HasPrefix(lang, "fran"):
+		return "fr"
+	case strings.HasPrefix(lang, "en"), strings.HasPrefix(lang, "ang"):
+		return "en"
+	}
+	if len(lang) > 2 {
+		lang = lang[:2]
+	}
+	return lang
 }
 
 // when met en mots un horodatage, dans le fuseau de l'utilisateur et par

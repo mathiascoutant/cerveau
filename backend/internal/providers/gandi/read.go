@@ -23,6 +23,18 @@ const maxBodyRunes = 4000
 // Nombre de mails récents inspectés quand on cherche par expéditeur ou objet.
 const searchDepth = 40
 
+// Messages antérieurs du fil rapatriés en plus du mail demandé. Trois suffisent
+// à savoir de quoi on parle et comment les gens s'appellent ; au-delà on paie
+// des allers-retours IMAP pour du contexte que personne ne relira.
+const maxThreadMessages = 3
+
+// Longueur d'un message antérieur. Il situe la conversation, il ne se lit pas.
+const maxThreadRunes = 600
+
+// Longueur de l'historique cité par le mail lui-même. Plus généreux que les
+// messages du fil : c'est souvent là que tient toute la conversation.
+const maxQuotedRunes = 2000
+
 // Read renvoie un mail avec son contenu.
 //
 // `query` est ce que l'utilisateur a dit : un expéditeur (« le mail d'Olivier »),
@@ -53,14 +65,14 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 		return Message{}, fmt.Errorf("aucun mail non lu")
 	}
 
-	msg, seqNum, err := pick(c, nums, query)
+	chosen, all, err := pick(c, nums, query)
 	if err != nil {
 		return Message{}, err
 	}
 
 	// PEEK : sans lui, le serveur poserait le drapeau \Seen.
 	section := &imap.FetchItemBodySection{Peek: true}
-	fetched, err := c.Fetch(imap.SeqSetNum(seqNum), &imap.FetchOptions{
+	fetched, err := c.Fetch(imap.SeqSetNum(chosen.seqNum), &imap.FetchOptions{
 		BodySection: []*imap.FetchItemBodySection{section},
 	}).Collect()
 	if err != nil {
@@ -70,8 +82,72 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 		return Message{}, fmt.Errorf("mail introuvable")
 	}
 
-	msg.Body = extractText(fetched[0].FindBodySection(section))
+	msg := chosen.msg
+	msg.Body, msg.Quoted = extractParts(fetched[0].FindBodySection(section))
+	msg.Thread = readThread(c, all, chosen)
 	return msg, nil
+}
+
+// readThread rapatrie les messages précédents de la même conversation.
+//
+// IMAP ne donne pas de fil : on rapproche les messages par leur objet dépouillé
+// de ses « Re: ». C'est imparfait — deux « Facture » sans lien se retrouvent
+// ensemble — mais l'inverse coûte plus cher : répondre sans savoir ce qui a été
+// dit produit un mail poli et hors sujet.
+//
+// Les enveloppes sont déjà en main, seuls les corps se paient : on en prend
+// trois au maximum, et un échec ici ne fait pas échouer la lecture du mail.
+func readThread(c *imapclient.Client, all []candidate, chosen candidate) []ThreadMessage {
+	subject := baseSubject(chosen.msg.Subject)
+	if subject == "" {
+		return nil
+	}
+
+	siblings := make([]candidate, 0, maxThreadMessages)
+	for _, cand := range all {
+		if cand.seqNum == chosen.seqNum || baseSubject(cand.msg.Subject) != subject {
+			continue
+		}
+		siblings = append(siblings, cand)
+		if len(siblings) == maxThreadMessages {
+			break
+		}
+	}
+	if len(siblings) == 0 {
+		return nil
+	}
+
+	nums := make([]uint32, 0, len(siblings))
+	for _, cand := range siblings {
+		nums = append(nums, cand.seqNum)
+	}
+	section := &imap.FetchItemBodySection{Peek: true}
+	fetched, err := c.Fetch(imap.SeqSetNum(nums...), &imap.FetchOptions{
+		BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect()
+	if err != nil {
+		return nil
+	}
+
+	bodies := make(map[uint32]string, len(fetched))
+	for _, f := range fetched {
+		body, _ := extractParts(f.FindBodySection(section))
+		bodies[f.SeqNum] = truncateRunes(body, maxThreadRunes)
+	}
+
+	out := make([]ThreadMessage, 0, len(siblings))
+	for _, cand := range siblings {
+		excerpt := bodies[cand.seqNum]
+		if strings.TrimSpace(excerpt) == "" {
+			continue
+		}
+		out = append(out, ThreadMessage{
+			From:    describeSender(cand.msg),
+			Date:    cand.msg.Date,
+			Excerpt: excerpt,
+		})
+	}
+	return out
 }
 
 // candidates renvoie les numéros de séquence à inspecter, du plus ancien au
@@ -131,16 +207,22 @@ const maxAmbiguousSenders = 5
 //
 // L'expéditeur prime sur l'objet : « le mail de Cyril » ne doit pas rendre un
 // mail de quelqu'un d'autre dont l'objet contient « Cyril ».
-func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, error) {
+// candidate est un mail de la fenêtre inspectée, gardé avec son numéro de
+// séquence pour pouvoir en rapatrier le corps ensuite.
+type candidate struct {
+	msg    Message
+	seqNum uint32
+}
+
+// pick rend le mail visé ET la fenêtre inspectée : les enveloppes coûtent un
+// aller-retour, et c'est dans cette même liste qu'on retrouvera les autres
+// messages du fil sans en payer un second.
+func pick(c *imapclient.Client, nums []uint32, query string) (candidate, []candidate, error) {
 	fetched, err := c.Fetch(imap.SeqSetNum(nums...), &imap.FetchOptions{Envelope: true}).Collect()
 	if err != nil {
-		return Message{}, 0, fmt.Errorf("lecture des en-têtes : %w", err)
+		return candidate{}, nil, fmt.Errorf("lecture des en-têtes : %w", err)
 	}
 
-	type candidate struct {
-		msg    Message
-		seqNum uint32
-	}
 	list := make([]candidate, 0, len(fetched))
 	for _, f := range fetched {
 		if f.Envelope == nil {
@@ -152,12 +234,14 @@ func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, e
 				From:     formatAddresses(f.Envelope.From),
 				FromAddr: firstAddress(f.Envelope.From),
 				Date:     f.Envelope.Date,
+				To:       addressList(f.Envelope.To),
+				Cc:       addressList(f.Envelope.Cc),
 			},
 			seqNum: f.SeqNum,
 		})
 	}
 	if len(list) == 0 {
-		return Message{}, 0, fmt.Errorf("aucun mail lisible")
+		return candidate{}, nil, fmt.Errorf("aucun mail lisible")
 	}
 
 	// Du plus récent au plus ancien : « mon dernier mail » est le premier, et
@@ -168,7 +252,7 @@ func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, e
 
 	want := normalizeQuery(query)
 	if want == "" {
-		return list[0].msg, list[0].seqNum, nil
+		return list[0], list, nil
 	}
 
 	// Les expéditeurs distincts qui correspondent, dans l'ordre de fraîcheur.
@@ -195,18 +279,18 @@ func pick(c *imapclient.Client, nums []uint32, query string) (Message, uint32, e
 
 	switch {
 	case len(senders) == 1:
-		return first.msg, first.seqNum, nil
+		return first, list, nil
 	case len(senders) > 1:
-		return Message{}, 0, &AmbiguousSenderError{Query: query, Senders: senders}
+		return candidate{}, nil, &AmbiguousSenderError{Query: query, Senders: senders}
 	}
 
 	// Personne ne correspond : on retombe sur l'objet.
 	for _, c := range list {
 		if strings.Contains(normalizeQuery(c.msg.Subject), want) {
-			return c.msg, c.seqNum, nil
+			return c, list, nil
 		}
 	}
-	return Message{}, 0, fmt.Errorf("aucun mail récent ne correspond à %q", query)
+	return candidate{}, nil, fmt.Errorf("aucun mail récent ne correspond à %q", query)
 }
 
 // senderKey identifie une personne. L'adresse fait foi quand elle existe : deux
@@ -233,18 +317,18 @@ func describeSender(m Message) string {
 	return name + " (" + addr + ")"
 }
 
-// extractText tire le texte lisible d'un mail brut.
+// extractParts tire d'un mail brut ce qu'il dit, et ce qu'il cite.
 //
 // Ordre de préférence : text/plain, puis text/html dégradé en texte. Les pièces
 // jointes sont ignorées — on ne les lit pas à voix haute.
-func extractText(raw []byte) string {
+func extractParts(raw []byte) (body, quoted string) {
 	if len(raw) == 0 {
-		return ""
+		return "", ""
 	}
 	mr, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		// Mail non conforme : mieux vaut rendre le brut tronqué que rien.
-		return truncateRunes(collapse(string(raw)), maxBodyRunes)
+		return truncateRunes(collapse(string(raw)), maxBodyRunes), ""
 	}
 	defer mr.Close()
 
@@ -278,9 +362,10 @@ func extractText(raw []byte) string {
 		}
 	}
 
-	body := plain
-	if strings.TrimSpace(body) == "" {
-		body = htmlToText(html)
+	text := plain
+	if strings.TrimSpace(text) == "" {
+		text = htmlToText(html)
 	}
-	return truncateRunes(stripQuotedReply(collapse(body)), maxBodyRunes)
+	body, quoted = splitQuotedReply(collapse(text))
+	return truncateRunes(body, maxBodyRunes), truncateRunes(quoted, maxQuotedRunes)
 }

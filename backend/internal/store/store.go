@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -46,7 +47,8 @@ func (s *Store) whatsapp() *mongo.Collection    { return s.db.Collection("whatsa
 func (s *Store) interactions() *mongo.Collection {
 	return s.db.Collection("interactions")
 }
-func (s *Store) digests() *mongo.Collection { return s.db.Collection("digests") }
+func (s *Store) digests() *mongo.Collection     { return s.db.Collection("digests") }
+func (s *Store) emailDrafts() *mongo.Collection { return s.db.Collection("email_drafts") }
 
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	// Un builder d'options par index : le driver mémorise le nom auto-généré,
@@ -76,6 +78,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.whatsapp(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}}},
 		{s.interactions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
+		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
 	}
 	for _, spec := range specs {
 		if _, err := spec.col.Indexes().CreateOne(ctx, spec.model); err != nil {
@@ -370,6 +373,114 @@ func (s *Store) LatestDigest(ctx context.Context, userID bson.ObjectID) (*Digest
 		return nil, ErrNotFound
 	}
 	return &d, err
+}
+
+// SearchInteractions retrouve des échanges passés par leur contenu.
+//
+// C'est la mémoire longue de Raoul : l'historique récent voyage déjà dans le
+// contexte du modèle, mais « ce dont on parlait ce matin » peut être vingt
+// tours en arrière. Une recherche plein texte sur la demande ET la réponse
+// rattrape ce que la fenêtre de contexte a laissé tomber.
+func (s *Store) SearchInteractions(ctx context.Context, userID bson.ObjectID, query string, since time.Time, limit int64) ([]Interaction, error) {
+	filter := bson.M{"user_id": userID}
+	if !since.IsZero() {
+		filter["created_at"] = bson.M{"$gte": since}
+	}
+	if q := strings.TrimSpace(query); q != "" {
+		rx := bson.M{"$regex": regexp.QuoteMeta(q), "$options": "i"}
+		filter["$or"] = bson.A{bson.M{"transcript": rx}, bson.M{"reply": rx}}
+	}
+	if limit <= 0 {
+		limit = 12
+	}
+	cur, err := s.interactions().Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(limit),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out []Interaction
+	return out, cur.All(ctx, &out)
+}
+
+// --- Brouillons de mail -----------------------------------------------------
+
+func (s *Store) SaveEmailDraft(ctx context.Context, d EmailDraft) (EmailDraft, error) {
+	now := time.Now()
+	d.CreatedAt = now
+	d.UpdatedAt = now
+	res, err := s.emailDrafts().InsertOne(ctx, d)
+	if err != nil {
+		return EmailDraft{}, err
+	}
+	d.ID = res.InsertedID.(bson.ObjectID)
+	return d, nil
+}
+
+// UpdateEmailDraft réécrit un brouillon. Un objet vide laisse l'ancien en
+// place : on modifie souvent le corps sans retoucher l'objet.
+func (s *Store) UpdateEmailDraft(ctx context.Context, userID, id bson.ObjectID, subject, body string) (EmailDraft, error) {
+	set := bson.M{"body": body, "updated_at": time.Now()}
+	if strings.TrimSpace(subject) != "" {
+		set["subject"] = subject
+	}
+	var out EmailDraft
+	err := s.emailDrafts().FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "user_id": userID},
+		bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return EmailDraft{}, ErrNotFound
+	}
+	return out, err
+}
+
+// EmailDrafts liste les brouillons du plus récemment touché au plus ancien.
+// Une recherche vide les rend tous : c'est ce que consulte l'onglet de l'app.
+func (s *Store) EmailDrafts(ctx context.Context, userID bson.ObjectID, query string, limit int64) ([]EmailDraft, error) {
+	filter := bson.M{"user_id": userID}
+	if q := strings.TrimSpace(query); q != "" {
+		rx := bson.M{"$regex": regexp.QuoteMeta(q), "$options": "i"}
+		filter["$or"] = bson.A{
+			bson.M{"to": rx},
+			bson.M{"to_addr": rx},
+			bson.M{"subject": rx},
+			bson.M{"source_subject": rx},
+			bson.M{"body": rx},
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	cur, err := s.emailDrafts().Find(ctx, filter,
+		options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}).SetLimit(limit),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out []EmailDraft
+	return out, cur.All(ctx, &out)
+}
+
+func (s *Store) EmailDraft(ctx context.Context, userID, id bson.ObjectID) (EmailDraft, error) {
+	var d EmailDraft
+	err := s.emailDrafts().FindOne(ctx, bson.M{"_id": id, "user_id": userID}).Decode(&d)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return EmailDraft{}, ErrNotFound
+	}
+	return d, err
+}
+
+func (s *Store) DeleteEmailDraft(ctx context.Context, userID, id bson.ObjectID) error {
+	res, err := s.emailDrafts().DeleteOne(ctx, bson.M{"_id": id, "user_id": userID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func randomToken() (string, error) {

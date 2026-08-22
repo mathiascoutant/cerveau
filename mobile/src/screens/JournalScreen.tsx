@@ -1,29 +1,28 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 
-import { Button, Card, Label, Subtitle, Title } from '../components/ui';
-import { api, Digest, Interaction } from '../api';
+import { Banner, Button, Card, Divider, EmptyState, ScreenHeader, SectionLabel, StatTile, Txt } from '../components/ui';
+import { api, Digest, Interaction, Provider } from '../api';
 import { theme } from '../theme';
 
 export function JournalScreen() {
   const [digest, setDigest] = useState<Digest | null>(null);
   const [history, setHistory] = useState<Interaction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [regenerating, setRegenerating] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setError(null);
     try {
-      // L'historique est instantané, la synthèse interroge IMAP et Slack :
-      // on ne fait pas attendre le premier sur le second.
       const [d, h] = await Promise.allSettled([api.digest(refresh), api.history()]);
       if (d.status === 'fulfilled') setDigest(d.value);
       else setError(d.reason?.message ?? 'synthèse indisponible');
       if (h.status === 'fulfilled') setHistory(h.value.interactions);
     } finally {
       setLoading(false);
-      setRegenerating(false);
+      setBusy(false);
     }
   }, []);
 
@@ -31,11 +30,18 @@ export function JournalScreen() {
     void load();
   }, [load]);
 
+  const refresh = () => {
+    setBusy(true);
+    void load(true);
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
-        <ActivityIndicator color={theme.colors.accent} size="large" />
-        <Text style={styles.loadingText}>Raoul fait le point…</Text>
+        <ActivityIndicator color={theme.colors.primary} size="large" />
+        <Txt variant="small" tone="faint">
+          Raoul fait le point…
+        </Txt>
       </View>
     );
   }
@@ -45,79 +51,91 @@ export function JournalScreen() {
       style={styles.screen}
       contentContainerStyle={styles.content}
       refreshControl={
-        <RefreshControl
-          refreshing={regenerating}
-          onRefresh={() => {
-            setRegenerating(true);
-            void load(true);
-          }}
-          tintColor={theme.colors.accent}
-        />
+        <RefreshControl refreshing={busy} onRefresh={refresh} tintColor={theme.colors.primary} />
       }
     >
-      <Title>Journal</Title>
+      <ScreenHeader title="Journal" subtitle="Ta journée, tes sources, tes échanges" />
 
       {error && (
-        <Card style={{ borderColor: theme.colors.danger }}>
-          <Text style={styles.error}>{error}</Text>
-        </Card>
+        <Banner tone="danger" icon="alert-triangle">
+          <Txt variant="small" tone="danger">
+            {error}
+          </Txt>
+        </Banner>
       )}
 
       <Card>
-        <Label>Le point du jour</Label>
-        <Text style={styles.summary}>
-          {digest?.summary || "Pas encore de synthèse. Tire l'écran vers le bas pour en générer une."}
-        </Text>
-        {digest?.generated_at && (
-          <Text style={styles.meta}>
-            {digest.stale ? 'Dernière synthèse connue · ' : ''}
-            {formatWhen(digest.generated_at)}
-          </Text>
-        )}
+        <View style={styles.cardHead}>
+          <SectionLabel>Le point du jour</SectionLabel>
+          {digest?.generated_at ? (
+            <Txt variant="mono" tone="faint">
+              {digest.stale ? 'daté · ' : ''}
+              {formatWhen(digest.generated_at)}
+            </Txt>
+          ) : null}
+        </View>
+
+        <Txt variant="body">
+          {digest?.summary || 'Aucune synthèse pour l’instant. Tire l’écran vers le bas pour en générer une.'}
+        </Txt>
+
         {digest?.unavailable?.length ? (
-          <Text style={styles.warn}>Sources indisponibles : {digest.unavailable.join(', ')}</Text>
+          <View style={styles.inlineWarn}>
+            <Feather name="alert-circle" size={13} color={theme.colors.warning} />
+            <Txt variant="mono" tone="warning">
+              Sources indisponibles : {digest.unavailable.join(', ')}
+            </Txt>
+          </View>
         ) : null}
-        <Button
-          label="Régénérer la synthèse"
-          variant="ghost"
-          loading={regenerating}
-          onPress={() => {
-            setRegenerating(true);
-            void load(true);
-          }}
-        />
+
+        <Divider />
+        <Button label="Régénérer" variant="ghost" icon="refresh-cw" loading={busy} onPress={refresh} />
       </Card>
 
+      {/* Une source qu'il n'a pas branchée ne se compte pas : afficher
+          « 0 WhatsApp » revient à lui parler de WhatsApp tous les matins. */}
       {digest && (
-        <View style={styles.counters}>
-          <Counter value={digest.events.length} label="aujourd'hui" />
-          <Counter value={digest.emails.length} label="mails" />
-          <Counter value={digest.slack.length} label="Slack" />
-          <Counter value={digest.whatsapp.length} label="WhatsApp" />
+        <View style={styles.stats}>
+          <StatTile value={digest.events.length} label="aujourd’hui" icon="calendar" />
+          {has(digest, 'gandi') && <StatTile value={digest.emails.length} label="mails" icon="mail" />}
+          {has(digest, 'slack') && <StatTile value={digest.slack.length} label="Slack" icon="hash" />}
+          {has(digest, 'whatsapp') && (
+            <StatTile value={digest.whatsapp.length} label="WhatsApp" icon="message-circle" />
+          )}
         </View>
       )}
 
       {digest?.events.length ? (
         <Card>
-          <Label>Agenda du jour</Label>
-          {digest.events.map((e) => (
-            <Text key={e.debut + e.titre} style={styles.row}>
-              {formatHour(e.debut)}–{formatHour(e.fin)}  {e.titre}
-              {e.lieu ? ` · ${e.lieu}` : ''}
-            </Text>
+          <SectionLabel>Agenda du jour</SectionLabel>
+          {digest.events.map((e, i) => (
+            <View key={`${e.debut}-${i}`} style={styles.eventRow}>
+              <Txt variant="mono" tone="primary" style={styles.eventTime}>
+                {formatHour(e.debut)}
+              </Txt>
+              <View style={styles.flex}>
+                <Txt variant="bodyStrong">{e.titre}</Txt>
+                <Txt variant="mono" tone="faint">
+                  jusqu’à {formatHour(e.fin)}
+                  {e.lieu ? ` · ${e.lieu}` : ''}
+                </Txt>
+              </View>
+            </View>
           ))}
         </Card>
       ) : null}
 
       {digest?.emails.length ? (
         <Card>
-          <Label>Mails non lus</Label>
+          <SectionLabel>Mails non lus</SectionLabel>
           {digest.emails.map((m, i) => (
             <View key={`${m.recu}-${i}`} style={styles.item}>
-              <Text style={styles.itemTitle}>{m.objet || '(sans objet)'}</Text>
-              <Text style={styles.itemMeta}>
+              <Txt variant="bodyStrong" numberOfLines={2}>
+                {m.objet || '(sans objet)'}
+              </Txt>
+              <Txt variant="mono" tone="faint">
                 {m.de} · {m.recu}
-              </Text>
+              </Txt>
             </View>
           ))}
         </Card>
@@ -125,19 +143,21 @@ export function JournalScreen() {
 
       {digest?.slack.length ? (
         <Card>
-          <Label>Slack</Label>
+          <SectionLabel>Slack</SectionLabel>
           {digest.slack.map((t, i) => (
             <View key={`${t.canal}-${i}`} style={styles.item}>
-              <Text style={styles.itemTitle}>
-                {t.canal}
-                {t.non_lus ? ` · ${t.non_lus} non lus` : ''}
-                {t.messages_recents ? ` · ${t.messages_recents} récents` : ''}
-                {t.mentions ? ` · cité ${t.mentions}×` : ''}
-              </Text>
+              <View style={styles.slackHead}>
+                <Txt variant="bodyStrong" style={styles.flex} numberOfLines={1}>
+                  {t.canal}
+                </Txt>
+                {t.mentions ? <Pill tone="warning" text={`cité ${t.mentions}×`} /> : null}
+                {t.non_lus ? <Pill tone="primary" text={`${t.non_lus} non lus`} /> : null}
+                {t.messages_recents ? <Pill tone="faint" text={`${t.messages_recents} récents`} /> : null}
+              </View>
               {t.extraits?.slice(0, 2).map((x) => (
-                <Text key={x} style={styles.itemMeta}>
+                <Txt key={x} variant="mono" tone="muted" numberOfLines={2}>
                   {x}
-                </Text>
+                </Txt>
               ))}
             </View>
           ))}
@@ -146,31 +166,51 @@ export function JournalScreen() {
 
       {digest?.whatsapp.length ? (
         <Card>
-          <Label>WhatsApp</Label>
+          <SectionLabel>WhatsApp</SectionLabel>
           {digest.whatsapp.map((m, i) => (
             <View key={`${m.recu}-${i}`} style={styles.item}>
-              <Text style={styles.itemTitle}>{m.de}</Text>
-              <Text style={styles.itemMeta}>
-                {m.message} · {m.recu}
-              </Text>
+              <Txt variant="bodyStrong">{m.de}</Txt>
+              <Txt variant="mono" tone="muted" numberOfLines={2}>
+                {m.message}
+              </Txt>
+              <Txt variant="mono" tone="faint">
+                {m.recu}
+              </Txt>
             </View>
           ))}
         </Card>
       ) : null}
 
-      <Label>Conversations</Label>
+      <SectionLabel>Conversations</SectionLabel>
       {history.length === 0 ? (
-        <Subtitle>Aucun échange pour l'instant.</Subtitle>
+        <Card>
+          <EmptyState
+            icon="message-square"
+            title="Aucun échange"
+            message="Tes questions à Raoul et ses réponses apparaîtront ici."
+          />
+        </Card>
       ) : (
         history.map((it, i) => (
           <Card key={`${it.created_at}-${i}`}>
-            <Text style={styles.meta}>{formatWhen(it.created_at)}</Text>
-            <Text style={styles.question}>{it.transcript}</Text>
-            <Text style={styles.answer}>{it.reply}</Text>
+            <Txt variant="mono" tone="faint">
+              {formatWhen(it.created_at)}
+            </Txt>
+            <Txt variant="small" tone="muted">
+              {it.transcript}
+            </Txt>
+            <Txt variant="body">{it.reply}</Txt>
             {it.actions?.map((a, j) => (
-              <Text key={j} style={styles.action}>
-                ✓ {a.type === 'create_event' ? `« ${a.payload.title} » ajouté au calendrier` : a.type}
-              </Text>
+              <View key={j} style={styles.inlineOk}>
+                <Feather name="check-circle" size={13} color={theme.colors.success} />
+                <Txt variant="mono" tone="success" style={styles.flex}>
+                  {a.type === 'create_event'
+                    ? `« ${a.payload.title} » ajouté au calendrier`
+                    : a.type === 'email_draft'
+                      ? `Réponse à ${a.payload.to} préparée`
+                      : a.type}
+                </Txt>
+              </View>
             ))}
           </Card>
         ))
@@ -179,21 +219,35 @@ export function JournalScreen() {
   );
 }
 
-function Counter({ value, label }: { value: number; label: string }) {
+/**
+ * Dit si une source est branchée. Un digest d'avant cette version n'a pas le
+ * champ : on affiche alors tout, comme avant, plutôt que de vider l'écran.
+ */
+function has(digest: Digest, provider: Provider): boolean {
+  return !digest.sources || digest.sources.includes(provider);
+}
+
+function Pill({ text, tone }: { text: string; tone: 'primary' | 'warning' | 'faint' }) {
+  const color =
+    tone === 'warning'
+      ? theme.colors.warning
+      : tone === 'primary'
+        ? theme.colors.primary
+        : theme.colors.textFaint;
   return (
-    <View style={styles.counter}>
-      <Text style={styles.counterValue}>{value}</Text>
-      <Text style={styles.counterLabel}>{label}</Text>
+    <View style={[styles.pill, { borderColor: `${color}55` }]}>
+      <Txt variant="mono" style={{ color }}>
+        {text}
+      </Txt>
     </View>
   );
 }
 
 function formatWhen(iso: string): string {
   const d = new Date(iso);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
+  const sameDay = d.toDateString() === new Date().toDateString();
   const time = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-  return sameDay ? `aujourd'hui à ${time}` : `${d.toLocaleDateString('fr-FR')} à ${time}`;
+  return sameDay ? `aujourd’hui à ${time}` : `${d.toLocaleDateString('fr-FR')} à ${time}`;
 }
 
 function formatHour(iso: string): string {
@@ -201,37 +255,33 @@ function formatHour(iso: string): string {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.colors.bg },
-  content: { padding: theme.space(2.5), paddingBottom: theme.space(6), gap: theme.space(2) },
+  flex: { flex: 1 },
+  screen: { flex: 1, backgroundColor: theme.colors.background },
+  content: {
+    paddingHorizontal: theme.space.xl,
+    paddingTop: theme.space.md,
+    paddingBottom: theme.space.xxxl,
+    gap: theme.space.lg,
+  },
   center: {
     flex: 1,
-    backgroundColor: theme.colors.bg,
+    backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: theme.space(2),
+    gap: theme.space.lg,
   },
-  loadingText: { color: theme.colors.textMuted, fontSize: 15 },
-  summary: { color: theme.colors.text, fontSize: 16, lineHeight: 24 },
-  meta: { color: theme.colors.textMuted, fontSize: 11 },
-  warn: { color: theme.colors.warning, fontSize: 12 },
-  error: { color: theme.colors.danger, fontSize: 13 },
-  counters: { flexDirection: 'row', gap: theme.space(1) },
-  counter: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    paddingVertical: theme.space(1.5),
-    alignItems: 'center',
+  cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  stats: { flexDirection: 'row', gap: theme.space.sm },
+  item: { gap: 3 },
+  eventRow: { flexDirection: 'row', gap: theme.space.md, alignItems: 'flex-start' },
+  eventTime: { width: 46, fontVariant: ['tabular-nums'] },
+  slackHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
+  pill: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.space.sm,
+    paddingVertical: 2,
   },
-  counterValue: { color: theme.colors.text, fontSize: 22, fontWeight: '700' },
-  counterLabel: { color: theme.colors.textMuted, fontSize: 11 },
-  row: { color: theme.colors.text, fontSize: 14, lineHeight: 22 },
-  item: { gap: 2 },
-  itemTitle: { color: theme.colors.text, fontSize: 14, fontWeight: '600' },
-  itemMeta: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 18 },
-  question: { color: theme.colors.textMuted, fontSize: 14 },
-  answer: { color: theme.colors.text, fontSize: 15, lineHeight: 22 },
-  action: { color: theme.colors.success, fontSize: 12 },
+  inlineWarn: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
+  inlineOk: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
 });

@@ -42,6 +42,24 @@ type Message struct {
 	FromAddr string    `json:"-"`
 	Date     time.Time `json:"date"`
 	Body     string    `json:"body,omitempty"`
+	// To et Cc disent à qui le mail était adressé. Répondre sans le savoir,
+	// c'est écrire « Bonjour Cyril » à un message envoyé à cinq personnes.
+	To []string `json:"to,omitempty"`
+	Cc []string `json:"cc,omitempty"`
+	// Quoted est l'historique que le mail cite lui-même. Il n'est pas lu à voix
+	// haute, il sert à comprendre ce qui a déjà été dit avant de répondre.
+	Quoted string `json:"-"`
+	// Thread : les autres messages de la même conversation trouvés dans la
+	// boîte, du plus récent au plus ancien.
+	Thread []ThreadMessage `json:"-"`
+}
+
+// ThreadMessage est un message antérieur de la conversation, rendu court : il
+// sert à situer l'échange, pas à être lu.
+type ThreadMessage struct {
+	From    string
+	Date    time.Time
+	Excerpt string
 }
 
 // TestConnection vérifie les identifiants sans rien lire d'autre.
@@ -148,6 +166,25 @@ func firstAddress(addrs []imap.Address) string {
 		return ""
 	}
 	return addrs[0].Addr()
+}
+
+// addressList rend chaque destinataire séparément, nom et adresse ensemble :
+// c'est ce qui permet de reconnaître l'utilisateur parmi eux, et de choisir le
+// bon prénom pour la salutation.
+func addressList(addrs []imap.Address) []string {
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		addr := a.Addr()
+		switch {
+		case a.Name == "" && addr == "":
+			continue
+		case a.Name == "" || strings.EqualFold(a.Name, addr):
+			out = append(out, addr)
+		default:
+			out = append(out, a.Name+" <"+addr+">")
+		}
+	}
+	return out
 }
 
 func formatAddresses(addrs []imap.Address) string {

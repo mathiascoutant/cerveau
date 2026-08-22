@@ -93,6 +93,10 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/whatsapp/messages", s.handleWhatsAppMessages)
 			r.Post("/whatsapp/read", s.handleWhatsAppMarkRead)
 
+			r.Get("/drafts", s.handleListDrafts)
+			r.Patch("/drafts/{id}", s.handleUpdateDraft)
+			r.Delete("/drafts/{id}", s.handleDeleteDraft)
+
 			r.Post("/assistant/ask", s.handleAsk)
 			r.Post("/assistant/voice", s.handleVoice)
 			r.Post("/assistant/speech", s.handleSpeak)

@@ -41,6 +41,31 @@ export function hasWake(text: string): boolean {
   return findWake(text) !== null;
 }
 
+/**
+ * Formule de sortie : « merci Raoul », et ses cousines.
+ *
+ * Elle referme la conversation, qui reste sinon ouverte tant que l'écoute
+ * tourne. Le prénom est exigé : « merci » tout seul revient trop souvent au
+ * milieu d'une phrase dictée pour servir de commande.
+ */
+const FAREWELL_PATTERN =
+  /\b(?:merci(?:\s+beaucoup)?|c'?est\s+bon|stop|termin[ée])\s+(?:raoul[ea]?|raoult|raul[ea]?|rahoul)\b/i;
+
+export type FarewellMatch = {
+  /** Index, dans le texte d'origine, du premier caractère de la formule. */
+  startIndex: number;
+};
+
+/**
+ * Cherche la formule de sortie. Ce qui la précède reste une demande à traiter :
+ * « qu'est-ce que j'ai raté, merci Raoul » vaut une question ET un au revoir.
+ */
+export function findFarewell(text: string): FarewellMatch | null {
+  const match = FAREWELL_PATTERN.exec(normalize(text));
+  if (!match) return null;
+  return { startIndex: Math.min(match.index, text.length) };
+}
+
 /** Nettoie la demande extraite après le mot d'activation. */
 export function cleanCommand(text: string): string {
   return text.replace(/^[\s,.:;!?-]+/, '').trim();

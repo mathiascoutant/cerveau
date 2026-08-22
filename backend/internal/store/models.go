@@ -116,3 +116,24 @@ type Action struct {
 	Type    string         `bson:"type" json:"type"`
 	Payload map[string]any `bson:"payload" json:"payload"`
 }
+
+// EmailDraft : une réponse de mail rédigée par Raoul et gardée pour que
+// l'utilisateur la copie-colle lui-même. Raoul n'envoie rien — c'est délibéré :
+// une réponse partie par erreur ne se rattrape pas, un brouillon oublié si.
+type EmailDraft struct {
+	ID     bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID bson.ObjectID `bson:"user_id" json:"-"`
+	// To : le nom tel qu'on le prononce (« Cyril »), c'est par lui qu'on
+	// retrouve le brouillon à l'oral.
+	To      string `bson:"to" json:"to"`
+	ToAddr  string `bson:"to_addr,omitempty" json:"to_addr,omitempty"`
+	Subject string `bson:"subject" json:"subject"`
+	Body    string `bson:"body" json:"body"`
+	// Language : code ISO du mail rédigé (« fr », « en »). Il suit la langue du
+	// mail d'origine, pas celle de la conversation avec Raoul.
+	Language string `bson:"language,omitempty" json:"language,omitempty"`
+	// SourceSubject : objet du mail auquel on répond, quand il en avait un.
+	SourceSubject string    `bson:"source_subject,omitempty" json:"source_subject,omitempty"`
+	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `bson:"updated_at" json:"updated_at"`
+}

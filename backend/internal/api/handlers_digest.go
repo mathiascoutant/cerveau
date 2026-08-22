@@ -24,6 +24,10 @@ type digestResponse struct {
 	WhatsApp    []assistant.WhatsAppView `json:"whatsapp"`
 	Events      []assistant.EventView    `json:"events"`
 	Unavailable []string                 `json:"unavailable,omitempty"`
+	// Sources : les comptes branchés. L'app s'en sert pour n'afficher que ce
+	// qui existe — une tuile « 0 WhatsApp » chez quelqu'un qui n'a pas
+	// WhatsApp est la version silencieuse du même bavardage.
+	Sources []string `json:"sources"`
 }
 
 // handleHistory renvoie le fil des échanges avec Raoul, du plus récent au plus
@@ -58,8 +62,24 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		Events:   []assistant.EventView{},
 	}
 
-	// Les trois sources distantes sont indépendantes : les interroger en
-	// séquence tripleraient l'attente à l'ouverture de l'onglet.
+	// Les sources distantes sont indépendantes : les interroger en séquence
+	// tripleraient l'attente à l'ouverture de l'onglet. Celles qui ne sont pas
+	// branchées ne sont pas interrogées du tout, et surtout pas rangées parmi
+	// les indisponibles : « indisponible » veut dire « en panne », pas
+	// « jamais configuré ». Signaler un compte qu'on n'a pas revient à
+	// réclamer, chaque matin, un service dont on ne veut pas.
+	src := s.sources(ctx, user)
+	out.Sources = []string{store.ProviderCalendar}
+	if src.Mail {
+		out.Sources = append(out.Sources, store.ProviderGandi)
+	}
+	if src.Slack {
+		out.Sources = append(out.Sources, store.ProviderSlack)
+	}
+	if src.WhatsApp {
+		out.Sources = append(out.Sources, store.ProviderWhatsApp)
+	}
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	unavailable := func(label string) {
@@ -68,40 +88,48 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		mu.Unlock()
 	}
 
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		mails, err := tb.UnreadEmails(ctx, 25)
-		if err != nil {
-			unavailable("mails")
-			return
-		}
-		mu.Lock()
-		out.Emails = mails
-		mu.Unlock()
-	}()
-	go func() {
-		defer wg.Done()
-		threads, err := tb.UnreadSlack(ctx, 15)
-		if err != nil {
-			unavailable("slack")
-			return
-		}
-		mu.Lock()
-		out.Slack = threads
-		mu.Unlock()
-	}()
-	go func() {
-		defer wg.Done()
-		msgs, err := tb.UnreadWhatsApp(ctx, 20)
-		if err != nil {
-			unavailable("whatsapp")
-			return
-		}
-		mu.Lock()
-		out.WhatsApp = msgs
-		mu.Unlock()
-	}()
+	if src.Mail {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mails, err := tb.UnreadEmails(ctx, 25)
+			if err != nil {
+				unavailable("mails")
+				return
+			}
+			mu.Lock()
+			out.Emails = mails
+			mu.Unlock()
+		}()
+	}
+	if src.Slack {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			threads, err := tb.UnreadSlack(ctx, 15)
+			if err != nil {
+				unavailable("slack")
+				return
+			}
+			mu.Lock()
+			out.Slack = threads
+			mu.Unlock()
+		}()
+	}
+	if src.WhatsApp {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			msgs, err := tb.UnreadWhatsApp(ctx, 20)
+			if err != nil {
+				unavailable("whatsapp")
+				return
+			}
+			mu.Lock()
+			out.WhatsApp = msgs
+			mu.Unlock()
+		}()
+	}
 	wg.Wait()
 
 	loc := tb.location()

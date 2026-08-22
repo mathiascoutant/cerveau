@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/emersion/go-imap/v2"
 )
 
 // describeSender rend le candidat prononçable : c'est ce que Raoul lira à voix
@@ -56,5 +58,33 @@ func TestAmbiguousSenderError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Cyril Martin") || !strings.Contains(err.Error(), "Cyril Dubois") {
 		t.Errorf("les deux candidats doivent apparaître : %s", err)
+	}
+}
+
+// addressList sert à répondre juste : reconnaître l'utilisateur parmi les
+// destinataires, et trouver le prénom à saluer.
+func TestAddressList(t *testing.T) {
+	got := addressList([]imap.Address{
+		{Name: "Cyril Martin", Mailbox: "cyril", Host: "exemple.fr"},
+		{Mailbox: "contact", Host: "societe.fr"},
+		{Name: "contact@societe.fr", Mailbox: "contact", Host: "societe.fr"},
+	})
+	want := []string{
+		"Cyril Martin <cyril@exemple.fr>",
+		"contact@societe.fr",
+		// Un nom affiché identique à l'adresse ne se répète pas.
+		"contact@societe.fr",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%d adresses, attendu %d : %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("adresse %d : %q, attendu %q", i, got[i], want[i])
+		}
+	}
+
+	if len(addressList(nil)) != 0 {
+		t.Error("une liste vide doit rendre une liste vide")
 	}
 }

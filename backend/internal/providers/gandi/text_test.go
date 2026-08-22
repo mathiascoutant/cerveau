@@ -83,3 +83,63 @@ func contains(haystack, needle string) bool {
 			return false
 		})()
 }
+
+// L'historique cité ne doit pas être jeté : c'est lui qui dit ce qui a déjà été
+// échangé, donc ce à quoi on répond.
+func TestSplitQuotedReplyKeepsHistory(t *testing.T) {
+	in := "Oui c'est bon pour moi.\n\nLe 3 mars 2026, Cyril a écrit :\n> Tu confirmes pour jeudi ?\n> Cyril"
+
+	body, quoted := splitQuotedReply(in)
+	if body != "Oui c'est bon pour moi." {
+		t.Errorf("corps = %q", body)
+	}
+	if !contains(quoted, "Tu confirmes pour jeudi ?") {
+		t.Errorf("l'historique devrait être conservé, obtenu %q", quoted)
+	}
+	// Le prénom en signature du fil est ce qui permet d'écrire « Bonjour Cyril »
+	// quand l'en-tête ne porte qu'une adresse.
+	if !contains(quoted, "Cyril") {
+		t.Errorf("la signature citée devrait survivre, obtenu %q", quoted)
+	}
+	// Les chevrons gênent la lecture et n'apportent rien au modèle.
+	if contains(quoted, ">") {
+		t.Errorf("les chevrons de citation devraient être retirés : %q", quoted)
+	}
+}
+
+// Sans en-tête « a écrit : », les lignes citées se trient quand même.
+func TestSplitQuotedReplyWithoutHeader(t *testing.T) {
+	body, quoted := splitQuotedReply("Ça marche.\n> ancien message\n> suite")
+	if body != "Ça marche." {
+		t.Errorf("corps = %q", body)
+	}
+	if !contains(quoted, "ancien message") || !contains(quoted, "suite") {
+		t.Errorf("historique = %q", quoted)
+	}
+}
+
+// Deux mails du même fil ne se ressemblent que par leur objet dépouillé.
+func TestBaseSubject(t *testing.T) {
+	cases := map[string]string{
+		"Re: Devis":            "devis",
+		"RE: Re: Fwd: Devis":   "devis",
+		"TR: Réunion d'équipe": "reunion d equipe",
+		"Devis":                "devis",
+		"Re[2]: Devis":         "devis",
+		"":                     "",
+	}
+	for in, want := range cases {
+		if got := baseSubject(in); got != want {
+			t.Errorf("baseSubject(%q) = %q, attendu %q", in, got, want)
+		}
+	}
+
+	// Le rapprochement doit marcher dans les deux sens.
+	if baseSubject("Re: Devis piscine") != baseSubject("Devis piscine") {
+		t.Error("une réponse et son mail d'origine doivent tomber dans le même fil")
+	}
+	// Mais deux sujets distincts ne doivent pas fusionner.
+	if baseSubject("Re: Devis") == baseSubject("Re: Planning") {
+		t.Error("deux sujets différents ne doivent pas se confondre")
+	}
+}

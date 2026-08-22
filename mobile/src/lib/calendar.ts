@@ -1,5 +1,7 @@
 import * as Calendar from 'expo-calendar';
+
 import { api, AssistantAction } from '../api';
+import { openNavigation } from './navigation';
 
 /** Fenêtre synchronisée vers le backend : hier → 45 jours. */
 const WINDOW_PAST_DAYS = 1;
@@ -95,13 +97,27 @@ async function writableCalendarId(): Promise<string | null> {
 }
 
 /**
- * Exécute les actions décidées par Raoul côté serveur. Aujourd'hui il n'y en a
- * qu'une — créer un événement — mais le format est ouvert.
+ * Exécute les actions décidées par Raoul côté serveur : écrire un événement
+ * dans EventKit, ouvrir Waze. Ce sont des choses que seule l'app peut faire,
+ * d'où l'aller-retour.
  */
 export async function applyActions(actions: AssistantAction[]): Promise<string[]> {
   const done: string[] = [];
+  let touchedCalendar = false;
 
   for (const action of actions) {
+    if (action.type === 'navigate') {
+      done.push(await openNavigation(action));
+      continue;
+    }
+    // Rien à exécuter sur le téléphone : la réponse est déjà rangée côté
+    // serveur. On le signale seulement, pour que l'échange porte la trace du
+    // mail qui attend dans l'onglet Réponses.
+    if (action.type === 'email_draft') {
+      const to = action.payload?.to ? String(action.payload.to) : 'ton correspondant';
+      done.push(`Réponse à ${to} prête dans l’onglet Réponses.`);
+      continue;
+    }
     if (action.type !== 'create_event') continue;
 
     if (!(await hasCalendarAccess())) {
@@ -126,13 +142,14 @@ export async function applyActions(actions: AssistantAction[]): Promise<string[]
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       done.push(`« ${title} » ajouté au calendrier.`);
+      touchedCalendar = true;
     } catch (err) {
       done.push(`Échec de l'ajout au calendrier : ${(err as Error).message}`);
     }
   }
 
   // Le miroir serveur doit refléter tout de suite ce qu'on vient d'écrire.
-  if (done.length > 0) {
+  if (touchedCalendar) {
     try {
       await syncCalendar();
     } catch {

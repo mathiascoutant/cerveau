@@ -81,23 +81,63 @@ func collapse(s string) string {
 // stripQuotedReply coupe l'historique cité en fin de mail. Sans ça, Raoul lit
 // six fois la même conversation dans un fil un peu long.
 func stripQuotedReply(s string) string {
+	body, _ := splitQuotedReply(s)
+	return body
+}
+
+// splitQuotedReply sépare le message de l'historique qu'il cite.
+//
+// Les deux moitiés ne servent pas à la même chose, et c'est pour ça qu'on les
+// garde séparées plutôt que d'en jeter une : le message seul est ce qu'on lit à
+// voix haute, l'historique est ce qui permet de RÉPONDRE. Sans lui, on ignore
+// ce qui a déjà été dit, qui répond à qui, et comment les gens s'appellent
+// entre eux — et on écrit un mail hors sujet, poliment.
+func splitQuotedReply(s string) (body, quoted string) {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if quoteHeaderRE.MatchString(trimmed) {
-			return strings.TrimSpace(strings.Join(lines[:i], "\n"))
+		if quoteHeaderRE.MatchString(strings.TrimSpace(line)) {
+			return strings.TrimSpace(strings.Join(lines[:i], "\n")),
+				strings.TrimSpace(unquote(lines[i:]))
 		}
 	}
-	// Les lignes « > … » se retirent une à une : elles peuvent être
-	// entrecoupées de blancs sans marquer la fin du message utile.
+	// Pas d'en-tête de citation : les lignes « > … » se trient une à une. Elles
+	// peuvent être entrecoupées de blancs sans marquer la fin du message utile.
 	kept := make([]string, 0, len(lines))
+	cited := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), ">") {
+			cited = append(cited, line)
 			continue
 		}
 		kept = append(kept, line)
 	}
-	return strings.TrimSpace(strings.Join(kept, "\n"))
+	return strings.TrimSpace(strings.Join(kept, "\n")), strings.TrimSpace(unquote(cited))
+}
+
+// unquote retire les chevrons de citation. Les garder ferait lire « supérieur,
+// supérieur, bonjour » à la synthèse vocale, et gêne le modèle plus qu'ils ne
+// l'aident : la structure du fil se lit aux en-têtes, pas aux chevrons.
+func unquote(lines []string) string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for strings.HasPrefix(trimmed, ">") {
+			trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))
+		}
+		out = append(out, trimmed)
+	}
+	return collapse(strings.Join(out, "\n"))
+}
+
+// replyPrefixRE reconnaît les préfixes qu'empilent les clients mail. Deux mails
+// d'un même fil ne partagent que ce qu'il en reste.
+var replyPrefixRE = regexp.MustCompile(`(?i)^\s*((re|ré|rép|rep|fw|fwd|tr|transf)\s*(\[[0-9]+\])?\s*:\s*)+`)
+
+// baseSubject réduit « Re: Fwd: Devis » à « devis », pour rapprocher les
+// messages d'une même conversation. IMAP ne donne pas de fil : le sujet nu est
+// le seul lien qu'on puisse établir sans en-têtes de threading fiables.
+func baseSubject(s string) string {
+	return normalizeQuery(replyPrefixRE.ReplaceAllString(strings.TrimSpace(s), ""))
 }
 
 func truncateRunes(s string, n int) string {

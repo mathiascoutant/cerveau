@@ -18,7 +18,8 @@ token permanent. On arrive directement sur l'assistant.
 
 ## Ce dont j'ai besoin de toi
 
-Sept valeurs à récupérer. Le reste est déjà câblé.
+Sept valeurs à récupérer, une huitième si tu veux une belle voix. Le reste est
+déjà câblé.
 
 ### 1. OpenAI — `OPENAI_API_KEY` (obligatoire)
 
@@ -179,6 +180,36 @@ MONGO_DB=cerveau
 > joignable depuis Internet, et ces identifiants-là se trouvent en quelques secondes.
 > Crée un utilisateur dédié avec un vrai mot de passe, et restreins l'accès réseau
 > (Network Access) à l'IP du VPS plutôt que `0.0.0.0/0`.
+
+### 8. Voix de Raoul — `ELEVENLABS_API_KEY` (optionnel, mais ça s'entend)
+
+La synthèse vocale d'iOS pose chaque mot au même rythme : intelligible, mais on
+entend la machine. ElevenLabs rend une voix qui respire.
+
+1. <https://elevenlabs.io> → **Profile → API keys**
+2. La clé n'a besoin que de la permission **`text_to_speech`**
+3. Dans `.env` :
+
+```
+ELEVENLABS_API_KEY=sk_…
+ELEVENLABS_VOICE_ID=      # vide = « Eric », posé et sans aspérité
+ELEVENLABS_MODEL=eleven_turbo_v2_5
+```
+
+Sur un compte **gratuit**, l'API renvoie un 402 pour toute voix ajoutée depuis
+la Voice Library — y compris les voix françaises. Seules les voix « premade »
+passent, et elles sont toutes anglophones : le français est correct, avec une
+légère couleur d'accent. Le premier palier payant lève la restriction.
+
+Le modèle arbitre entre timbre et latence, et sur un assistant vocal la latence
+s'entend davantage : `eleven_turbo_v2_5` rend le premier son en ~250 ms,
+`eleven_multilingual_v2` est un cran plus naturel mais fait attendre ~1,2 s
+avant la première syllabe. Pour changer de voix, prends un identifiant dans la
+bibliothèque ElevenLabs et pose-le dans `ELEVENLABS_VOICE_ID`.
+
+Sans clé, rien ne casse : l'app le voit (`GET /api/v1/me` renvoie
+`voice.engine = "device"`), l'écran **Accès** l'affiche, et Raoul continue de
+parler avec la voix du téléphone.
 
 ---
 
@@ -353,6 +384,35 @@ eas submit --platform ios
 
 ---
 
+## Le widget « Parler à Raoul »
+
+Un widget d'écran d'accueil qui ouvre l'app et lance l'écoute d'un appui, sans
+passer par l'icône ni par un onglet.
+
+**Il n'écoute pas lui-même.** iOS réserve le micro aux apps au premier plan, et
+le code d'un widget ne tourne que le temps de dessiner une image. Celui-ci
+ouvre donc le lien `raoul://listen` ; l'app le reçoit, bascule sur l'onglet
+Raoul et entre directement en conversation — l'appui sur le widget tient lieu de
+« OK Raoul ».
+
+Un widget est une **cible Xcode à part**, avec son bundle (`…cerveau.widget`),
+son `Info.plist` et sa signature. `ios/` étant régénéré par prebuild,
+[`plugins/withRaoulWidget.js`](mobile/plugins/withRaoulWidget.js) recrée tout à
+chaque génération : recopie des sources, fabrication de la cible, embarquement
+du produit dans l'app. Le `.appex` est déclaré dans `app.json` sous
+`extra.eas.build.experimental.ios.appExtensions`, ce qui fait provisionner son
+identifiant par EAS au moment du build.
+
+Pour l'ajouter sur le téléphone, une fois la build TestFlight installée :
+appui long sur l'écran d'accueil → **+** en haut à gauche → chercher « Raoul »
+→ **Parler à Raoul**. Il existe en petit format et en pastille d'écran
+verrouillé (iOS 16+).
+
+> Le widget n'existe pas dans Expo Go : c'est une extension native, elle demande
+> un dev build ou une build TestFlight.
+
+---
+
 ## Comment « OK Raoul » fonctionne
 
 L'app fait tourner la reconnaissance vocale **native iOS** (`SFSpeechRecognizer`) en
@@ -391,6 +451,55 @@ Le backend donne au modèle cinq outils et le laisse mener l'enquête :
 Le serveur n'écrit jamais dans ton calendrier lui-même : il renvoie une action que
 l'app exécute. C'est ce qui permet de rester sur le calendrier natif sans OAuth.
 
+**Les sources non branchées n'existent pas pour Raoul.** Il ne reçoit ni leur outil
+ni leur nom dans ses consignes, donc il n'en parle jamais — ni « je n'ai rien trouvé
+sur WhatsApp », ni « WhatsApp n'est pas connecté ». Elles disparaissent aussi des
+pastilles de l'écran d'accueil et des tuiles du Journal.
+
+---
+
+## Les réponses de mail
+
+> « Prépare-moi une réponse à ce mail pour dire que c'est ok pour moi. »
+
+Raoul rédige le mail en entier, te le lit à voix haute, et le range dans l'onglet
+**Réponses**. Tu le copies d'un geste et tu l'envoies depuis ton client mail.
+
+Avant d'écrire, il récupère de quoi répondre juste : `lire_mail` remonte les
+destinataires du message, l'historique que le mail cite lui-même, et jusqu'à trois
+messages antérieurs du même fil retrouvés dans la boîte. C'est ce qui lui permet
+d'ouvrir sur « Bonjour Cyril » plutôt que sur « Bonjour, », de vouvoyer quand le fil
+vouvoie, et de signer de ton prénom. Rien de tout ça n'est lu à voix haute — c'est
+du contexte, pas du contenu.
+
+**Il n'envoie rien, jamais.** C'est délibéré : un mail parti par erreur ne se
+rattrape pas, un brouillon oublié si.
+
+La langue suit le mail d'origine, pas la conversation : un mail reçu en anglais se
+répond en anglais et se lit en anglais. « Dis-le-moi en français » te le traduit à
+l'oral sans toucher au brouillon — il part chez quelqu'un qui lit l'anglais.
+
+Une réponse préparée se retrouve plus tard à la voix : « modifie la réponse pour
+Cyril ». S'il n'y en a qu'une, il la relit directement ; s'il y en a plusieurs, il
+cite leurs objets et demande laquelle. Puis « change cette phrase » ne touche que
+cette phrase — le reste ressort au mot près.
+
+| Outil | Rôle |
+|---|---|
+| `preparer_reponse_mail` | rédige la réponse et la range dans l'onglet |
+| `chercher_brouillon` | retrouve une réponse déjà préparée |
+| `modifier_brouillon` | réécrit une réponse existante |
+
+---
+
+## La mémoire
+
+> « Au fait, par rapport à ce qu'on disait ce matin, tu en penses quoi ? »
+
+Les quatorze derniers tours voyagent dans le contexte du modèle. Au-delà, l'outil
+`chercher_historique` va rechercher l'échange en base, par mots-clés et par date.
+Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
+
 ---
 
 ## API
@@ -401,6 +510,11 @@ l'app exécute. C'est ce qui permet de rester sur le calendrier natif sans OAuth
 | `GET` | `/api/v1/status` | bilan des quatre sources |
 | `PUT` | `/api/v1/connections/{gandi,slack,whatsapp}` | branche une source (identifiants validés avant stockage) |
 | `POST` | `/api/v1/calendar/sync` | l'app pousse le miroir de l'agenda |
+| `GET` | `/api/v1/drafts` | les réponses de mail préparées |
+| `PATCH` | `/api/v1/drafts/{id}` | retouche une réponse au clavier |
+| `DELETE` | `/api/v1/drafts/{id}` | supprime une réponse |
 | `POST` | `/api/v1/assistant/ask` | pose une question à Raoul |
 | `POST` | `/api/v1/assistant/voice` | secours : envoi audio + transcription serveur |
+| `POST` | `/api/v1/assistant/speech` | prépare la lecture d'un texte, renvoie une URL jetable |
+| `GET` | `/api/v1/speech/{ticket}` | diffuse l'audio ElevenLabs (ticket à usage unique) |
 | `GET/POST` | `/webhooks/whatsapp` | webhook Meta (signature HMAC vérifiée) |

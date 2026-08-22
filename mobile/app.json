@@ -19,7 +19,12 @@
         "NSCalendarsFullAccessUsageDescription": "Raoul lit ton agenda pour savoir si un créneau est libre, et y ajoute les rendez-vous que tu valides.",
         "NSCalendarsUsageDescription": "Raoul lit ton agenda pour savoir si un créneau est libre, et y ajoute les rendez-vous que tu valides.",
         "NSRemindersFullAccessUsageDescription": "Raoul peut créer des rappels liés à tes rendez-vous.",
-        "ITSAppUsesNonExemptEncryption": false
+        "NSRemindersUsageDescription": "Raoul peut créer des rappels liés à tes rendez-vous.",
+        "NSPhotoLibraryUsageDescription": "Raoul n'accède pas à tes photos. Cette mention est exigée par le composant de gestion de fichiers d'Expo, qui référence l'API système ; l'autorisation ne te sera jamais demandée.",
+        "NSFaceIDUsageDescription": "Raoul peut protéger l'accès à tes identifiants de connexion par Face ID.",
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSpeechRecognitionUsageDescription": "Raoul transcrit ta voix sur l'appareil pour comprendre ta demande.",
+        "NSMicrophoneUsageDescription": "Raoul a besoin du micro pour t'entendre dire « OK Raoul »."
       }
     },
     "android": {
@@ -30,7 +35,12 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_CALENDAR",
+        "android.permission.WRITE_CALENDAR"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -49,12 +59,29 @@
         {
           "calendarPermission": "Raoul consulte ton agenda pour vérifier tes disponibilités et y placer tes rendez-vous."
         }
-      ]
+      ],
+      "expo-font",
+      "./plugins/withSiriIntents",
+      "./plugins/withRaoulWidget",
+      "expo-audio",
+      "expo-asset"
     ],
     "extra": {
       "defaultApiUrl": "https://cerveau.neurorun.fr",
       "eas": {
-        "projectId": ""
+        "projectId": "5705fbdc-c548-4b10-ab12-ea8e11d74829",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "RaoulWidget",
+                  "bundleIdentifier": "com.mathiascoutant.cerveau.widget"
+                }
+              ]
+            }
+          }
+        }
       }
     }
   }
