@@ -80,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/status", s.handleStatus)
 			r.Get("/history", s.handleHistory)
 			r.Get("/digest", s.handleDigest)
+			r.Get("/urgent", s.handleUrgent)
 
 			r.Get("/connections", s.handleListConnections)
 			r.Put("/connections/gandi", s.handleConnectGandi)

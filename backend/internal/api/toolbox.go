@@ -47,17 +47,31 @@ func (t *userToolbox) CalendarEvents(ctx context.Context, start, end time.Time) 
 	return out, nil
 }
 
-func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.EmailView, error) {
+// unreadMail rend les mails non lus tels que le fournisseur les a lus —
+// destinataires et horodatages intacts — ainsi que l'adresse de l'utilisateur.
+//
+// UnreadEmails en fait une vue pour le modèle, le tri des urgences a besoin de
+// la version complète : « suis-je le destinataire ? » ne se répond pas sur un
+// résumé où le champ « À » a déjà été jeté.
+func (t *userToolbox) unreadMail(ctx context.Context, limit int) ([]gandi.Message, string, error) {
 	creds, err := t.srv.gandiCreds(ctx, t.user)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, errors.New("la boîte mail Gandi n'est pas connectée")
+			return nil, "", errors.New("la boîte mail Gandi n'est pas connectée")
 		}
-		return nil, err
+		return nil, "", err
 	}
 	mails, err := gandi.Unread(ctx, creds, limit)
 	if err != nil {
 		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderGandi, err.Error())
+		return nil, "", err
+	}
+	return mails, creds.Email, nil
+}
+
+func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.EmailView, error) {
+	mails, _, err := t.unreadMail(ctx, limit)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]assistant.EmailView, 0, len(mails))
@@ -125,7 +139,10 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 	return view, nil
 }
 
-func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.SlackView, error) {
+// slackActivity rend l'activité brute, avec l'horodatage réel du dernier
+// message. UnreadSlack le met en mots pour le modèle ; le tri des urgences a
+// besoin de l'instant, pas de « il y a deux heures », pour ordonner la liste.
+func (t *userToolbox) slackActivity(ctx context.Context, limit int) ([]slack.Activity, error) {
 	creds, err := t.srv.slackCreds(ctx, t.user)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -143,7 +160,14 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 	for _, w := range warnings {
 		slog.Warn("slack : conversation ignorée", "detail", w)
 	}
+	return threads, nil
+}
 
+func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.SlackView, error) {
+	threads, err := t.slackActivity(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]assistant.SlackView, 0, len(threads))
 	for _, th := range threads {
 		out = append(out, assistant.SlackView{

@@ -46,6 +46,11 @@ type Message struct {
 	// c'est écrire « Bonjour Cyril » à un message envoyé à cinq personnes.
 	To []string `json:"to,omitempty"`
 	Cc []string `json:"cc,omitempty"`
+	// Bulk dit que le message porte les en-têtes d'un envoi de masse ou
+	// automatique. C'est un fait posé par l'expéditeur lui-même dans le
+	// message, pas une devinette sur son contenu — d'où sa présence ici, à
+	// côté des autres champs lus tels quels.
+	Bulk bool `json:"-"`
 	// Thread : les messages antérieurs de la conversation, du plus récent au
 	// plus ancien. Ils viennent d'abord du fil que le mail recopie lui-même,
 	// et à défaut d'une recherche dans la boîte.
@@ -111,9 +116,19 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 		nums = nums[len(nums)-limit:]
 	}
 
+	// PEEK : la boîte est déjà ouverte en lecture seule, mais un serveur qui
+	// l'ignorerait poserait \Seen sur des mails que personne n'a lus. Deux
+	// verrous valent mieux qu'un quand la conséquence est de faire disparaître
+	// des non-lus du vrai client mail.
+	headers := &imap.FetchItemBodySection{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: bulkHeaders,
+		Peek:         true,
+	}
 	msgs, err := c.Fetch(imap.SeqSetNum(nums...), &imap.FetchOptions{
-		Envelope: true,
-		Flags:    true,
+		Envelope:    true,
+		Flags:       true,
+		BodySection: []*imap.FetchItemBodySection{headers},
 	}).Collect()
 	if err != nil {
 		return nil, fmt.Errorf("lecture des mails : %w", err)
@@ -129,6 +144,9 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 			From:     formatAddresses(m.Envelope.From),
 			FromAddr: firstAddress(m.Envelope.From),
 			Date:     m.Envelope.Date,
+			To:       addressList(m.Envelope.To),
+			Cc:       addressList(m.Envelope.Cc),
+			Bulk:     isBulk(m.FindBodySection(headers)),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
