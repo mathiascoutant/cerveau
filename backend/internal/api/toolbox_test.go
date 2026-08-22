@@ -46,3 +46,34 @@ func TestToolboxWhenEmptyTimestamp(t *testing.T) {
 		t.Errorf("un horodatage absent doit rendre une chaîne vide, obtenu %q", got)
 	}
 }
+
+// Reconnaître ses propres messages dans le fil cité est ce qui permet de
+// répondre à « j'ai dit quoi dans le mail d'avant ».
+func TestWrittenBy(t *testing.T) {
+	const me = "mathias.coutant@pxcom.aero"
+
+	cases := []struct {
+		from string
+		want bool
+	}{
+		{"Mathias COUTANT <mathias.coutant@pxcom.aero>", true},
+		// Outlook majuscule l'adresse selon les versions.
+		{"Mathias COUTANT <Mathias.Coutant@pxcom.aero>", true},
+		{"mathias.coutant@pxcom.aero", true},
+		{"Stefan Neuhuber <sneuhuber@cloudguard.at>", false},
+		// Un homonyme chez un autre domaine n'est pas lui.
+		{"Mathias Coutant <mathias.coutant@gmail.com>", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := writtenBy(c.from, me); got != c.want {
+			t.Errorf("writtenBy(%q) = %v, attendu %v", c.from, got, c.want)
+		}
+	}
+
+	// Sans adresse connue, on ne devine pas : mieux vaut ne rien marquer que
+	// d'attribuer à l'utilisateur un message qui n'est pas de lui.
+	if writtenBy("Mathias COUTANT <mathias.coutant@pxcom.aero>", "") {
+		t.Error("sans adresse connue, aucun message ne doit être marqué comme sien")
+	}
+}

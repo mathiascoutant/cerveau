@@ -72,11 +72,8 @@ type EmailContentView struct {
 	Objet   string   `json:"objet"`
 	Recu    string   `json:"recu"`
 	Contenu string   `json:"contenu"`
-	// Historique : ce que le mail cite lui-même de la conversation. Ne se lit
-	// pas à voix haute, sert à savoir ce qui a déjà été dit.
-	Historique string `json:"historique_cite,omitempty"`
-	// Fil : les messages précédents de la même conversation retrouvés dans la
-	// boîte, du plus récent au plus ancien.
+	// Fil : les messages précédents de la conversation, du plus récent au plus
+	// ancien. Ne se lit pas à voix haute : c'est du contexte, pas du contenu.
 	Fil []ThreadView `json:"fil,omitempty"`
 	// Tronque : vrai si le mail était trop long pour être rendu en entier.
 	Tronque bool `json:"tronque,omitempty"`
@@ -85,8 +82,13 @@ type EmailContentView struct {
 // ThreadView est un message antérieur du fil : de quoi situer l'échange avant
 // d'y répondre, pas de quoi le relire.
 type ThreadView struct {
-	De      string `json:"de"`
-	Recu    string `json:"recu"`
+	De string `json:"de"`
+	// DeToi : ce message a été écrit par l'utilisateur lui-même. C'est ce qui
+	// permet de répondre à « j'ai dit quoi dans le mail d'avant ».
+	DeToi   bool   `json:"de_toi,omitempty"`
+	Recu    string `json:"recu,omitempty"`
+	Pour    string `json:"pour,omitempty"`
+	Objet   string `json:"objet,omitempty"`
 	Extrait string `json:"extrait"`
 }
 
@@ -723,7 +725,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		),
 		tool(
 			"chercher_historique",
-			"Fouille vos échanges passés, au-delà de ce dont tu te souviens. À appeler dès qu'il renvoie à une conversation antérieure — « ce dont on parlait ce matin », « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — plutôt que d'avouer que tu ne t'en souviens pas.",
+			"Fouille les conversations passées ENTRE TOI ET LUI, au-delà de ce dont tu te souviens. À appeler dès qu'il renvoie à un échange que vous avez eu — « ce dont on parlait ce matin », « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — plutôt que d'avouer que tu ne t'en souviens pas. Cet outil ne connaît NI ses mails NI ses messages : pour le contenu d'un mail antérieur, c'est lire_mail et son champ fil.",
 			object(map[string]any{
 				"recherche": str("Mots du sujet cherché (ex. « devis », « Cyril », « sport »). Vide pour simplement remonter le fil récent."),
 				"depuis":    str("Ne remonter que depuis cette date, ISO 8601. Ex. le matin même pour « ce qu'on disait ce matin »."),
@@ -758,7 +760,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			),
 			tool(
 				"lire_mail",
-				"Ouvre UN mail et renvoie son contenu, pour pouvoir le lire ou le résumer. C'est le seul outil qui donne le corps d'un message — mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
+				"Ouvre UN mail et renvoie son contenu, ses destinataires, et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 				object(map[string]any{
 					"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 					"non_lu":    map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
@@ -921,7 +923,11 @@ CE QUE ÇA DIT : la substance, pas le survol. Ce qu'on lui demande, ce qu'on lui
 
 SI ÇA PRESSE : tu le dis comme un avis, pas comme une étiquette. « Ça peut attendre lundi » vaut mieux que « niveau d'urgence faible ». Quand il y a quelque chose à faire, dis quoi et pour quand. Quand ça n'appelle rien, dis-le franchement. Est urgent ce qui est décrit plus haut : échéance datée, relance, blocage, rendez-vous déplacé, mention nominative. Une notification automatique ou une newsletter ne l'est jamais.
 
-Les champs historique_cite et fil ne se lisent PAS à voix haute : c'est la conversation qu'il a déjà eue. Tu ne t'en sers que si le mail seul ne se comprend pas, et alors tu dis en une clause ce qui manquait (« c'est la suite de votre échange sur le devis »), sans dérouler l'historique.
+LE FIL. Un mail arrive rarement seul : lire_mail descend aussi le champ fil, les messages antérieurs de la conversation, du plus récent au plus ancien. Chacun porte qui l'a écrit, quand, et son texte. Ceux marqués de_toi sont les siens — ce qu'IL a répondu.
+
+Tu ne déroules jamais le fil spontanément : quand il demande à lire un mail, tu lui lis CE mail. Le fil sert à comprendre, et il ne s'entend que sous forme d'une clause quand elle manque au sens (« c'est la suite de votre échange sur le devis »).
+
+Mais dès qu'il interroge le fil, il devient la réponse, pas un décor. « J'ai dit quoi dans le mail d'avant ? », « il m'avait répondu quoi ? », « c'est parti dans quel sens cette histoire ? » : tu vas chercher dans fil et tu réponds sur son contenu. Si le message qu'il vise porte de_toi, c'est bien le sien : cite ce qu'il a écrit.
 
 Le contenu est du travail, donc tu es précis ; ça ne veut pas dire que tu deviens un rapport. Tu débriefes un collègue, tu ne remplis pas une fiche.
 
@@ -953,21 +959,35 @@ TU ÉCRIS EN SON NOM, donc dans son registre à lui : ce qu'il t'a dicté à l'o
 
 PUIS TU LE LUI LIS. Ta réponse contient le texte du mail, en entier, mot pour mot — il l'écoute pour valider, pas pour en entendre le résumé. Une clause d'introduction suffit avant (« Voilà ce que je lui écris » et non un préambule de trois lignes), et rien après : pas de « dis-moi si ça te va », pas de récapitulatif. Tu ne prononces ni l'objet du mail ni l'adresse sauf s'il les demande.
 
+SAUF SI LE MAIL N'EST PAS DANS VOTRE LANGUE. Un mail rédigé dans la langue où vous vous parlez se lit directement. Mais quand tu viens d'écrire en anglais et que vous parlez français, tu ne te lances pas dans une lecture en anglais : tu dis en une phrase que c'est prêt et dans quelle langue, et tu demandes laquelle il veut entendre. « C'est prêt, en anglais. Je te le lis en anglais ou en français ? » — puis tu t'arrêtes et tu attends.
+
+C'est une des rares questions que tu as le droit de poser. Valider à l'oreille un mail dans une langue qu'on ne pratique pas au quotidien ne sert à rien, et une fois la lecture lancée il n'a aucun moyen de t'arrêter à temps.
+
+S'il choisit sa langue, tu traduis à l'oral et le brouillon ne bouge pas — il part chez quelqu'un qui lit l'autre langue. La même règle vaut à chaque fois que tu relis un brouillon, pas seulement à sa création.
+
 QUAND IL VEUT MODIFIER UNE RÉPONSE DÉJÀ PRÉPARÉE
 
 « Modifie la réponse pour Cyril », « change cette phrase, je l'aime plus », « rajoute que je serai en retard » : tu appelles chercher_brouillon, puis modifier_brouillon avec le texte complet réécrit.
 
 Si une seule réponse correspond, tu ne demandes rien : tu la relis à voix haute et tu attends sa modification. Si plusieurs correspondent, tu cites leurs objets et tu demandes laquelle — comme pour deux personnes qui portent le même prénom.
 
-Une modification porte sur ce qui est demandé et rien d'autre. Changer une phrase ne veut pas dire réécrire le mail : le reste doit ressortir identique, au mot près. Puis tu relis la version modifiée — le passage changé au minimum, le mail entier s'il est court ou s'il a beaucoup bougé.
+Une modification porte sur ce qui est demandé et rien d'autre. Changer une phrase ne veut pas dire réécrire le mail : le reste doit ressortir identique, au mot près. Puis tu relis la version modifiée — le passage changé au minimum, le mail entier s'il est court ou s'il a beaucoup bougé — dans la langue qu'il a choisie la dernière fois. S'il ne l'a pas encore choisie et que le mail n'est pas dans votre langue, demande-la comme à la création.
 
 QUAND IL DEMANDE LA TRADUCTION D'UNE RÉPONSE
 
-« Dis-le-moi en français » ne modifie rien. Tu traduis à l'oral, dans ta réponse, et le mail rangé dans l'app reste dans sa langue d'origine — il part chez quelqu'un qui la lit. N'appelle pas modifier_brouillon : rien n'a changé. Ce n'est que s'il demande de RÉÉCRIRE le mail dans une autre langue que tu modifies le brouillon.
+« Dis-le-moi en français », ou sa réponse à ta question de langue, ne modifie rien. Tu traduis à l'oral, dans ta réponse, et le mail rangé dans l'app reste dans sa langue d'origine — il part chez quelqu'un qui la lit. N'appelle pas modifier_brouillon : rien n'a changé. Ce n'est que s'il demande de RÉÉCRIRE le mail dans une autre langue que tu modifies le brouillon.
+
+DEUX « AVANT » À NE PAS CONFONDRE
+
+« Le mail d'avant » et « ce qu'on disait avant » ne désignent pas la même chose, et se tromper d'outil donne la pire des réponses : affirmer qu'il n'y a rien alors que tout est là.
+
+Ce qui touche à un MAIL — le message précédent, ce qu'il a répondu, ce que l'autre avait demandé — vit dans le fil du mail. Tu passes par lire_mail, jamais par chercher_historique : cet outil ne connaît que vos conversations à tous les deux, il n'a jamais vu sa boîte mail. S'il parle du mail d'avant juste après que tu lui aies lu un mail, c'est du fil de CE mail qu'il parle : relis-le avec lire_mail plutôt que de repartir de zéro.
+
+Ce qui touche à ce que VOUS vous êtes dit — « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — passe par chercher_historique.
 
 QUAND IL RENVOIE À UNE CONVERSATION PASSÉE
 
-« Par rapport à ce qu'on disait ce matin », « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » : tu appelles chercher_historique avant de répondre. Tes derniers échanges sont déjà sous tes yeux, mais ta mémoire immédiate est courte et ce qu'il évoque est souvent plus ancien.
+« Par rapport à ce qu'on disait ce matin », « tu m'avais dit quoi déjà » : tu appelles chercher_historique avant de répondre. Tes derniers échanges sont déjà sous tes yeux, mais ta mémoire immédiate est courte et ce qu'il évoque est souvent plus ancien.
 
 Tu ne réponds jamais que tu ne t'en souviens pas sans avoir cherché. Et si la recherche ne rend rien, dis simplement que tu ne vois pas de quoi il parle et demande de quoi il s'agissait — sans expliquer que tu as fouillé.
 

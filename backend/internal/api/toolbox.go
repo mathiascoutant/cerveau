@@ -93,19 +93,33 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		return assistant.EmailContentView{}, err
 	}
 	view := assistant.EmailContentView{
-		De:         msg.From,
-		Adresse:    msg.FromAddr,
-		Pour:       msg.To,
-		Copie:      msg.Cc,
-		Objet:      msg.Subject,
-		Recu:       t.when(msg.Date),
-		Contenu:    msg.Body,
-		Historique: msg.Quoted,
-		Tronque:    strings.HasSuffix(msg.Body, "…"),
+		De:      msg.From,
+		Adresse: msg.FromAddr,
+		Pour:    msg.To,
+		Copie:   msg.Cc,
+		Objet:   msg.Subject,
+		Recu:    t.when(msg.Date),
+		Contenu: msg.Body,
+		Tronque: strings.HasSuffix(msg.Body, "…"),
 	}
+	// L'adresse de sa propre boîte sert à reconnaître ses envois dans le fil :
+	// « j'ai dit quoi dans le mail d'avant » n'a de réponse que si on sait
+	// lesquels de ces messages sont les siens.
+	mine := strings.ToLower(creds.Email)
 	for _, m := range msg.Thread {
+		// Recu : l'horodatage IMAP quand on l'a, sinon l'en-tête recopié tel
+		// quel — jamais une date reconstruite.
+		recu := m.Sent
+		if !m.Date.IsZero() {
+			recu = t.when(m.Date)
+		}
 		view.Fil = append(view.Fil, assistant.ThreadView{
-			De: m.From, Recu: t.when(m.Date), Extrait: m.Excerpt,
+			De:      m.From,
+			DeToi:   writtenBy(m.From, mine),
+			Recu:    recu,
+			Pour:    m.To,
+			Objet:   m.Subject,
+			Extrait: m.Excerpt,
 		})
 	}
 	return view, nil
@@ -241,6 +255,19 @@ func (t *userToolbox) CreateEvent(ctx context.Context, draft assistant.EventDraf
 			"notes":       draft.Note,
 		},
 	}, nil
+}
+
+// writtenBy dit si un message du fil vient de l'utilisateur lui-même.
+//
+// L'en-tête recopié mêle nom affiché et adresse (« Mathias COUTANT <m@x.fr> ») :
+// on cherche l'adresse dedans, elle seule est fiable. Sans ce marquage, « j'ai
+// dit quoi dans le mail d'avant » n'a pas de réponse — ses propres envois ne
+// sont nulle part ailleurs, la boîte de réception ne les contient pas.
+func writtenBy(from, email string) bool {
+	if strings.TrimSpace(email) == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(from), strings.ToLower(email))
 }
 
 // --- Réponses de mail -------------------------------------------------------

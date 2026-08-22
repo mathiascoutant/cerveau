@@ -85,6 +85,152 @@ func stripQuotedReply(s string) string {
 	return body
 }
 
+// QuotedMessage est un message antérieur recopié dans le corps du mail. Les
+// clients mail empilent ainsi tout le fil : c'est là que se trouve la
+// conversation, et souvent la seule trace de ce que l'utilisateur a lui-même
+// écrit — ses propres envois ne sont pas dans sa boîte de réception.
+type QuotedMessage struct {
+	From    string
+	Sent    string
+	To      string
+	Cc      string
+	Subject string
+	Body    string
+}
+
+var (
+	inlineFromRE    = regexp.MustCompile(`(?i)^(?:from|de)\s*:\s*(.+)$`)
+	inlineSentRE    = regexp.MustCompile(`(?i)^(?:sent|envoyé|envoye|date)\s*:\s*(.+)$`)
+	inlineToRE      = regexp.MustCompile(`(?i)^(?:to|à)\s*:\s*(.+)$`)
+	inlineCcRE      = regexp.MustCompile(`(?i)^(?:cc|copie)\s*:\s*(.+)$`)
+	inlineSubjectRE = regexp.MustCompile(`(?i)^(?:subject|objet)\s*:\s*(.+)$`)
+)
+
+// Bornes du fil cité : au-delà on garde du texte que personne ne relira, et le
+// contexte utile est toujours dans les messages les plus récents.
+const (
+	maxQuotedMessages = 6
+	maxQuotedBody     = 900
+)
+
+// isForwardHeader dit si la ligne i ouvre un bloc d'en-têtes recopié.
+//
+// Un « From : » seul ne suffit pas : une phrase qui commence par « De : »
+// couperait le mail en deux. On exige donc qu'un « Sent : » ou un « Subject : »
+// suive de près, séparés au plus par d'autres en-têtes.
+func isForwardHeader(lines []string, i int) bool {
+	if !inlineFromRE.MatchString(strings.TrimSpace(lines[i])) {
+		return false
+	}
+	for j := i + 1; j < len(lines) && j <= i+5; j++ {
+		line := strings.TrimSpace(lines[j])
+		if line == "" {
+			continue
+		}
+		if inlineSentRE.MatchString(line) || inlineSubjectRE.MatchString(line) {
+			return true
+		}
+		if !inlineToRE.MatchString(line) && !inlineCcRE.MatchString(line) {
+			return false
+		}
+	}
+	return false
+}
+
+// parseForwardHeaders lit le bloc d'en-têtes en tête d'un segment et rend le
+// nombre de lignes consommées.
+func parseForwardHeaders(lines []string) (QuotedMessage, int) {
+	var m QuotedMessage
+	i := 0
+	for ; i < len(lines) && i < 10; i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			if m.From != "" {
+				break // ligne vide après les en-têtes : le corps commence
+			}
+			continue
+		}
+		field := func(re *regexp.Regexp) string {
+			return strings.TrimSpace(re.FindStringSubmatch(line)[1])
+		}
+		switch {
+		case m.From == "" && inlineFromRE.MatchString(line):
+			m.From = field(inlineFromRE)
+		case inlineSentRE.MatchString(line):
+			m.Sent = field(inlineSentRE)
+		case inlineToRE.MatchString(line):
+			m.To = field(inlineToRE)
+		case inlineCcRE.MatchString(line):
+			m.Cc = field(inlineCcRE)
+		case inlineSubjectRE.MatchString(line):
+			m.Subject = field(inlineSubjectRE)
+		default:
+			return m, i
+		}
+	}
+	return m, i
+}
+
+// parseQuotedThread sépare le mail lui-même des messages qu'il recopie.
+//
+// Trois conventions coexistent et il faut les couvrir toutes : le bloc
+// d'en-têtes d'Outlook (« From: / Sent: / Subject: »), la ligne d'introduction
+// de Gmail et Apple Mail (« Le 3 mars, X a écrit : »), et les chevrons. Ne
+// reconnaître que les deux dernières laissait passer les fils Outlook en
+// entier dans le corps — donc lus à voix haute, et sans qu'aucun message
+// antérieur ne soit un objet distinct auquel se référer.
+func parseQuotedThread(s string) (string, []QuotedMessage) {
+	lines := strings.Split(s, "\n")
+
+	starts := make([]int, 0, 4)
+	forward := make(map[int]bool, 4)
+	for i := range lines {
+		if quoteHeaderRE.MatchString(strings.TrimSpace(lines[i])) {
+			starts = append(starts, i)
+			continue
+		}
+		if isForwardHeader(lines, i) {
+			starts = append(starts, i)
+			forward[i] = true
+		}
+	}
+	if len(starts) == 0 {
+		return strings.Join(lines, "\n"), nil
+	}
+
+	body := strings.TrimSpace(strings.Join(lines[:starts[0]], "\n"))
+
+	msgs := make([]QuotedMessage, 0, len(starts))
+	for k, start := range starts {
+		end := len(lines)
+		if k+1 < len(starts) {
+			end = starts[k+1]
+		}
+		segment := lines[start:end]
+
+		var m QuotedMessage
+		var consumed int
+		if forward[start] {
+			m, consumed = parseForwardHeaders(segment)
+		} else {
+			// « Le 3 mars, X a écrit : » porte l'expéditeur et la date dans la
+			// même phrase : on la garde telle quelle plutôt que de la découper
+			// au risque de se tromper.
+			m.From = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(segment[0]), ":"))
+			consumed = 1
+		}
+		m.Body = truncateRunes(unquote(segment[consumed:]), maxQuotedBody)
+		if m.From == "" && m.Body == "" {
+			continue
+		}
+		msgs = append(msgs, m)
+		if len(msgs) == maxQuotedMessages {
+			break
+		}
+	}
+	return body, msgs
+}
+
 // splitQuotedReply sépare le message de l'historique qu'il cite.
 //
 // Les deux moitiés ne servent pas à la même chose, et c'est pour ça qu'on les
@@ -93,15 +239,18 @@ func stripQuotedReply(s string) string {
 // ce qui a déjà été dit, qui répond à qui, et comment les gens s'appellent
 // entre eux — et on écrit un mail hors sujet, poliment.
 func splitQuotedReply(s string) (body, quoted string) {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if quoteHeaderRE.MatchString(strings.TrimSpace(line)) {
-			return strings.TrimSpace(strings.Join(lines[:i], "\n")),
-				strings.TrimSpace(unquote(lines[i:]))
+	body, msgs := parseQuotedThread(s)
+	if len(msgs) > 0 {
+		parts := make([]string, 0, len(msgs))
+		for _, m := range msgs {
+			parts = append(parts, strings.TrimSpace(m.From+"\n"+m.Body))
 		}
+		return strings.TrimSpace(body), strings.TrimSpace(strings.Join(parts, "\n\n"))
 	}
-	// Pas d'en-tête de citation : les lignes « > … » se trient une à une. Elles
+
+	// Aucun en-tête reconnu : les lignes « > … » se trient une à une. Elles
 	// peuvent être entrecoupées de blancs sans marquer la fin du message utile.
+	lines := strings.Split(s, "\n")
 	kept := make([]string, 0, len(lines))
 	cited := make([]string, 0, len(lines))
 	for _, line := range lines {

@@ -46,19 +46,26 @@ type Message struct {
 	// c'est écrire « Bonjour Cyril » à un message envoyé à cinq personnes.
 	To []string `json:"to,omitempty"`
 	Cc []string `json:"cc,omitempty"`
-	// Quoted est l'historique que le mail cite lui-même. Il n'est pas lu à voix
-	// haute, il sert à comprendre ce qui a déjà été dit avant de répondre.
-	Quoted string `json:"-"`
-	// Thread : les autres messages de la même conversation trouvés dans la
-	// boîte, du plus récent au plus ancien.
+	// Thread : les messages antérieurs de la conversation, du plus récent au
+	// plus ancien. Ils viennent d'abord du fil que le mail recopie lui-même,
+	// et à défaut d'une recherche dans la boîte.
 	Thread []ThreadMessage `json:"-"`
 }
 
 // ThreadMessage est un message antérieur de la conversation, rendu court : il
 // sert à situer l'échange, pas à être lu.
 type ThreadMessage struct {
-	From    string
-	Date    time.Time
+	From string
+	// Date n'est renseignée que pour les messages retrouvés en IMAP, où le
+	// serveur donne un vrai horodatage.
+	Date time.Time
+	// Sent est l'en-tête de date recopié par le client mail, tel quel. On ne
+	// cherche pas à l'analyser : « Wednesday, August 19, 2026 3:10 PM » et
+	// « mercredi 19 août 2026 15:10 » dépendent de la langue d'Outlook, et une
+	// date mal interprétée est pire qu'une date brute.
+	Sent    string
+	To      string
+	Subject string
 	Excerpt string
 }
 

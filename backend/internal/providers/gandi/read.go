@@ -31,10 +31,6 @@ const maxThreadMessages = 3
 // Longueur d'un message antérieur. Il situe la conversation, il ne se lit pas.
 const maxThreadRunes = 600
 
-// Longueur de l'historique cité par le mail lui-même. Plus généreux que les
-// messages du fil : c'est souvent là que tient toute la conversation.
-const maxQuotedRunes = 2000
-
 // Read renvoie un mail avec son contenu.
 //
 // `query` est ce que l'utilisateur a dit : un expéditeur (« le mail d'Olivier »),
@@ -83,8 +79,24 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 	}
 
 	msg := chosen.msg
-	msg.Body, msg.Quoted = extractParts(fetched[0].FindBodySection(section))
-	msg.Thread = readThread(c, all, chosen)
+	body, quoted := extractParts(fetched[0].FindBodySection(section))
+	msg.Body = body
+
+	// Le fil que le mail recopie prime sur tout : c'est la vraie conversation,
+	// dans le bon ordre, et c'est le seul endroit où figurent les messages que
+	// l'utilisateur a lui-même envoyés — sa boîte de réception ne les a pas.
+	for _, q := range quoted {
+		msg.Thread = append(msg.Thread, ThreadMessage{
+			From:    q.From,
+			Sent:    q.Sent,
+			To:      q.To,
+			Subject: q.Subject,
+			Excerpt: q.Body,
+		})
+	}
+	if len(msg.Thread) == 0 {
+		msg.Thread = readThread(c, all, chosen)
+	}
 	return msg, nil
 }
 
@@ -321,14 +333,14 @@ func describeSender(m Message) string {
 //
 // Ordre de préférence : text/plain, puis text/html dégradé en texte. Les pièces
 // jointes sont ignorées — on ne les lit pas à voix haute.
-func extractParts(raw []byte) (body, quoted string) {
+func extractParts(raw []byte) (body string, quoted []QuotedMessage) {
 	if len(raw) == 0 {
-		return "", ""
+		return "", nil
 	}
 	mr, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil {
 		// Mail non conforme : mieux vaut rendre le brut tronqué que rien.
-		return truncateRunes(collapse(string(raw)), maxBodyRunes), ""
+		return truncateRunes(collapse(string(raw)), maxBodyRunes), nil
 	}
 	defer mr.Close()
 
@@ -366,6 +378,6 @@ func extractParts(raw []byte) (body, quoted string) {
 	if strings.TrimSpace(text) == "" {
 		text = htmlToText(html)
 	}
-	body, quoted = splitQuotedReply(collapse(text))
-	return truncateRunes(body, maxBodyRunes), truncateRunes(quoted, maxQuotedRunes)
+	body, quoted = parseQuotedThread(collapse(text))
+	return truncateRunes(body, maxBodyRunes), quoted
 }

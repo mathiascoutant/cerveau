@@ -143,3 +143,126 @@ func TestBaseSubject(t *testing.T) {
 		t.Error("deux sujets différents ne doivent pas se confondre")
 	}
 }
+
+// Le fil recopié par Outlook n'utilise ni chevrons ni « a écrit : » : il empile
+// des blocs « From: / Sent: / Subject: ». Ne pas les reconnaître laissait la
+// conversation entière dans le corps — donc lue à voix haute — et privait Raoul
+// de tout message antérieur auquel se référer.
+func TestParseQuotedThreadOutlook(t *testing.T) {
+	raw := collapse(`Hi Mathias,
+
+Can you give me an ETA when the configuration is done?
+
+Thank you & best regards,
+Stefan
+
+
+From: Stefan Neuhuber <sneuhuber@cloudguard.at>
+Sent: Wednesday, August 19, 2026 3:10 PM
+To: Mathias COUTANT <mathias.coutant@pxcom.aero>
+Cc: Helmut Otto <hotto@cloudguard.at>
+Subject: Re: Skybox Confiuguration
+
+Hi Mathias,
+
+I will send you the OpenVPN file + credentials in a separate email.
+
+Regards,
+Stefan
+
+
+From: Mathias COUTANT <mathias.coutant@pxcom.aero>
+Sent: Wednesday, August 19, 2026 2:52 PM
+To: Stefan Neuhuber <sneuhuber@cloudguard.at>
+Subject: Re: Skybox Confiuguration
+
+Hi Stefan,
+
+For yesterday's boxes, I used our own system to access them.
+
+Best regards,
+Mathias COUTANT`)
+
+	body, msgs := parseQuotedThread(raw)
+
+	// Le corps s'arrête au premier bloc d'en-têtes : c'est lui qu'on lit.
+	if !contains(body, "Can you give me an ETA") {
+		t.Errorf("le corps devrait porter la demande : %q", body)
+	}
+	if contains(body, "OpenVPN") || contains(body, "From:") {
+		t.Errorf("le fil cité ne doit pas rester dans le corps lu : %q", body)
+	}
+
+	if len(msgs) != 2 {
+		t.Fatalf("%d messages cités, attendu 2 : %+v", len(msgs), msgs)
+	}
+
+	if !contains(msgs[0].From, "Stefan Neuhuber") {
+		t.Errorf("expéditeur du 1er message cité : %q", msgs[0].From)
+	}
+	if msgs[0].Sent != "Wednesday, August 19, 2026 3:10 PM" {
+		t.Errorf("date recopiée telle quelle attendue, obtenu %q", msgs[0].Sent)
+	}
+	if msgs[0].Subject != "Re: Skybox Confiuguration" {
+		t.Errorf("objet du 1er message cité : %q", msgs[0].Subject)
+	}
+	if !contains(msgs[0].Body, "OpenVPN file") {
+		t.Errorf("corps du 1er message cité : %q", msgs[0].Body)
+	}
+	// Les en-têtes ne doivent pas déborder dans le corps du message.
+	if contains(msgs[0].Body, "Subject:") || contains(msgs[0].Body, "Cc:") {
+		t.Errorf("les en-têtes ont fui dans le corps : %q", msgs[0].Body)
+	}
+
+	// Le message le plus ancien est celui que l'utilisateur a écrit lui-même :
+	// c'est la seule trace de ses propres envois, absents de sa boîte.
+	if !contains(msgs[1].From, "Mathias COUTANT") {
+		t.Errorf("expéditeur du 2e message cité : %q", msgs[1].From)
+	}
+	if !contains(msgs[1].Body, "I used our own system") {
+		t.Errorf("corps du 2e message cité : %q", msgs[1].Body)
+	}
+}
+
+// Variante française d'Outlook : « De : / Envoyé : / Objet : ».
+func TestParseQuotedThreadFrenchHeaders(t *testing.T) {
+	raw := collapse(`Bonjour Mathias,
+
+C'est noté pour jeudi.
+
+Cyril
+
+De : Cyril Jean <cyril.jean@pxcom.aero>
+Envoyé : mercredi 19 août 2026 14:52
+À : Mathias COUTANT <mathias.coutant@pxcom.aero>
+Objet : RE: Devis
+
+On part sur 1 200 € ?`)
+
+	body, msgs := parseQuotedThread(raw)
+	if !contains(body, "C'est noté pour jeudi") {
+		t.Errorf("corps = %q", body)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("%d messages cités, attendu 1", len(msgs))
+	}
+	if msgs[0].Sent != "mercredi 19 août 2026 14:52" {
+		t.Errorf("date = %q", msgs[0].Sent)
+	}
+	if !contains(msgs[0].Body, "1 200") {
+		t.Errorf("corps cité = %q", msgs[0].Body)
+	}
+}
+
+// Une phrase qui commence par « De : » ne doit pas couper le mail en deux : le
+// bloc n'est un en-tête que si une date ou un objet le suit.
+func TestParseQuotedThreadIgnoresLoneFromLine(t *testing.T) {
+	raw := "Bonjour,\n\nDe : moi à toi, merci pour tout.\n\nCyril"
+	body, msgs := parseQuotedThread(raw)
+	if len(msgs) != 0 {
+		t.Errorf("aucun message cité attendu, obtenu %+v", msgs)
+	}
+	if !contains(body, "merci pour tout") {
+		t.Errorf("le corps a été amputé : %q", body)
+	}
+}
