@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func (s *Store) interactions() *mongo.Collection {
 func (s *Store) digests() *mongo.Collection     { return s.db.Collection("digests") }
 func (s *Store) emailDrafts() *mongo.Collection { return s.db.Collection("email_drafts") }
 func (s *Store) taskLists() *mongo.Collection   { return s.db.Collection("task_lists") }
+func (s *Store) todos() *mongo.Collection       { return s.db.Collection("todos") }
 
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	// Un builder d'options par index : le driver mémorise le nom auto-généré,
@@ -80,6 +82,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.interactions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
+		{s.todos(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "done", Value: 1}, {Key: "due", Value: 1}}}},
 	}
 	for _, spec := range specs {
 		if _, err := spec.col.Indexes().CreateOne(ctx, spec.model); err != nil {
@@ -514,4 +517,136 @@ func randomToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// --- Liste à faire ----------------------------------------------------------
+
+func (s *Store) SaveTodo(ctx context.Context, t Todo) (Todo, error) {
+	now := time.Now()
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	res, err := s.todos().InsertOne(ctx, t)
+	if err != nil {
+		return Todo{}, err
+	}
+	t.ID = res.InsertedID.(bson.ObjectID)
+	return t, nil
+}
+
+// Todos lit la liste, triée comme elle se lit : par échéance croissante, ce qui
+// n'a pas de jour à la fin.
+//
+// Le tri se fait ici et pas dans Mongo parce qu'une échéance absente y remonte
+// en tête d'un tri croissant — les tâches sans date passeraient devant celles
+// d'aujourd'hui, ce qui est exactement l'inverse de ce qu'on veut lire.
+func (s *Store) Todos(ctx context.Context, userID bson.ObjectID, q TodoQuery) ([]Todo, error) {
+	clauses := []bson.M{{"user_id": userID}}
+
+	// Ce qui reste à faire, plus éventuellement ce qui vient d'être coché.
+	state := []bson.M{{"done": false}}
+	if !q.DoneSince.IsZero() {
+		state = append(state, bson.M{"done": true, "done_at": bson.M{"$gte": q.DoneSince}})
+	}
+	clauses = append(clauses, bson.M{"$or": state})
+
+	window := bson.M{}
+	if !q.From.IsZero() {
+		window["$gte"] = q.From
+	}
+	if !q.To.IsZero() {
+		window["$lt"] = q.To
+	}
+	// Aucune borne et les non datées admises : il n'y a rien à filtrer.
+	if len(window) > 0 || !q.Undated {
+		dated := bson.M{"due": bson.M{"$ne": nil}}
+		if len(window) > 0 {
+			dated = bson.M{"due": window}
+		}
+		date := []bson.M{dated}
+		if q.Undated {
+			// « due: nil » attrape aussi le champ absent, qui est la forme
+			// réelle d'une tâche sans jour (omitempty à l'écriture).
+			date = append(date, bson.M{"due": nil})
+		}
+		clauses = append(clauses, bson.M{"$or": date})
+	}
+
+	if search := strings.TrimSpace(q.Search); search != "" {
+		rx := bson.M{"$regex": regexp.QuoteMeta(search), "$options": "i"}
+		clauses = append(clauses, bson.M{"$or": bson.A{bson.M{"title": rx}, bson.M{"note": rx}}})
+	}
+
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	cur, err := s.todos().Find(ctx, bson.M{"$and": clauses}, options.Find().SetLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	var out []Todo
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].Due, out[j].Due
+		if (a == nil) != (b == nil) {
+			return b == nil
+		}
+		if a != nil && !a.Equal(*b) {
+			return a.Before(*b)
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// SetTodoDone coche ou décoche. DoneAt est effacé au décochage : c'est lui qui
+// fait rester une tâche cochée à l'écran quelques heures, et une tâche rouverte
+// n'a rien à y faire.
+func (s *Store) SetTodoDone(ctx context.Context, userID, id bson.ObjectID, done bool) (Todo, error) {
+	update := bson.M{"$set": bson.M{"done": done, "updated_at": time.Now()}}
+	if done {
+		now := time.Now()
+		update["$set"].(bson.M)["done_at"] = now
+	} else {
+		update["$unset"] = bson.M{"done_at": ""}
+	}
+	return s.updateTodo(ctx, userID, id, update)
+}
+
+// RescheduleTodo change le jour retenu. Un due nul remet la tâche sans date.
+func (s *Store) RescheduleTodo(ctx context.Context, userID, id bson.ObjectID, due *time.Time, timed bool) (Todo, error) {
+	update := bson.M{"$set": bson.M{"timed": timed, "updated_at": time.Now()}}
+	if due == nil {
+		update["$unset"] = bson.M{"due": ""}
+	} else {
+		update["$set"].(bson.M)["due"] = *due
+	}
+	return s.updateTodo(ctx, userID, id, update)
+}
+
+func (s *Store) updateTodo(ctx context.Context, userID, id bson.ObjectID, update bson.M) (Todo, error) {
+	var out Todo
+	err := s.todos().FindOneAndUpdate(ctx,
+		bson.M{"_id": id, "user_id": userID},
+		update,
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Todo{}, ErrNotFound
+	}
+	return out, err
+}
+
+func (s *Store) DeleteTodo(ctx context.Context, userID, id bson.ObjectID) error {
+	res, err := s.todos().DeleteOne(ctx, bson.M{"_id": id, "user_id": userID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

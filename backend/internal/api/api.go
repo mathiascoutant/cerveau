@@ -34,7 +34,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *S
 		cipher: cipher,
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort),
 		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
-		tts:    tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel),
+		tts:    tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),
@@ -93,6 +93,11 @@ func (s *Server) Routes() http.Handler {
 
 			r.Get("/whatsapp/messages", s.handleWhatsAppMessages)
 			r.Post("/whatsapp/read", s.handleWhatsAppMarkRead)
+
+			r.Get("/todos", s.handleListTodos)
+			r.Post("/todos", s.handleCreateTodo)
+			r.Patch("/todos/{id}", s.handleUpdateTodo)
+			r.Delete("/todos/{id}", s.handleDeleteTodo)
 
 			r.Get("/drafts", s.handleListDrafts)
 			r.Patch("/drafts/{id}", s.handleUpdateDraft)

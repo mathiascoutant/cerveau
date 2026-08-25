@@ -31,6 +31,9 @@ type Config struct {
 	ElevenLabsAPIKey  string
 	ElevenLabsVoiceID string
 	ElevenLabsModel   string
+	// Langue imposée à la synthèse. Sans elle le modèle devine, et un seul mot
+	// anglais dans une phrase française lui fait prendre l'accent.
+	ElevenLabsLanguage string
 
 	// WhatsApp Business Cloud API (Meta).
 	WhatsAppVerifyToken string
@@ -64,6 +67,7 @@ func Load() (Config, error) {
 		ElevenLabsAPIKey:    env("ELEVENLABS_API_KEY", ""),
 		ElevenLabsVoiceID:   env("ELEVENLABS_VOICE_ID", ""),
 		ElevenLabsModel:     env("ELEVENLABS_MODEL", ""),
+		ElevenLabsLanguage:  env("ELEVENLABS_LANGUAGE", ""),
 		WhatsAppVerifyToken: env("WHATSAPP_VERIFY_TOKEN", ""),
 		WhatsAppAppSecret:   env("WHATSAPP_APP_SECRET", ""),
 		SlackClientID:       env("SLACK_CLIENT_ID", ""),

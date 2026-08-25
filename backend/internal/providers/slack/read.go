@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mathiascoutant/cerveau/backend/internal/fuzzy"
 )
 
 // Conversation est une conversation accessible à l'utilisateur.
@@ -64,14 +67,27 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		return "", nil, &AmbiguousConversationError{Query: query, Choices: ambiguous}
 	}
 	if !ok {
-		names := make([]string, 0, 8)
-		for _, conv := range convs {
-			names = append(names, c.label(ctx, conv))
-			if len(names) == 8 {
+		// Les plus proches, pas les premières venues : quand la dictée a
+		// déformé le nom, la bonne est presque toujours dans ces six-là, et le
+		// modèle n'a plus qu'à rappeler l'outil avec l'orthographe exacte.
+		near := rank(ctx, c, convs, query)
+		names := make([]string, 0, 6)
+		for _, r := range near {
+			names = append(names, c.label(ctx, r.conv))
+			if len(names) == 6 {
 				break
 			}
 		}
-		return "", nil, fmt.Errorf("aucune conversation ne correspond à %q. Quelques-unes existantes : %s",
+		for _, conv := range convs {
+			if len(names) == 6 {
+				break
+			}
+			if label := c.label(ctx, conv); !slices.Contains(names, label) {
+				names = append(names, label)
+			}
+		}
+		return "", nil, fmt.Errorf("aucune conversation ne correspond à %q. Les plus proches : %s. "+
+			"Si l'une d'elles est la bonne, rappelle l'outil avec son nom exact au lieu de dire que tu n'as pas trouvé.",
 			query, strings.Join(names, ", "))
 	}
 
@@ -138,7 +154,6 @@ func kindOf(conv conversation) string {
 	}
 }
 
-// matchConversation cherche d'abord une correspondance exacte, puis partielle.
 // AmbiguousConversationError signale que plusieurs conversations répondent au
 // même nom — deux Cyril en message direct, par exemple. En choisir une au
 // hasard donnerait une réponse fausse avec l'aplomb d'une vraie.
@@ -158,62 +173,107 @@ const maxAmbiguousChoices = 5
 
 // matchConversation résout un nom prononcé à l'oral.
 //
-// Un nom exact l'emporte tout de suite. À défaut, on rassemble TOUTES les
-// correspondances partielles : s'il y en a plusieurs, le troisième retour les
-// remonte pour qu'on demande laquelle plutôt que de trancher à l'aveugle.
+// La comparaison est volontairement tolérante : ce qui arrive ici n'est pas un
+// nom de canal, c'est ce qu'une reconnaissance vocale française a cru entendre.
+// « dubaiairwing » revient en « dubai R wing », « #dev-back » en « dev bac ».
+// Une égalité de chaînes, ou même une inclusion, répond « je ne trouve pas » sur
+// un nom pourtant juste — c'est le paquet fuzzy qui rattrape l'écart.
+//
+// Ce qui ne change pas : on ne tranche pas entre deux candidats qui se valent.
+// Lire le mauvais canal donne une réponse fausse énoncée avec l'aplomb d'une
+// vraie, et personne ne va vérifier.
 func matchConversation(ctx context.Context, c *Client, convs []conversation, query string) (conversation, []string, bool) {
-	want := normalizeName(query)
-	if want == "" {
+	ranked := rank(ctx, c, convs, query)
+	if len(ranked) == 0 || ranked[0].score < fuzzy.Match {
 		return conversation{}, nil, false
 	}
-
-	var partials []conversation
-	seen := map[string]bool{}
-
-	for _, conv := range convs {
-		candidates := []string{normalizeName(conv.Name)}
-		if conv.IsIM {
-			candidates = append(candidates, normalizeName(c.userName(ctx, conv.User)))
-		}
-		for _, cand := range candidates {
-			if cand == "" {
-				continue
-			}
-			if cand == want {
-				return conv, nil, true
-			}
-			if !seen[conv.ID] && (strings.Contains(cand, want) || strings.Contains(want, cand)) {
-				seen[conv.ID] = true
-				partials = append(partials, conv)
-			}
-		}
-	}
-
-	switch len(partials) {
-	case 0:
-		return conversation{}, nil, false
-	case 1:
-		return partials[0], nil, true
+	// Un candidat nettement devant emporte la décision.
+	if len(ranked) == 1 || ranked[0].score-ranked[1].score > fuzzy.Close {
+		return ranked[0].conv, nil, true
 	}
 
 	choices := make([]string, 0, maxAmbiguousChoices)
-	for _, conv := range partials {
+	for _, r := range ranked {
+		if r.score < fuzzy.Match || ranked[0].score-r.score > fuzzy.Close {
+			break
+		}
 		if len(choices) == maxAmbiguousChoices {
 			break
 		}
-		choices = append(choices, c.label(ctx, conv))
+		choices = append(choices, c.label(ctx, r.conv))
+	}
+	if len(choices) < 2 {
+		return ranked[0].conv, nil, true
 	}
 	return conversation{}, choices, false
 }
 
-func normalizeName(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.TrimPrefix(s, "#")
-	s = strings.TrimPrefix(s, "dm ")
-	s = strings.TrimPrefix(s, "groupe ")
-	s = strings.TrimPrefix(s, "canal ")
-	s = strings.TrimPrefix(s, "le ")
-	s = strings.ReplaceAll(s, "-", " ")
-	s = strings.ReplaceAll(s, "_", " ")
-	return strings.Join(strings.Fields(s), " ")
+type scored struct {
+	conv  conversation
+	score float64
+}
+
+// rank note toutes les conversations, de la plus proche à la plus lointaine.
+// Sert deux fois : à choisir, et à proposer les plus proches quand rien
+// n'atteint le seuil — un « je ne trouve pas » suivi de six noms au hasard
+// n'aide personne à se rattraper.
+func rank(ctx context.Context, c *Client, convs []conversation, query string) []scored {
+	wanted := spokenVariants(query)
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	out := make([]scored, 0, len(convs))
+	for _, conv := range convs {
+		names := []string{conv.Name}
+		if conv.IsIM {
+			names = append(names, c.userName(ctx, conv.User))
+		}
+		best := 0.0
+		for _, want := range wanted {
+			for _, name := range names {
+				if s := fuzzy.Score(want, name); s > best {
+					best = s
+				}
+			}
+		}
+		if best > 0 {
+			out = append(out, scored{conv: conv, score: best})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
+	return out
+}
+
+// mots par lesquels on désigne une conversation à l'oral sans qu'ils fassent
+// partie de son nom.
+var leadIns = []string{
+	"le canal ", "la conversation ", "le groupe ", "la discussion ",
+	"canal ", "conversation ", "groupe ", "discussion ", "diese ", "dm ",
+	"le ", "la ", "les ",
+}
+
+// spokenVariants rend les lectures possibles d'un nom dicté : tel quel, et
+// débarrassé de ce qui l'annonce. Les deux sont essayées plutôt qu'une seule,
+// parce qu'un canal peut très bien s'appeler « les-devs » — lui retirer son
+// « les » serait exactement l'erreur inverse.
+func spokenVariants(query string) []string {
+	base := fuzzy.Normalize(query)
+	if base == "" {
+		return nil
+	}
+	stripped := base
+	for changed := true; changed; {
+		changed = false
+		for _, lead := range leadIns {
+			if after, ok := strings.CutPrefix(stripped, lead); ok && strings.TrimSpace(after) != "" {
+				stripped = after
+				changed = true
+			}
+		}
+	}
+	if stripped == base {
+		return []string{base}
+	}
+	return []string{base, stripped}
 }

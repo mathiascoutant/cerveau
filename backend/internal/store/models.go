@@ -151,3 +151,56 @@ type EmailDraft struct {
 	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt     time.Time `bson:"updated_at" json:"updated_at"`
 }
+
+// Todo : une chose qu'il s'est engagé à faire, et le jour où il compte la faire.
+//
+// C'est le pendant durable de TaskList. La liste « à traiter » est déduite des
+// messages non traités : elle se recalcule, elle se vide quand la boîte se
+// vide, et rien n'y survit à la lecture d'un mail. Un engagement pris ne
+// fonctionne pas comme ça — il reste jusqu'à ce qu'il soit coché, et il porte
+// une date, celle qu'on a répondue quand Raoul a demandé « pour quand ? ».
+type Todo struct {
+	ID     bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID bson.ObjectID `bson:"user_id" json:"-"`
+	// Title : l'action, à l'infinitif (« Configurer deux boxes pour DAW »).
+	Title string `bson:"title" json:"title"`
+	// Note : d'où ça vient et ce qui est attendu, pour ne pas avoir à rouvrir
+	// le message trois jours plus tard.
+	Note string `bson:"note,omitempty" json:"note,omitempty"`
+	// Due : le jour retenu, à minuit dans son fuseau quand aucune heure n'a été
+	// donnée. Nul tant qu'il n'a pas dit quand — un pointeur et pas un zéro,
+	// pour que « pas encore daté » se distingue de l'an 1 côté app.
+	Due *time.Time `bson:"due,omitempty" json:"due,omitempty"`
+	// Timed : une heure précise a été donnée, pas seulement un jour.
+	Timed     bool        `bson:"timed,omitempty" json:"timed,omitempty"`
+	Done      bool        `bson:"done" json:"done"`
+	DoneAt    *time.Time  `bson:"done_at,omitempty" json:"done_at,omitempty"`
+	Source    *TodoSource `bson:"source,omitempty" json:"source,omitempty"`
+	CreatedAt time.Time   `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time   `bson:"updated_at" json:"updated_at"`
+}
+
+// TodoSource : le message d'où sort la tâche, recopié pour l'affichage.
+// Origine vaut « mail » ou le nom du canal Slack — le mot qu'il reconnaît.
+type TodoSource struct {
+	Origine string `bson:"origine,omitempty" json:"origine,omitempty"`
+	De      string `bson:"de,omitempty" json:"de,omitempty"`
+	Titre   string `bson:"titre,omitempty" json:"titre,omitempty"`
+}
+
+// TodoQuery cadre une lecture de la liste.
+type TodoQuery struct {
+	// From et To bornent l'échéance. Une borne laissée à zéro ne borne pas :
+	// c'est ce qui fait remonter le retard quand on ne fixe que To — « ce que
+	// j'ai à faire aujourd'hui » inclut ce qui traîne depuis mardi.
+	From, To time.Time
+	// Undated : inclure aussi ce qui n'a pas encore de jour.
+	Undated bool
+	// DoneSince : inclure les tâches cochées depuis cet instant. Zéro n'en
+	// inclut aucune. L'app s'en sert pour qu'une case cochée ne disparaisse
+	// pas sous le doigt.
+	DoneSince time.Time
+	// Search : filtre sur le titre et la note.
+	Search string
+	Limit  int64
+}

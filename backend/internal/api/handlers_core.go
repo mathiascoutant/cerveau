@@ -65,6 +65,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			"engine":   "elevenlabs",
 			"voice_id": s.tts.VoiceID(),
 			"model":    s.tts.Model(),
+			"language": s.tts.Language(),
 		}
 	}
 

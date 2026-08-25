@@ -26,7 +26,7 @@ func TestSpeakRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New("clé", "", "")
+	c := New("clé", "", "", "")
 	c.baseURL = srv.URL
 
 	stream, err := c.Speak(context.Background(), "Trois mails, dont deux qui comptent.")
@@ -64,6 +64,36 @@ func TestSpeakRequest(t *testing.T) {
 	if _, ok := body["voice_settings"].(map[string]any); !ok {
 		t.Errorf("voice_settings absent du corps : %v", body)
 	}
+	// Le champ qui empêche « Slack » ou « airwing » de faire basculer toute la
+	// phrase en diction anglaise.
+	if body["language_code"] != DefaultLanguage {
+		t.Errorf("langue transmise : %v, attendu %q", body["language_code"], DefaultLanguage)
+	}
+}
+
+// multilingual_v2 refuse language_code : le champ ne doit pas partir, sinon
+// Raoul devient muet au lieu de prendre un accent.
+func TestSpeakOmitsLanguageOnMultilingual(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", ContentType)
+		_, _ = w.Write([]byte("mp3"))
+	}))
+	defer srv.Close()
+
+	c := New("clé", "", "eleven_multilingual_v2", "fr")
+	c.baseURL = srv.URL
+	stream, err := c.Speak(context.Background(), "bonjour")
+	if err != nil {
+		t.Fatalf("Speak : %v", err)
+	}
+	defer stream.Close()
+	_, _ = io.ReadAll(stream)
+
+	if _, present := body["language_code"]; present {
+		t.Errorf("language_code ne doit pas être envoyé à multilingual_v2 : %v", body)
+	}
 }
 
 // Une erreur ElevenLabs (quota, voix inconnue) doit remonter, pas produire un
@@ -74,7 +104,7 @@ func TestSpeakPropagatesError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New("clé", "", "")
+	c := New("clé", "", "", "")
 	c.baseURL = srv.URL
 
 	if _, err := c.Speak(context.Background(), "bonjour"); err == nil {
@@ -83,7 +113,7 @@ func TestSpeakPropagatesError(t *testing.T) {
 }
 
 func TestSpeakDisabled(t *testing.T) {
-	if _, err := New("", "", "").Speak(context.Background(), "bonjour"); err != ErrDisabled {
+	if _, err := New("", "", "", "").Speak(context.Background(), "bonjour"); err != ErrDisabled {
 		t.Fatalf("attendu ErrDisabled, obtenu %v", err)
 	}
 }

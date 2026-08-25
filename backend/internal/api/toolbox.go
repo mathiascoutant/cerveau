@@ -448,12 +448,5 @@ func (t *userToolbox) when(ts time.Time) string {
 }
 
 func (t *userToolbox) location() *time.Location {
-	tz := t.user.Timezone
-	if tz == "" {
-		tz = t.srv.cfg.DefaultTimezone
-	}
-	if loc, err := time.LoadLocation(tz); err == nil {
-		return loc
-	}
-	return time.UTC
+	return t.srv.location(t.user)
 }

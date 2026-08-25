@@ -38,6 +38,11 @@ type Toolbox interface {
 	FindEmailDrafts(ctx context.Context, query string) ([]EmailDraftView, error)
 	UpdateEmailDraft(ctx context.Context, id, subject, body string) (EmailDraftView, store.Action, error)
 	SearchHistory(ctx context.Context, query string, since time.Time) ([]MemoryView, error)
+	AddTodo(ctx context.Context, draft TodoDraft) (TodoView, store.Action, error)
+	Todos(ctx context.Context, scope string) (TodoListView, error)
+	CompleteTodo(ctx context.Context, query string) (TodoView, store.Action, error)
+	RescheduleTodo(ctx context.Context, query string, due time.Time, timed bool) (TodoView, store.Action, error)
+	DropTodo(ctx context.Context, query string) (TodoView, store.Action, error)
 }
 
 type EventView struct {
@@ -641,6 +646,94 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		}
 		return encode(past), nil, nil
 
+	case "ajouter_tache":
+		var in struct {
+			Titre    string `json:"titre"`
+			Echeance string `json:"echeance"`
+			Note     string `json:"note"`
+			Origine  string `json:"origine"`
+			De       string `json:"de"`
+			Sujet    string `json:"sujet"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(in.Titre) == "" {
+			return "", nil, fmt.Errorf("titre de tâche manquant")
+		}
+		due, timed, err := ParseDue(in.Echeance, loc)
+		if err != nil {
+			return "", nil, err
+		}
+		view, action, err := tb.AddTodo(ctx, TodoDraft{
+			Titre: in.Titre, Echeance: due, AvecHeure: timed,
+			Note: in.Note, Origine: in.Origine, De: in.De, Sujet: in.Sujet,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(view), &action, nil
+
+	case "mes_taches":
+		var in struct {
+			Quand string `json:"quand"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		list, err := tb.Todos(ctx, in.Quand)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(list.Taches) == 0 {
+			return "Rien dans sa liste à faire pour " + list.Portee + ".", nil, nil
+		}
+		return encode(list), nil, nil
+
+	case "terminer_tache":
+		var in struct {
+			Recherche string `json:"recherche"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		view, action, err := tb.CompleteTodo(ctx, in.Recherche)
+		if err != nil {
+			return "", nil, err
+		}
+		return "Coché : " + view.Titre, &action, nil
+
+	case "reprogrammer_tache":
+		var in struct {
+			Recherche string `json:"recherche"`
+			Echeance  string `json:"echeance"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		due, timed, err := ParseDue(in.Echeance, loc)
+		if err != nil {
+			return "", nil, err
+		}
+		view, action, err := tb.RescheduleTodo(ctx, in.Recherche, due, timed)
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(view), &action, nil
+
+	case "supprimer_tache":
+		var in struct {
+			Recherche string `json:"recherche"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		view, action, err := tb.DropTodo(ctx, in.Recherche)
+		if err != nil {
+			return "", nil, err
+		}
+		return "Retiré de sa liste : " + view.Titre, &action, nil
+
 	case "creer_evenement":
 		var in struct {
 			Titre string `json:"titre"`
@@ -724,6 +817,51 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			}, "titre", "debut", "fin"),
 		),
 		tool(
+			"ajouter_tache",
+			"Inscrit une chose à faire dans sa liste, avec le jour où il compte la faire. À appeler dès qu'il dit « ajoute ça à ma todo », « à ma liste », « à mes tâches », « à mes choses à faire », « note que je dois… », « rappelle-moi de… ». N'APPELLE PAS CET OUTIL AVANT DE SAVOIR POUR QUAND : si le jour n'est ni dit ni évident, pose-lui la question en une phrase et attends sa réponse. Ce n'est qu'une fois qu'il a répondu — ou s'il dit qu'il ne sait pas — que tu appelles l'outil.",
+			object(map[string]any{
+				"titre":    str("L'action, verbe à l'infinitif et objet, six à dix mots (ex. « Configurer deux boxes pour DAW »). Sans point final, sans markdown."),
+				"echeance": str("Le jour retenu, au format 2006-01-02, ou 2006-01-02T15:04:05+02:00 s'il a donné une heure précise. Vide UNIQUEMENT s'il a dit qu'il ne savait pas encore quand. Ne l'invente jamais."),
+				"note":     str("D'où ça vient et ce qui est attendu, en une ou deux phrases. C'est ce qu'il relira dans trois jours sans rouvrir le message."),
+				"origine":  str("« mail » ou le nom du canal Slack, quand la tâche sort d'un message"),
+				"de":       str("Qui l'a demandé (ex. « Cyril »), quand la tâche sort d'un message"),
+				"sujet":    str("Objet du mail ou titre de la conversation d'origine, facultatif"),
+			}, "titre"),
+		),
+		tool(
+			"mes_taches",
+			"Lit sa liste à faire. À appeler dès qu'il demande ce qu'il a à faire, ce qu'il y a dans sa todo, son programme, ce qui l'attend aujourd'hui ou cette semaine. Le champ echeance est déjà mis en mots (« demain », « jeudi ») : recopie-le, ne le recalcule pas. en_retard signale ce qui aurait dû être fait avant aujourd'hui.",
+			object(map[string]any{
+				"quand": map[string]any{
+					"type":        "string",
+					"enum":        []string{"aujourd_hui", "demain", "semaine", "en_retard", "toutes"},
+					"description": "Portée demandée. « aujourd_hui » inclut le retard, « toutes » rend aussi ce qui n'a pas encore de jour.",
+				},
+			}, "quand"),
+		),
+		tool(
+			"terminer_tache",
+			"Coche une tâche de sa liste. À appeler quand il dit qu'une chose est faite, réglée, envoyée, terminée (« c'est bon pour les boxes », « j'ai répondu à Cyril »).",
+			object(map[string]any{
+				"recherche": str("Quelques mots de la tâche (ex. « boxes », « devis Olivier »). Si plusieurs correspondent, l'outil le dit au lieu de choisir : demande laquelle, puis rappelle avec les mots exacts."),
+			}, "recherche"),
+		),
+		tool(
+			"reprogrammer_tache",
+			"Change le jour d'une tâche déjà inscrite. À appeler quand il la repousse ou l'avance (« finalement je ferai ça vendredi », « décale les boxes à lundi »).",
+			object(map[string]any{
+				"recherche": str("Quelques mots de la tâche. Si plusieurs correspondent, l'outil le dit : demande laquelle."),
+				"echeance":  str("Le nouveau jour, format 2006-01-02, ou avec l'heure s'il l'a donnée. Vide pour lui retirer sa date."),
+			}, "recherche"),
+		),
+		tool(
+			"supprimer_tache",
+			"Retire une tâche de sa liste sans la marquer faite. À appeler quand elle est annulée ou n'a plus lieu d'être (« laisse tomber les boxes », « enlève ça de ma liste »). Si c'est fait, c'est terminer_tache qu'il faut, pas celui-ci.",
+			object(map[string]any{
+				"recherche": str("Quelques mots de la tâche. Si plusieurs correspondent, l'outil le dit : demande laquelle."),
+			}, "recherche"),
+		),
+		tool(
 			"chercher_historique",
 			"Fouille les conversations passées ENTRE TOI ET LUI, au-delà de ce dont tu te souviens. À appeler dès qu'il renvoie à un échange que vous avez eu — « ce dont on parlait ce matin », « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — plutôt que d'avouer que tu ne t'en souviens pas. Cet outil ne connaît NI ses mails NI ses messages : pour le contenu d'un mail antérieur, c'est lire_mail et son champ fil.",
 			object(map[string]any{
@@ -791,7 +929,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			),
 			tool(
 				"lire_canal_slack",
-				"Lit les derniers messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu ou le dernier message d'un canal, d'un groupe ou d'une discussion précise. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct.",
+				"Lit les derniers messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu ou le dernier message d'un canal, d'un groupe ou d'une discussion précise. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct. Il l'est aussi à l'orthographe, parce que la dictée déforme les noms de canaux — « dubaiairwing » te revient en « dubai R wing » : passe le nom TEL QU'IL L'A DIT, l'outil s'occupe du rapprochement. Et si l'outil ne trouve pas mais propose des noms proches, rappelle-le avec le nom exact de la bonne au lieu d'annoncer que tu n'as rien trouvé.",
 				object(map[string]any{
 					"canal":  str("Nom de la conversation, du canal ou de la personne. Si plusieurs correspondent, l'outil le dit au lieu de choisir : demande laquelle, puis rappelle avec le nom exact."),
 					"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 10, maximum 30)"},
@@ -830,6 +968,7 @@ func sourceLines(src Sources) string {
 		lines = append(lines, "- WhatsApp Business (whatsapp_non_lus) ;")
 	}
 	lines = append(lines,
+		"- sa liste à faire (mes_taches pour la lire, ajouter_tache pour y inscrire, terminer_tache, reprogrammer_tache, supprimer_tache) ;",
 		"- vos échanges passés (chercher_historique) et les réponses de mail déjà préparées (chercher_brouillon, modifier_brouillon) ;",
 		"- Waze sur son téléphone (lancer_navigation).")
 	return strings.Join(lines, "\n")
@@ -1001,6 +1140,32 @@ Puis tu dis que c'est prêt, en une phrase. « C'est bon, Waze t'y emmène. » S
 
 Tu n'annonces JAMAIS un temps de trajet ni une heure d'arrivée. Tu ne les as pas : aucun outil ne te les donne, et Waze les affichera à l'écran une seconde plus tard. Inventer « 35 minutes de route » serait une faute, même si ça sonne bien.
 
+SA LISTE À FAIRE
+
+Elle est à lui. Tu n'y inscris que ce qu'il te demande d'y inscrire, jamais de ta propre initiative, et tu ne lui proposes pas d'y ranger tout ce qui passe.
+
+QUAND IL DEMANDE D'Y AJOUTER QUELQUE CHOSE — « ajoute ça à ma todo », « mets ça dans mes tâches », « note que je dois configurer deux boxes », « rappelle-moi de relancer Olivier » :
+
+Tu sais de quoi il parle. « Ça », c'est ce dont vous venez de parler : le mail que tu viens de lui lire, le message, la phrase d'avant. C'est toi qui nommes l'action, en six à dix mots — « Configurer deux boxes pour DAW », pas « le truc de Cyril ». Si tu ne vois vraiment pas à quoi « ça » renvoie, demande-le d'abord.
+
+PUIS TU DEMANDES POUR QUAND, en une phrase courte : « C'est pour quand ? ». Tu n'appelles pas ajouter_tache avant d'avoir sa réponse, et tu ne choisis JAMAIS le jour à sa place — ni aujourd'hui par défaut, ni demain parce que ça sent l'urgence. Une tâche datée par toi est une tâche qu'il n'a pas prise, et il la retrouvera un jour où il n'avait rien prévu de faire.
+
+Deux exceptions, et deux seulement : il a déjà donné le jour (« ajoute ça pour jeudi », « faut que je le fasse demain »), ou le message d'où sort la tâche porte une échéance qu'il vient de reprendre à son compte. Dans ces cas tu inscris directement. Et s'il répond qu'il ne sait pas, tu inscris sans date — elle ressortira quand il demandera toute sa liste.
+
+Tu convertis ce qu'il dit en date réelle à partir de l'instant présent : « demain », « lundi », « la semaine prochaine ». Une heure ne s'inscrit que s'il en a donné une. Puis tu confirmes en une clause avec le jour — « C'est noté pour jeudi. » — et rien d'autre : pas de récapitulatif, pas de « je l'ai bien ajouté à ta liste de tâches ».
+
+UN RENDEZ-VOUS N'EST PAS UNE TÂCHE. Ce qui occupe un créneau va dans le calendrier, ce qui doit être fait dans la journée va dans la liste. « Bloque-moi deux heures jeudi » est un événement ; « rappelle-moi d'envoyer le devis jeudi » est une tâche. Une heure de début ET une durée désignent un rendez-vous.
+
+QUAND IL DEMANDE CE QU'IL A À FAIRE — « j'ai quoi à faire aujourd'hui », « c'est quoi ma todo », « il me reste quoi cette semaine » :
+
+Tu appelles mes_taches avec la portée visée. Pour aujourd'hui et pour la semaine, tu regardes aussi son agenda et ses messages non lus : ce qui le réclame sans être encore inscrit compte autant que ce qui l'est.
+
+L'ordre de ta réponse : d'abord ce qui est en retard, s'il y en a, dit sans détour ; puis ce qu'il a inscrit, chaque tâche nommée, avec son heure quand elle en a une ; puis ses rendez-vous s'ils tombent dans la période ; et pour finir, en une demi-phrase, ce qui le réclame ailleurs — une relance, une échéance datée, quelqu'un qui attend. Tu t'arrêtes dès qu'il n'y a plus rien à dire, et tu peux proposer d'ajouter à sa liste ce qui n'y est pas.
+
+Trois tâches se disent en une phrase chacune. Dix ne se récitent pas : tu donnes le nombre, tu détailles ce qui compte, tu passes. Une liste vide se dit en trois mots.
+
+QUAND UNE CHOSE EST FAITE — « c'est bon pour les boxes », « j'ai répondu à Cyril » — tu coches avec terminer_tache et tu le dis en deux mots. Quand il la repousse, tu reprogrammes ; quand elle est annulée, tu supprimes. Ne confonds pas les deux dernières : une tâche supprimée n'a jamais été faite.
+
 QUAND IL DEMANDE SI UN CRÉNEAU EST POSSIBLE
 
 1. Consulte TOUJOURS le calendrier sur le créneau visé, avec une marge d'une heure avant et après.
@@ -1058,6 +1223,27 @@ func parseTime(s string, loc *time.Location) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("format de date non reconnu : %q", s)
+}
+
+// ParseDue lit une échéance de tâche et dit si une heure a été précisée.
+//
+// La distinction compte à l'affichage : « jeudi » et « jeudi à 09h00 » ne
+// disent pas la même chose, et une heure inventée dans une liste de tâches
+// finit par produire un rappel auquel personne ne s'est engagé. Une chaîne vide
+// est valide — c'est la tâche sans jour.
+func ParseDue(s string, loc *time.Location) (time.Time, bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false, nil
+	}
+	if day, err := time.ParseInLocation("2006-01-02", s, loc); err == nil {
+		return day, false, nil
+	}
+	t, err := parseTime(s, loc)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("échéance invalide : %w", err)
+	}
+	return t, true, nil
 }
 
 func limitOf(rawInput string, def int) int {

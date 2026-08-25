@@ -45,6 +45,11 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"chercher_brouillon":    nil,
 		"modifier_brouillon":    {"id", "corps"},
 		"chercher_historique":   nil,
+		"ajouter_tache":         {"titre"},
+		"mes_taches":            {"quand"},
+		"terminer_tache":        {"recherche"},
+		"reprogrammer_tache":    {"recherche"},
+		"supprimer_tache":       {"recherche"},
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("attendu %d outils, obtenu %d", len(want), len(tools))

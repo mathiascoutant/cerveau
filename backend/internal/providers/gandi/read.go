@@ -11,6 +11,8 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/mail"
 
+	"github.com/mathiascoutant/cerveau/backend/internal/fuzzy"
+
 	// Enregistre les jeux de caractères hérités (ISO-8859-1, Windows-1252…).
 	// Sans ça, un mail français un peu ancien revient en mojibake.
 	_ "github.com/emersion/go-message/charset"
@@ -302,7 +304,53 @@ func pick(c *imapclient.Client, nums []uint32, query string) (candidate, []candi
 			return c, list, nil
 		}
 	}
+
+	// Toujours rien. Avant d'abandonner, on rejoue la recherche d'expéditeur en
+	// tolérant l'orthographe : « le mail de Neuhuber » revient souvent de la
+	// dictée en « Noihouber », et un nom propre étranger n'a aucune chance
+	// d'être écrit juste par une reconnaissance vocale française.
+	if c, ok := closestSender(list, query); ok {
+		return c, list, nil
+	}
 	return candidate{}, nil, fmt.Errorf("aucun mail récent ne correspond à %q", query)
+}
+
+// closestSender rend l'expéditeur le plus proche phonétiquement, à condition
+// qu'il se détache nettement : un « à peu près » qui en vaut un autre n'est pas
+// une réponse, et lire le mail de la mauvaise personne ne se rattrape pas.
+func closestSender(list []candidate, query string) (candidate, bool) {
+	var best, runnerUp float64
+	var found candidate
+
+	seen := map[string]bool{}
+	for _, c := range list {
+		key := senderKey(c.msg)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		score := max(fuzzy.Score(query, c.msg.From), fuzzy.Score(query, senderName(c.msg.FromAddr)))
+		switch {
+		case score > best:
+			best, runnerUp, found = score, best, c
+		case score > runnerUp:
+			runnerUp = score
+		}
+	}
+	if best < fuzzy.Match || best-runnerUp <= fuzzy.Close {
+		return candidate{}, false
+	}
+	return found, true
+}
+
+// senderName isole la partie parlante d'une adresse : « cyril.martin@x.fr »
+// s'entend « Cyril Martin », le domaine ne s'entend pas du tout.
+func senderName(addr string) string {
+	if i := strings.IndexByte(addr, '@'); i > 0 {
+		return addr[:i]
+	}
+	return addr
 }
 
 // senderKey identifie une personne. L'adresse fait foi quand elle existe : deux
