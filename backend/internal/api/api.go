@@ -10,6 +10,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/stt"
 	"github.com/mathiascoutant/cerveau/backend/internal/tts"
@@ -22,16 +23,21 @@ type Server struct {
 	engine *assistant.Engine
 	stt    *stt.Client
 	tts    *tts.Client
+	// wa tient les sessions WhatsApp : contrairement aux autres sources, on ne
+	// l'interroge pas à la demande — c'est une connexion permanente qui reçoit
+	// les messages au fil de l'eau, et le serveur la porte de bout en bout.
+	wa *whatsapp.Manager
 
 	pending *pendingOAuth
 	speech  *speechTickets
 }
 
-func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher) *Server {
+func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa *whatsapp.Manager) *Server {
 	return &Server{
 		cfg:    cfg,
 		store:  st,
 		cipher: cipher,
+		wa:     wa,
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort),
 		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
 		tts:    tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
@@ -57,12 +63,6 @@ func (s *Server) Routes() http.Handler {
 	// vient du paramètre state, pas d'un token d'appareil.
 	r.Get("/oauth/slack/callback", s.handleSlackOAuthCallback)
 
-	// Webhook Meta : pas de token utilisateur, authentifié par signature HMAC.
-	r.Route("/webhooks/whatsapp", func(r chi.Router) {
-		r.Get("/", s.handleWhatsAppVerify)
-		r.Post("/", s.handleWhatsAppEvent)
-	})
-
 	r.Route("/api/v1", func(r chi.Router) {
 		// Pas de login : l'app poste son identifiant d'appareil et reçoit un token.
 		r.Post("/session", s.handleSession)
@@ -86,13 +86,13 @@ func (s *Server) Routes() http.Handler {
 			r.Put("/connections/gandi", s.handleConnectGandi)
 			r.Put("/connections/slack", s.handleConnectSlack)
 			r.Post("/connections/slack/oauth", s.handleSlackOAuthStart)
-			r.Put("/connections/whatsapp", s.handleConnectWhatsApp)
+			r.Post("/connections/whatsapp/pair", s.handleWhatsAppPair)
+			r.Get("/connections/whatsapp/status", s.handleWhatsAppStatus)
 			r.Delete("/connections/{provider}", s.handleDisconnect)
 
 			r.Post("/calendar/sync", s.handleCalendarSync)
 
-			r.Get("/whatsapp/messages", s.handleWhatsAppMessages)
-			r.Post("/whatsapp/read", s.handleWhatsAppMarkRead)
+			r.Get("/whatsapp/conversations", s.handleWhatsAppChats)
 
 			r.Get("/todos", s.handleListTodos)
 			r.Post("/todos", s.handleCreateTodo)

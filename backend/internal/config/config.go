@@ -35,9 +35,11 @@ type Config struct {
 	// anglais dans une phrase française lui fait prendre l'accent.
 	ElevenLabsLanguage string
 
-	// WhatsApp Business Cloud API (Meta).
-	WhatsAppVerifyToken string
-	WhatsAppAppSecret   string
+	// WhatsAppSessionDB : fichier SQLite où whatsmeow garde la session de
+	// l'appareil lié. Le seul état de Cerveau qui ne vit pas dans Mongo — la
+	// bibliothèque ne sait stocker ses clés que dans du SQL. À sauvegarder :
+	// le perdre oblige à refaire l'appairage. Vide = WhatsApp désactivé.
+	WhatsAppSessionDB string
 
 	// Slack OAuth : évite le copier-coller manuel du token xoxp-.
 	SlackClientID     string
@@ -54,27 +56,26 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{
-		Addr:                env("ADDR", ":8080"),
-		MongoURI:            env("MONGO_URI", ""),
-		MongoDB:             env("MONGO_DB", "cerveau"),
-		MasterKeyHex:        env("MASTER_KEY", ""),
-		OpenAIAPIKey:        env("OPENAI_API_KEY", ""),
-		OpenAIModel:         env("OPENAI_MODEL", "gpt-5.4-mini"),
-		OpenAIEffort:        env("OPENAI_EFFORT", "low"),
-		STTBaseURL:          strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
-		STTAPIKey:           env("STT_API_KEY", ""),
-		STTModel:            env("STT_MODEL", "whisper-1"),
-		ElevenLabsAPIKey:    env("ELEVENLABS_API_KEY", ""),
-		ElevenLabsVoiceID:   env("ELEVENLABS_VOICE_ID", ""),
-		ElevenLabsModel:     env("ELEVENLABS_MODEL", ""),
-		ElevenLabsLanguage:  env("ELEVENLABS_LANGUAGE", ""),
-		WhatsAppVerifyToken: env("WHATSAPP_VERIFY_TOKEN", ""),
-		WhatsAppAppSecret:   env("WHATSAPP_APP_SECRET", ""),
-		SlackClientID:       env("SLACK_CLIENT_ID", ""),
-		SlackClientSecret:   env("SLACK_CLIENT_SECRET", ""),
-		PublicBaseURL:       strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
-		DefaultTimezone:     env("DEFAULT_TIMEZONE", "Europe/Paris"),
-		DefaultUserName:     env("DEFAULT_USER_NAME", ""),
+		Addr:               env("ADDR", ":8080"),
+		MongoURI:           env("MONGO_URI", ""),
+		MongoDB:            env("MONGO_DB", "cerveau"),
+		MasterKeyHex:       env("MASTER_KEY", ""),
+		OpenAIAPIKey:       env("OPENAI_API_KEY", ""),
+		OpenAIModel:        env("OPENAI_MODEL", "gpt-5.4-mini"),
+		OpenAIEffort:       env("OPENAI_EFFORT", "low"),
+		STTBaseURL:         strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
+		STTAPIKey:          env("STT_API_KEY", ""),
+		STTModel:           env("STT_MODEL", "whisper-1"),
+		ElevenLabsAPIKey:   env("ELEVENLABS_API_KEY", ""),
+		ElevenLabsVoiceID:  env("ELEVENLABS_VOICE_ID", ""),
+		ElevenLabsModel:    env("ELEVENLABS_MODEL", ""),
+		ElevenLabsLanguage: env("ELEVENLABS_LANGUAGE", ""),
+		WhatsAppSessionDB:  env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
+		SlackClientID:      env("SLACK_CLIENT_ID", ""),
+		SlackClientSecret:  env("SLACK_CLIENT_SECRET", ""),
+		PublicBaseURL:      strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
+		DefaultTimezone:    env("DEFAULT_TIMEZONE", "Europe/Paris"),
+		DefaultUserName:    env("DEFAULT_USER_NAME", ""),
 	}
 
 	var missing []string

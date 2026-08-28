@@ -99,3 +99,30 @@ func TestTightFlattensPunctuationAndAccents(t *testing.T) {
 		t.Errorf("Tight = %q", got)
 	}
 }
+
+// Exact sépare « il a dit le nom » de « il a dit quelque chose qui y
+// ressemble ». C'est cette limite qui décide si on lit tout de suite ou si on
+// demande confirmation : « azul » ressemble, « PXCom- Azul technique » est le
+// nom.
+func TestExactSeparatesNameFromResemblance(t *testing.T) {
+	const group = "PXCom- Azul technique"
+
+	saidExactly := []string{
+		"PXCom- Azul technique",
+		"pxcom azul technique",
+		"PXCOM AZUL TECHNIQUE",
+		"le groupe PXCom Azul technique",
+	}
+	for _, said := range saidExactly {
+		if !Exact(said, group) {
+			t.Errorf("%q est le nom du groupe", said)
+		}
+	}
+
+	onlyResembles := []string{"azul", "azul technique", "le groupe azul", "pxcom"}
+	for _, said := range onlyResembles {
+		if Exact(said, group) {
+			t.Errorf("%q n'est qu'une approximation du nom", said)
+		}
+	}
+}

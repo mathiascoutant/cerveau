@@ -54,8 +54,15 @@ func (c *Client) ListConversations(ctx context.Context) ([]Conversation, error) 
 // son nom. Le modèle reçoit un nom prononcé à l'oral (« le canal projet »,
 // « dièse dev »), donc la résolution doit tolérer les approximations.
 func (c *Client) ReadConversation(ctx context.Context, query string, limit int) (string, []Message, error) {
-	if limit <= 0 || limit > 30 {
-		limit = 10
+	if limit <= 0 {
+		limit = 15
+	}
+	// Plafond haut à dessein : comprendre un fil demande parfois de remonter
+	// loin, et un extrait tronqué au mauvais endroit fait dire n'importe quoi
+	// sur ce qui s'y joue. C'est le modèle qui décide de la profondeur, selon
+	// ce qu'il cherche.
+	if limit > MaxRead {
+		limit = MaxRead
 	}
 	convs, err := c.rawConversations(ctx)
 	if err != nil {
@@ -70,10 +77,9 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		// Les plus proches, pas les premières venues : quand la dictée a
 		// déformé le nom, la bonne est presque toujours dans ces six-là, et le
 		// modèle n'a plus qu'à rappeler l'outil avec l'orthographe exacte.
-		near := rank(ctx, c, convs, query)
 		names := make([]string, 0, 6)
-		for _, r := range near {
-			names = append(names, c.label(ctx, r.conv))
+		for _, r := range fuzzy.Rank(query, candidateNames(ctx, c, convs)) {
+			names = append(names, c.label(ctx, convs[r.Index]))
 			if len(names) == 6 {
 				break
 			}
@@ -89,6 +95,14 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		return "", nil, fmt.Errorf("aucune conversation ne correspond à %q. Les plus proches : %s. "+
 			"Si l'une d'elles est la bonne, rappelle l'outil avec son nom exact au lieu de dire que tu n'as pas trouvé.",
 			query, strings.Join(names, ", "))
+	}
+
+	label := c.label(ctx, target)
+	// Le nom prononcé n'est pas celui du canal : on a très probablement raison,
+	// mais « très probablement » ne se dit pas à quelqu'un qui écoute sans
+	// vérifier. On rend la main pour qu'il confirme.
+	if !fuzzy.Exact(query, target.Name, label, strings.TrimPrefix(label, "#")) {
+		return "", nil, &UnconfirmedConversationError{Query: query, Found: label}
 	}
 
 	var hist struct {
@@ -108,7 +122,6 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		return "", nil, err
 	}
 
-	label := c.label(ctx, target)
 	out := make([]Message, 0, len(hist.Messages))
 	for _, m := range hist.Messages {
 		if m.Subtype != "" || strings.TrimSpace(m.Text) == "" {
@@ -154,6 +167,21 @@ func kindOf(conv conversation) string {
 	}
 }
 
+// MaxRead : profondeur maximale d'une lecture de conversation.
+const MaxRead = 100
+
+// UnconfirmedConversationError : le nom prononcé désigne probablement cette
+// conversation, mais ne lui est pas identique. Voir fuzzy.Exact — c'est
+// l'appelant qui demande confirmation, pas ce paquet qui devine.
+type UnconfirmedConversationError struct {
+	Query string
+	Found string
+}
+
+func (e *UnconfirmedConversationError) Error() string {
+	return fmt.Sprintf("%q désigne probablement %s, à confirmer", e.Query, e.Found)
+}
+
 // AmbiguousConversationError signale que plusieurs conversations répondent au
 // même nom — deux Cyril en message direct, par exemple. En choisir une au
 // hasard donnerait une réponse fausse avec l'aplomb d'une vraie.
@@ -167,9 +195,20 @@ func (e *AmbiguousConversationError) Error() string {
 		e.Query, strings.Join(e.Choices, " ; "))
 }
 
-// Nombre de conversations proposées au choix : au-delà, la question devient
-// une liste qu'on ne peut pas écouter.
-const maxAmbiguousChoices = 5
+// candidateNames rend, pour chaque conversation, les noms sous lesquels on peut
+// la désigner à l'oral. Un message direct s'appelle par le prénom de la
+// personne, jamais par l'identifiant interne du canal.
+func candidateNames(ctx context.Context, c *Client, convs []conversation) [][]string {
+	out := make([][]string, 0, len(convs))
+	for _, conv := range convs {
+		names := []string{conv.Name}
+		if conv.IsIM {
+			names = append(names, c.userName(ctx, conv.User))
+		}
+		out = append(out, names)
+	}
+	return out
+}
 
 // matchConversation résout un nom prononcé à l'oral.
 //
@@ -183,97 +222,13 @@ const maxAmbiguousChoices = 5
 // Lire le mauvais canal donne une réponse fausse énoncée avec l'aplomb d'une
 // vraie, et personne ne va vérifier.
 func matchConversation(ctx context.Context, c *Client, convs []conversation, query string) (conversation, []string, bool) {
-	ranked := rank(ctx, c, convs, query)
-	if len(ranked) == 0 || ranked[0].score < fuzzy.Match {
-		return conversation{}, nil, false
+	winner, tied := fuzzy.Resolve(query, candidateNames(ctx, c, convs))
+	if winner >= 0 {
+		return convs[winner], nil, true
 	}
-	// Un candidat nettement devant emporte la décision.
-	if len(ranked) == 1 || ranked[0].score-ranked[1].score > fuzzy.Close {
-		return ranked[0].conv, nil, true
-	}
-
-	choices := make([]string, 0, maxAmbiguousChoices)
-	for _, r := range ranked {
-		if r.score < fuzzy.Match || ranked[0].score-r.score > fuzzy.Close {
-			break
-		}
-		if len(choices) == maxAmbiguousChoices {
-			break
-		}
-		choices = append(choices, c.label(ctx, r.conv))
-	}
-	if len(choices) < 2 {
-		return ranked[0].conv, nil, true
+	choices := make([]string, 0, len(tied))
+	for _, i := range tied {
+		choices = append(choices, c.label(ctx, convs[i]))
 	}
 	return conversation{}, choices, false
-}
-
-type scored struct {
-	conv  conversation
-	score float64
-}
-
-// rank note toutes les conversations, de la plus proche à la plus lointaine.
-// Sert deux fois : à choisir, et à proposer les plus proches quand rien
-// n'atteint le seuil — un « je ne trouve pas » suivi de six noms au hasard
-// n'aide personne à se rattraper.
-func rank(ctx context.Context, c *Client, convs []conversation, query string) []scored {
-	wanted := spokenVariants(query)
-	if len(wanted) == 0 {
-		return nil
-	}
-
-	out := make([]scored, 0, len(convs))
-	for _, conv := range convs {
-		names := []string{conv.Name}
-		if conv.IsIM {
-			names = append(names, c.userName(ctx, conv.User))
-		}
-		best := 0.0
-		for _, want := range wanted {
-			for _, name := range names {
-				if s := fuzzy.Score(want, name); s > best {
-					best = s
-				}
-			}
-		}
-		if best > 0 {
-			out = append(out, scored{conv: conv, score: best})
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].score > out[j].score })
-	return out
-}
-
-// mots par lesquels on désigne une conversation à l'oral sans qu'ils fassent
-// partie de son nom.
-var leadIns = []string{
-	"le canal ", "la conversation ", "le groupe ", "la discussion ",
-	"canal ", "conversation ", "groupe ", "discussion ", "diese ", "dm ",
-	"le ", "la ", "les ",
-}
-
-// spokenVariants rend les lectures possibles d'un nom dicté : tel quel, et
-// débarrassé de ce qui l'annonce. Les deux sont essayées plutôt qu'une seule,
-// parce qu'un canal peut très bien s'appeler « les-devs » — lui retirer son
-// « les » serait exactement l'erreur inverse.
-func spokenVariants(query string) []string {
-	base := fuzzy.Normalize(query)
-	if base == "" {
-		return nil
-	}
-	stripped := base
-	for changed := true; changed; {
-		changed = false
-		for _, lead := range leadIns {
-			if after, ok := strings.CutPrefix(stripped, lead); ok && strings.TrimSpace(after) != "" {
-				stripped = after
-				changed = true
-			}
-		}
-	}
-	if stripped == base {
-		return []string{base}
-	}
-	return []string{base, stripped}
 }

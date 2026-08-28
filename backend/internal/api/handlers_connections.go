@@ -12,7 +12,6 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
-	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -113,55 +112,22 @@ func (s *Server) handleConnectSlack(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"provider": store.ProviderSlack, "status": "connected", "label": team})
 }
 
-func (s *Server) handleConnectWhatsApp(w http.ResponseWriter, r *http.Request) {
-	user := userFrom(r.Context())
-	var req struct {
-		PhoneNumberID string `json:"phone_number_id"`
-		AccessToken   string `json:"access_token"`
-		WABAID        string `json:"waba_id"`
-	}
-	if err := httpx.Decode(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
-		return
-	}
-	req.PhoneNumberID = strings.TrimSpace(req.PhoneNumberID)
-	if req.PhoneNumberID == "" || req.AccessToken == "" {
-		httpx.Error(w, http.StatusBadRequest, "phone_number_id et access_token requis")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	display, err := whatsapp.TestConnection(ctx, req.PhoneNumberID, req.AccessToken)
-	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	secret, err := s.cipher.SealJSON(store.WhatsAppCredentials{
-		PhoneNumberID: req.PhoneNumberID, AccessToken: req.AccessToken, WABAID: req.WABAID,
-	})
-	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "chiffrement du secret impossible")
-		return
-	}
-	// Le label porte le phone_number_id : c'est la clé qui permet au webhook Meta
-	// (non authentifié côté utilisateur) de retrouver le bon compte.
-	if err := s.store.UpsertConnection(r.Context(), store.Connection{
-		UserID: user.ID, Provider: store.ProviderWhatsApp,
-		Status: "connected", Label: req.PhoneNumberID, Secret: secret,
-	}); err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "enregistrement impossible")
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"provider": store.ProviderWhatsApp, "status": "connected", "label": display,
-	})
-}
-
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	provider := chi.URLParam(r, "provider")
+
+	// WhatsApp ne se débranche pas en supprimant une ligne : il faut délier
+	// l'appareil côté WhatsApp, sinon il reste listé sur le téléphone et le
+	// serveur continue de recevoir les messages.
+	if provider == store.ProviderWhatsApp {
+		if err := s.wa.Logout(r.Context(), user.ID.Hex()); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, "déliaison impossible")
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"provider": provider, "status": "disconnected"})
+		return
+	}
+
 	if err := s.store.DeleteConnection(r.Context(), user.ID, provider); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "déconnexion impossible")
 		return

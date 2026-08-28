@@ -19,7 +19,9 @@ ExecStart=/home/ubuntu/projects/cerveau/backend/cerveau
 Restart=always
 RestartSec=5
 
-; Durcissement raisonnable pour un service qui n'écrit rien sur disque.
+; Durcissement raisonnable. Le service écrit un seul fichier : la session de
+; l'appareil WhatsApp lié, dans data/ sous le répertoire de travail — d'où
+; ProtectSystem=full et non strict.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

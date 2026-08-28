@@ -16,11 +16,19 @@ import (
 // personnellement à l'utilisateur. Ce qui reste à décider, c'est s'il appelle
 // une action — et laquelle.
 type MessageView struct {
-	Origine string `json:"origine"` // "mail" ou le nom du canal Slack
+	// Origine : « mail », le nom du canal Slack, ou celui de la conversation
+	// WhatsApp suivi du service — deux noms de même allure venus de deux
+	// messageries ne se distinguent pas autrement.
+	Origine string `json:"origine"`
 	De      string `json:"de,omitempty"`
 	Titre   string `json:"titre"`
 	Extrait string `json:"extrait,omitempty"`
 	Quand   string `json:"quand,omitempty"`
+	// Motif : pourquoi le tri l'a retenu — « réponse à un mail que tu as
+	// envoyé », « tu es destinataire », « message privé », « tu es cité ». Le
+	// modèle ne peut pas le déduire de ce qu'on lui donne, et ça pèse sur
+	// l'urgence : on ne répond pas à quelqu'un pour information.
+	Motif string `json:"motif,omitempty"`
 }
 
 // SourceView est le message d'où sort une tâche, recopié pour l'affichage.
@@ -122,6 +130,8 @@ FORMAT DE « pourquoi ». Deux phrases maximum : d'où ça vient, qui le demande
 FORMAT DE « sources ». Les messages qui ont produit la tâche, recopiés TELS QUELS depuis les données fournies — même origine, même expéditeur, même titre, même date. N'invente aucune source et n'en reformule aucune.
 
 « urgence » vaut "haute" si ça se joue aujourd'hui ou si quelqu'un attend depuis plusieurs jours, "moyenne" sinon. Rien de moins urgent n'entre dans la liste.
+
+LE CHAMP « motif » dit pourquoi le message a été retenu, et il pèse. « réponse à un mail que tu as envoyé » est le plus fort : quelqu'un répond à ce que %[1]s a écrit, la balle est dans son camp et il attend probablement une suite — c'est une urgence haute sauf preuve du contraire, et le « pourquoi » doit dire que c'est une réponse à son propre mail. Un message privé ou une citation nominative engagent plus qu'un mail où il figure parmi plusieurs destinataires.
 
 N'invente rien. Tout ce que tu écris vient des messages fournis.`,
 		who,

@@ -16,6 +16,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/api"
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -51,9 +52,28 @@ func main() {
 		_ = st.Close(shutdownCtx)
 	}()
 
+	// WhatsApp : une connexion permanente, montée avant le serveur HTTP. Un
+	// appareil lié qui n'est pas connecté ne reçoit rien, et ce qu'il n'a pas
+	// reçu pendant l'arrêt ne se rattrape pas.
+	wa, err := whatsapp.NewManager(ctx, cfg.WhatsAppSessionDB, api.NewWhatsAppJournal(st, cipher))
+	if err != nil {
+		slog.Error("WhatsApp indisponible", "err", err)
+		os.Exit(1)
+	}
+	defer wa.Close()
+	if wa.Enabled() {
+		if err := wa.Start(ctx); err != nil {
+			// Pas fatal : le reste de Raoul marche sans, et l'app permet de
+			// relier le compte.
+			slog.Error("WhatsApp : reconnexion des comptes", "err", err)
+		}
+	} else {
+		slog.Info("WhatsApp désactivé (WHATSAPP_SESSION_DB vide)")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, st, cipher).Routes(),
+		Handler:           api.NewServer(cfg, st, cipher, wa).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,

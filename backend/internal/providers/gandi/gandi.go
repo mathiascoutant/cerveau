@@ -46,6 +46,13 @@ type Message struct {
 	// c'est écrire « Bonjour Cyril » à un message envoyé à cinq personnes.
 	To []string `json:"to,omitempty"`
 	Cc []string `json:"cc,omitempty"`
+	// InReplyTo : le Message-ID du message auquel celui-ci répond, tel que
+	// l'enveloppe IMAP le donne. C'est le seul lien de filiation fiable entre
+	// deux mails — un « Re: » dans l'objet se tape à la main.
+	InReplyTo []string `json:"-"`
+	// AnswersYou : ce mail répond à un message que l'utilisateur a envoyé.
+	// Établi en rapprochant InReplyTo des Message-ID de sa boîte d'envoi.
+	AnswersYou bool `json:"-"`
 	// Bulk dit que le message porte les en-têtes d'un envoi de masse ou
 	// automatique. C'est un fait posé par l'expéditeur lui-même dans le
 	// message, pas une devinette sur son contenu — d'où sa présence ici, à
@@ -98,6 +105,11 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 	}
 	defer func() { _ = c.Logout().Wait(); _ = c.Close() }()
 
+	// Avant INBOX : Select change de boîte, donc on relève les envois d'abord.
+	// Au pire on n'a rien, et un mail qui répond à l'utilisateur redevient un
+	// mail ordinaire — c'est une dégradation, pas une panne.
+	sent := sentMessageIDs(c)
+
 	if _, err := c.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 		return nil, fmt.Errorf("impossible d'ouvrir INBOX : %w", err)
 	}
@@ -140,13 +152,15 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 			continue
 		}
 		out = append(out, Message{
-			Subject:  strings.TrimSpace(m.Envelope.Subject),
-			From:     formatAddresses(m.Envelope.From),
-			FromAddr: firstAddress(m.Envelope.From),
-			Date:     m.Envelope.Date,
-			To:       addressList(m.Envelope.To),
-			Cc:       addressList(m.Envelope.Cc),
-			Bulk:     isBulk(m.FindBodySection(headers)),
+			Subject:    strings.TrimSpace(m.Envelope.Subject),
+			From:       formatAddresses(m.Envelope.From),
+			FromAddr:   firstAddress(m.Envelope.From),
+			Date:       m.Envelope.Date,
+			To:         addressList(m.Envelope.To),
+			Cc:         addressList(m.Envelope.Cc),
+			InReplyTo:  m.Envelope.InReplyTo,
+			AnswersYou: answersYou(m.Envelope.InReplyTo, sent),
+			Bulk:       isBulk(m.FindBodySection(headers)),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })

@@ -99,6 +99,11 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 	if len(msg.Thread) == 0 {
 		msg.Thread = readThread(c, all, chosen)
 	}
+
+	// En dernier, parce que ça change de boîte sélectionnée : plus rien ne doit
+	// être lu dans INBOX après. Savoir que ce mail répond à un des siens change
+	// la façon d'en parler — et de le traiter, en copie comme en direct.
+	msg.AnswersYou = answersSent(c, msg.InReplyTo)
 	return msg, nil
 }
 
@@ -244,12 +249,13 @@ func pick(c *imapclient.Client, nums []uint32, query string) (candidate, []candi
 		}
 		list = append(list, candidate{
 			msg: Message{
-				Subject:  strings.TrimSpace(f.Envelope.Subject),
-				From:     formatAddresses(f.Envelope.From),
-				FromAddr: firstAddress(f.Envelope.From),
-				Date:     f.Envelope.Date,
-				To:       addressList(f.Envelope.To),
-				Cc:       addressList(f.Envelope.Cc),
+				Subject:   strings.TrimSpace(f.Envelope.Subject),
+				From:      formatAddresses(f.Envelope.From),
+				FromAddr:  firstAddress(f.Envelope.From),
+				Date:      f.Envelope.Date,
+				To:        addressList(f.Envelope.To),
+				Cc:        addressList(f.Envelope.Cc),
+				InReplyTo: f.Envelope.InReplyTo,
 			},
 			seqNum: f.SeqNum,
 		})

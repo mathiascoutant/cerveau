@@ -14,6 +14,12 @@ services:
     ports:
       - "127.0.0.1:9087:8080"
 
+    # Session de l'appareil WhatsApp lié. Sans ce volume, un `docker compose
+    # pull` obligerait à refaire la liaison depuis le téléphone à chaque mise
+    # à jour. À sauvegarder avec le .env.
+    volumes:
+      - whatsapp:/data
+
     # Sans tzdata et ce fuseau, « demain 10h » serait calculé en UTC et Raoul
     # se tromperait de deux heures l'été.
     environment:
@@ -24,3 +30,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  whatsapp:

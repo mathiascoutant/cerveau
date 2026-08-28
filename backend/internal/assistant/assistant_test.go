@@ -33,23 +33,24 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 	}
 
 	want := map[string][]string{
-		"consulter_calendrier":  {"debut", "fin"},
-		"mails_non_lus":         nil,
-		"lire_mail":             nil,
-		"slack_non_lus":         nil,
-		"whatsapp_non_lus":      nil,
-		"lire_canal_slack":      {"canal"},
-		"lancer_navigation":     {"destination"},
-		"creer_evenement":       {"titre", "debut", "fin"},
-		"preparer_reponse_mail": {"destinataire", "corps"},
-		"chercher_brouillon":    nil,
-		"modifier_brouillon":    {"id", "corps"},
-		"chercher_historique":   nil,
-		"ajouter_tache":         {"titre"},
-		"mes_taches":            {"quand"},
-		"terminer_tache":        {"recherche"},
-		"reprogrammer_tache":    {"recherche"},
-		"supprimer_tache":       {"recherche"},
+		"consulter_calendrier":       {"debut", "fin"},
+		"mails_non_lus":              nil,
+		"lire_mail":                  nil,
+		"slack_non_lus":              nil,
+		"whatsapp_non_lus":           nil,
+		"lire_canal_slack":           {"canal"},
+		"lire_conversation_whatsapp": {"conversation"},
+		"lancer_navigation":          {"destination"},
+		"creer_evenement":            {"titre", "debut", "fin"},
+		"preparer_reponse_mail":      {"destinataire", "corps"},
+		"chercher_brouillon":         nil,
+		"modifier_brouillon":         {"id", "corps"},
+		"chercher_historique":        nil,
+		"ajouter_tache":              {"titre"},
+		"mes_taches":                 {"quand"},
+		"terminer_tache":             {"recherche"},
+		"reprogrammer_tache":         {"recherche"},
+		"supprimer_tache":            {"recherche"},
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("attendu %d outils, obtenu %d", len(want), len(tools))
@@ -167,7 +168,7 @@ func TestToolDefinitionsHideDisconnectedSources(t *testing.T) {
 	}
 
 	only := names(Sources{Mail: true})
-	for _, absent := range []string{"whatsapp_non_lus", "slack_non_lus", "lire_canal_slack"} {
+	for _, absent := range []string{"whatsapp_non_lus", "lire_conversation_whatsapp", "slack_non_lus", "lire_canal_slack"} {
 		if only[absent] {
 			t.Errorf("%s exposé alors que la source n'est pas branchée", absent)
 		}

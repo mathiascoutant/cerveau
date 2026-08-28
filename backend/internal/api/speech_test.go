@@ -79,7 +79,7 @@ func TestSpeechTicketUnknown(t *testing.T) {
 }
 
 func TestSpeechStreamRouting(t *testing.T) {
-	srv := NewServer(config.Config{}, nil, nil)
+	srv := NewServer(config.Config{}, nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/speech/inconnu", nil))

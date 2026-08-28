@@ -7,7 +7,9 @@
 //
 //   - un mail ne compte que si l'utilisateur en est le destinataire nommé, et
 //     s'il est écrit par quelqu'un. Une copie n'est pas une demande, et une
-//     alerte de connexion n'attend pas de réponse ;
+//     alerte de connexion n'attend pas de réponse. Seule exception, et elle est
+//     décisive : un mail qui RÉPOND à un message qu'il a envoyé le vise, même
+//     s'il n'est qu'en copie — on ne répond pas à quelqu'un pour information ;
 //   - un message Slack ne compte que s'il lui est adressé — message privé ou
 //     mention. L'activité d'un canal où personne ne le cite peut se lire plus
 //     tard, par définition.
@@ -34,6 +36,10 @@ const (
 	ReasonDM Reason = "dm"
 	// ReasonMention : l'utilisateur est cité nommément dans une conversation.
 	ReasonMention Reason = "mention"
+	// ReasonReply : le mail répond à un message que l'utilisateur a envoyé.
+	// C'est le motif le plus fort qui existe — plus fort qu'être destinataire :
+	// on ne répond pas à quelqu'un pour information.
+	ReasonReply Reason = "reponse"
 )
 
 // Item est une chose à traiter, quelle que soit sa source.
@@ -62,12 +68,92 @@ type Mail struct {
 	// Diffusion : le message porte les en-têtes d'une liste ou d'un envoi
 	// automatique (List-Id, List-Unsubscribe, Precedence, Auto-Submitted).
 	Diffusion bool
+	// RepondAToi : ce mail répond à un message que l'utilisateur a envoyé.
+	//
+	// Ce n'est pas une déduction sur l'objet : c'est l'en-tête In-Reply-To du
+	// message, rapproché des Message-ID de ses envois. Le fil est donc établi
+	// au sens strict, pas deviné à partir d'un « Re: » que n'importe qui peut
+	// écrire à la main.
+	RepondAToi bool
+}
+
+// Adressage dit ce que le mail attend de l'utilisateur, et c'est la question à
+// laquelle un modèle répond mal.
+//
+// « Suis-je visé par ce message ? » se tranche en lisant deux listes
+// d'adresses et en s'y cherchant. Un modèle à qui on donne quatorze
+// destinataires et une adresse de référence se trompe une fois sur cinq, et il
+// se trompe avec aplomb. Le serveur, lui, le sait sans rien deviner : on
+// calcule ici, et on lui donne la réponse plutôt que les données.
+type Adressage string
+
+const (
+	// AdressageReponse : quelqu'un répond à un message qu'il a envoyé. Le plus
+	// engageant de tous — y compris quand il n'est qu'en copie de la réponse.
+	AdressageReponse Adressage = "réponse à un mail que tu as envoyé"
+	// AdressageDirect : seul destinataire du champ « À ».
+	AdressageDirect Adressage = "tu es le seul destinataire"
+	// AdressageAvecAutres : dans le champ « À », avec d'autres.
+	AdressageAvecAutres Adressage = "tu es destinataire, avec d'autres"
+	// AdressageCopie : en copie et rien d'autre — pour information.
+	AdressageCopie Adressage = "tu es seulement en copie"
+	// AdressageDiffusion : liste de diffusion, envoi automatique, ou champ
+	// « À » si large que personne n'y est visé.
+	AdressageDiffusion Adressage = "diffusion : tu n'es pas visé personnellement"
+	// AdressageAbsent : ni dans « À » ni en copie. Copie cachée, alias, ou
+	// liste qui réexpédie — le message arrive sans que personne l'ait nommé.
+	AdressageAbsent Adressage = "tu n'apparais ni dans « À » ni en copie"
+)
+
+// Addressing situe l'utilisateur parmi les destinataires d'un mail.
+//
+// L'ordre des tests est l'ordre de ce qui engage : répondre à quelqu'un le vise
+// plus sûrement que le mettre en copie, et une diffusion ne vise personne quoi
+// qu'elle mette dans ses champs.
+func Addressing(m Mail, moi string) Adressage {
+	moi = strings.ToLower(strings.TrimSpace(moi))
+	if m.RepondAToi {
+		return AdressageReponse
+	}
+	if m.Diffusion {
+		return AdressageDiffusion
+	}
+	if moi == "" {
+		// Sans adresse de référence, on ne sait pas se chercher dans les
+		// champs. On ne prétend rien : mieux vaut un adressage inconnu qu'un
+		// adressage inventé.
+		return ""
+	}
+	if len(m.Pour) > massMailing {
+		return AdressageDiffusion
+	}
+	if contient(m.Pour, moi) {
+		if len(m.Pour) == 1 {
+			return AdressageDirect
+		}
+		return AdressageAvecAutres
+	}
+	if contient(m.Copie, moi) {
+		return AdressageCopie
+	}
+	return AdressageAbsent
+}
+
+func contient(addrs []string, moi string) bool {
+	for _, addr := range addrs {
+		if strings.Contains(strings.ToLower(addr), moi) {
+			return true
+		}
+	}
+	return false
 }
 
 // Conversation est ce que le tri a besoin de savoir d'une conversation Slack.
 type Conversation struct {
-	Canal    string
-	Type     string // "dm" ou "canal"
+	Canal string
+	// Type : « dm » pour un tête-à-tête (message privé Slack, conversation
+	// WhatsApp), n'importe quoi d'autre pour un canal ou un groupe.
+	Type     string
 	NonLus   int
 	Mentions int
 	Dernier  time.Time
@@ -88,12 +174,16 @@ func Mails(mails []Mail, moi string) []Item {
 		if !urgentMail(m, moi) {
 			continue
 		}
+		motif := ReasonDirect
+		if m.RepondAToi {
+			motif = ReasonReply
+		}
 		out = append(out, Item{
 			Source: "mail",
 			Titre:  fallback(strings.TrimSpace(m.Objet), "(sans objet)"),
 			De:     displayName(m.De, m.Adresse),
 			Quand:  m.Date,
-			Motif:  ReasonDirect,
+			Motif:  motif,
 		})
 	}
 	return out
@@ -101,10 +191,19 @@ func Mails(mails []Mail, moi string) []Item {
 
 // Slack garde les conversations qui s'adressent à l'utilisateur : ses messages
 // privés, et les canaux où il est cité.
-func Slack(convs []Conversation) []Item {
+func Slack(convs []Conversation) []Item { return Chats("slack", convs) }
+
+// WhatsApp applique la même règle aux groupes et aux conversations privées. La
+// règle ne change pas parce que le service change : un groupe où personne ne le
+// cite se lit plus tard, exactement comme un canal.
+func WhatsApp(convs []Conversation) []Item { return Chats("whatsapp", convs) }
+
+// Chats est le tri commun aux messageries : ce qui lui est adressé passe, le
+// reste attend.
+func Chats(source string, convs []Conversation) []Item {
 	out := make([]Item, 0, len(convs))
 	for _, c := range convs {
-		motif, ok := urgentSlack(c)
+		motif, ok := urgentChat(c)
 		if !ok {
 			continue
 		}
@@ -113,7 +212,7 @@ func Slack(convs []Conversation) []Item {
 			compte = c.Mentions
 		}
 		out = append(out, Item{
-			Source: "slack",
+			Source: source,
 			Titre:  c.Canal,
 			De:     speaker(c.Extraits),
 			Apercu: excerpt(c.Extraits),
@@ -125,40 +224,33 @@ func Slack(convs []Conversation) []Item {
 	return out
 }
 
-// urgentMail : destinataire nommé, et écrit par quelqu'un.
+// urgentMail : quelqu'un attend quelque chose de lui, et c'est quelqu'un.
+//
+// Répondre à un message qu'il a envoyé le vise, même en copie : on ne répond
+// pas à quelqu'un pour information. C'est le seul cas où la copie passe — et il
+// est établi par les en-têtes, pas déduit d'un « Re: ».
 func urgentMail(m Mail, moi string) bool {
+	if m.RepondAToi {
+		return !robot(m.Adresse)
+	}
 	if m.Diffusion || robot(m.Adresse) || automatique(m.Objet) {
 		return false
 	}
-	return addressedTo(m, moi)
-}
-
-// addressedTo dit si l'utilisateur est destinataire principal.
-//
-// La copie ne compte pas : mettre quelqu'un en copie, c'est précisément dire
-// « pour information ». Un champ « À » vide (envoi masqué) ne compte pas non
-// plus — personne n'a été nommé, donc personne n'a été visé.
-func addressedTo(m Mail, moi string) bool {
-	moi = strings.ToLower(strings.TrimSpace(moi))
-	if moi == "" {
+	switch Addressing(m, moi) {
+	case AdressageDirect, AdressageAvecAutres:
+		return true
+	case "":
 		// Sans adresse de référence on ne sait rien trancher. Plutôt que de
 		// tout jeter, on laisse passer : le reste du tri a déjà écarté les
 		// robots, et une liste un peu large vaut mieux qu'une liste vide.
 		return true
-	}
-	if len(m.Pour) > massMailing {
+	default:
 		return false
 	}
-	for _, addr := range m.Pour {
-		if strings.Contains(strings.ToLower(addr), moi) {
-			return true
-		}
-	}
-	return false
 }
 
-// urgentSlack : un message privé ou une mention, jamais l'activité d'un canal.
-func urgentSlack(c Conversation) (Reason, bool) {
+// urgentChat : un message privé ou une mention, jamais l'activité d'un canal.
+func urgentChat(c Conversation) (Reason, bool) {
 	switch {
 	case c.Mentions > 0:
 		return ReasonMention, true

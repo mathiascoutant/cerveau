@@ -15,7 +15,9 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
+	"github.com/mathiascoutant/cerveau/backend/internal/triage"
 )
 
 // userToolbox donne à l'assistant l'accès aux données d'UN utilisateur.
@@ -70,7 +72,7 @@ func (t *userToolbox) unreadMail(ctx context.Context, limit int) ([]gandi.Messag
 }
 
 func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.EmailView, error) {
-	mails, _, err := t.unreadMail(ctx, limit)
+	mails, moi, err := t.unreadMail(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +82,11 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 			De:    m.From,
 			Objet: m.Subject,
 			Recu:  t.when(m.Date),
+			// Sa place parmi les destinataires est tranchée ici, pas par le
+			// modèle : « suis-je dans ce champ À ? » est une comparaison de
+			// chaînes, et une comparaison de chaînes ne se confie pas à
+			// quelque chose qui devine.
+			PourToi: string(triage.Addressing(toTriageMail(m), moi)),
 		})
 	}
 	return out, nil
@@ -115,6 +122,10 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		Recu:    t.when(msg.Date),
 		Contenu: msg.Body,
 		Tronque: strings.HasSuffix(msg.Body, "…"),
+
+		PourToi:         string(triage.Addressing(toTriageMail(msg), creds.Email)),
+		ReponseATonMail: msg.AnswersYou,
+		Destinataires:   len(msg.To) + len(msg.Cc),
 	}
 	// L'adresse de sa propre boîte sert à reconnaître ses envois dans le fil :
 	// « j'ai dit quoi dans le mail d'avant » n'a de réponse que si on sait
@@ -201,6 +212,12 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 				Quoi: "conversation", Recherche: amb.Query, Choix: amb.Choices,
 			}
 		}
+		var unsure *slack.UnconfirmedConversationError
+		if errors.As(err, &unsure) {
+			return assistant.SlackChannelView{}, &assistant.ConfirmError{
+				Quoi: "canal", Recherche: unsure.Query, Trouve: unsure.Found,
+			}
+		}
 		return assistant.SlackChannelView{}, err
 	}
 	out := assistant.SlackChannelView{Canal: label}
@@ -212,30 +229,142 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 	return out, nil
 }
 
-func (t *userToolbox) UnreadWhatsApp(ctx context.Context, limit int) ([]assistant.WhatsAppView, error) {
+// whatsAppThreads rend les conversations non lues telles que le journal les
+// tient. UnreadWhatsApp les met en mots pour le modèle ; le tri des urgences a
+// besoin des instants, pas de « il y a deux heures ».
+func (t *userToolbox) whatsAppThreads(ctx context.Context, limit int) ([]store.WhatsAppThread, error) {
 	if _, err := t.srv.whatsappCreds(ctx, t.user); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, errors.New("WhatsApp Business n'est pas connecté")
+			return nil, errors.New("WhatsApp n'est pas connecté")
 		}
 		return nil, err
 	}
-	msgs, err := t.srv.store.UnreadWhatsApp(ctx, t.user.ID, int64(limit))
+	return t.srv.store.UnreadWhatsApp(ctx, t.user.ID, limit)
+}
+
+func (t *userToolbox) UnreadWhatsApp(ctx context.Context, limit int) ([]assistant.WhatsAppView, error) {
+	threads, err := t.whatsAppThreads(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]assistant.WhatsAppView, 0, len(msgs))
-	for _, m := range msgs {
-		from := m.FromName
-		if from == "" {
-			from = m.From
+	out := make([]assistant.WhatsAppView, 0, len(threads))
+	for _, th := range threads {
+		view := assistant.WhatsAppView{
+			Conversation: th.Chat.Name,
+			Type:         chatKind(th.Chat.IsGroup),
+			NonLus:       th.Unread,
+			Mentions:     th.Mentions,
+			Dernier:      t.when(th.Chat.LastAt),
 		}
-		out = append(out, assistant.WhatsAppView{
-			De:      from,
-			Message: m.Body,
-			Recu:    t.when(m.Timestamp),
+		for _, m := range th.Latest {
+			view.Extraits = append(view.Extraits, m.Sender+" : "+m.Body)
+		}
+		out = append(out, view)
+	}
+	return out, nil
+}
+
+// ReadWhatsAppChat ouvre une conversation à la demande, non-lus ou pas.
+//
+// C'est l'outil qui répond à « quoi de neuf dans le groupe Azul » — et, quand
+// le nom prononcé n'est pas le nom exact du groupe, celui qui refuse de lire
+// tant qu'on n'a pas confirmé lequel.
+func (t *userToolbox) ReadWhatsAppChat(ctx context.Context, name string, limit int, sinceMine bool) (assistant.WhatsAppChatView, error) {
+	if _, err := t.srv.whatsappCreds(ctx, t.user); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return assistant.WhatsAppChatView{}, errors.New("WhatsApp n'est pas connecté")
+		}
+		return assistant.WhatsAppChatView{}, err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > whatsapp.MaxRead {
+		limit = whatsapp.MaxRead
+	}
+
+	stored, err := t.srv.store.WhatsAppChats(ctx, t.user.ID)
+	if err != nil {
+		return assistant.WhatsAppChatView{}, err
+	}
+	chats := make([]whatsapp.Chat, 0, len(stored))
+	for _, c := range stored {
+		chats = append(chats, whatsapp.Chat{
+			JID: c.JID, Name: c.Name, IsGroup: c.IsGroup,
+			LastAt: c.LastAt, LastReadAt: c.LastReadAt,
+		})
+	}
+
+	chat, tied, ok := whatsapp.MatchChat(chats, name)
+	if len(tied) > 0 {
+		return assistant.WhatsAppChatView{}, &assistant.AmbiguousError{
+			Quoi: "conversation", Recherche: name, Choix: tied,
+		}
+	}
+	if !ok {
+		return assistant.WhatsAppChatView{}, &whatsapp.UnknownChatError{
+			Query: name, Nearest: whatsapp.Nearest(chats, name, 6),
+		}
+	}
+	if whatsapp.NeedsConfirmation(name, chat) {
+		return assistant.WhatsAppChatView{}, &assistant.ConfirmError{
+			Quoi: chatWord(chat.IsGroup), Recherche: name, Trouve: chat.Name,
+		}
+	}
+
+	var since time.Time
+	if sinceMine {
+		mine, err := t.srv.store.LastOwnWhatsAppMessage(ctx, t.user.ID, chat.JID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return assistant.WhatsAppChatView{}, err
+		}
+		if mine != nil {
+			since = mine.Timestamp
+		}
+	}
+
+	msgs, err := t.srv.store.WhatsAppMessages(ctx, t.user.ID, chat.JID, since, int64(limit))
+	if err != nil {
+		return assistant.WhatsAppChatView{}, err
+	}
+	out := assistant.WhatsAppChatView{
+		Conversation:         chat.Name,
+		Type:                 chatKind(chat.IsGroup),
+		DepuisTonMessage:     sinceMine && !since.IsZero(),
+		PlusAncienDisponible: len(msgs) == limit,
+	}
+	for _, m := range msgs {
+		// Le non-lu se compte sur ce qui est rendu, et il se compte ici : le
+		// modèle n'a pas les horodatages bruts, seulement « hier à 16h30 ».
+		if !m.FromMe && !chat.LastReadAt.IsZero() && m.Timestamp.After(chat.LastReadAt) {
+			out.NonLus++
+		}
+		out.Messages = append(out.Messages, assistant.WhatsAppMessageView{
+			Auteur: m.Sender,
+			Texte:  m.Body,
+			Quand:  t.when(m.Timestamp),
+			DeToi:  m.FromMe,
+			TeCite: m.Mentioned,
 		})
 	}
 	return out, nil
+}
+
+func chatKind(isGroup bool) string {
+	if isGroup {
+		return "groupe"
+	}
+	return "prive"
+}
+
+// chatWord : le mot par lequel on annonce la conversation dans la question de
+// confirmation. « Tu parles du groupe Azul ? » se comprend, « Tu parles de la
+// conversation Azul ? » sonne comme une machine.
+func chatWord(isGroup bool) string {
+	if isGroup {
+		return "groupe"
+	}
+	return "la conversation avec"
 }
 
 // CreateEvent enregistre l'événement côté serveur (pour que les vérifications

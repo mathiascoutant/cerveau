@@ -1,4 +1,4 @@
-.PHONY: run build vet fmt test gandi-check linux deploy
+.PHONY: run build vet fmt test gandi-check voices linux deploy
 
 run:
 	go run ./cmd/server
@@ -19,6 +19,12 @@ test:
 # Usage : make gandi-check EMAIL=moi@mondomaine.fr
 gandi-check:
 	go run ./cmd/gandicheck -email $(EMAIL)
+
+# Liste les voix ElevenLabs du compte, les françaises d'abord.
+# C'est la commande à lancer quand Raoul prend l'accent anglais : la voix par
+# défaut est anglophone, et ça ne se corrige qu'en changeant de voix.
+voices:
+	go run ./cmd/voices
 
 # Binaire pour le VPS OVH (Linux amd64).
 linux:

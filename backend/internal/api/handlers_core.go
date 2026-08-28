@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -139,10 +140,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	waStatus := sourceStatus{Provider: store.ProviderWhatsApp}
 	if _, err := s.whatsappCreds(ctx, user); err == nil {
 		waStatus.Connected = true
-		if msgs, err := s.store.UnreadWhatsApp(ctx, user.ID, 200); err != nil {
+		if threads, err := tb.UnreadWhatsApp(ctx, 30); err != nil {
 			waStatus.Error = err.Error()
 		} else {
-			waStatus.Unread = len(msgs)
+			for _, th := range threads {
+				waStatus.Unread += th.NonLus
+			}
+		}
+		// Un compte lié dont la session est fermée ne reçoit rien : le dire
+		// ici, sinon l'écran d'accueil affiche « connecté, zéro message » alors
+		// que le serveur est sourd depuis trois jours.
+		if st := s.wa.Status(user.ID.Hex()); st.Phase != whatsapp.PhaseOnline && waStatus.Error == "" {
+			waStatus.Error = "session WhatsApp fermée, les nouveaux messages n'arrivent pas"
 		}
 	}
 	out = append(out, waStatus)

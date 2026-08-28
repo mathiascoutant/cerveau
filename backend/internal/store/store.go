@@ -45,6 +45,9 @@ func (s *Store) users() *mongo.Collection       { return s.db.Collection("users"
 func (s *Store) connections() *mongo.Collection { return s.db.Collection("connections") }
 func (s *Store) events() *mongo.Collection      { return s.db.Collection("calendar_events") }
 func (s *Store) whatsapp() *mongo.Collection    { return s.db.Collection("whatsapp_messages") }
+func (s *Store) whatsappChats() *mongo.Collection {
+	return s.db.Collection("whatsapp_chats")
+}
 func (s *Store) interactions() *mongo.Collection {
 	return s.db.Collection("interactions")
 }
@@ -78,7 +81,13 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "message_id", Value: 1}},
 			Options: unique(),
 		}},
-		{s.whatsapp(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "timestamp", Value: -1}}}},
+		{s.whatsapp(), mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "chat_jid", Value: 1}, {Key: "timestamp", Value: -1}},
+		}},
+		{s.whatsappChats(), mongo.IndexModel{
+			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "jid", Value: 1}},
+			Options: unique(),
+		}},
 		{s.interactions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}}},
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
@@ -141,28 +150,6 @@ func (s *Store) UserByToken(ctx context.Context, token string) (*User, error) {
 		return nil, ErrNotFound
 	}
 	return &u, err
-}
-
-// UserByWhatsAppPhoneNumberID retrouve le propriétaire d'un numéro WhatsApp
-// Business : le webhook Meta n'est pas authentifié côté utilisateur, on résout
-// donc le destinataire à partir du phone_number_id reçu.
-func (s *Store) UserByWhatsAppPhoneNumberID(ctx context.Context, phoneNumberID string) (*User, error) {
-	var c Connection
-	err := s.connections().FindOne(ctx, bson.M{
-		"provider": ProviderWhatsApp,
-		"label":    phoneNumberID,
-	}).Decode(&c)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	var u User
-	if err := s.users().FindOne(ctx, bson.M{"_id": c.UserID}).Decode(&u); err != nil {
-		return nil, err
-	}
-	return &u, nil
 }
 
 func (s *Store) SetUserName(ctx context.Context, userID bson.ObjectID, name string) error {
@@ -306,37 +293,236 @@ func (s *Store) InsertEvent(ctx context.Context, e CalendarEvent) error {
 
 // --- WhatsApp ---------------------------------------------------------------
 
-func (s *Store) SaveWhatsAppMessage(ctx context.Context, m WhatsAppMessage) error {
-	_, err := s.whatsapp().UpdateOne(ctx,
-		bson.M{"user_id": m.UserID, "message_id": m.MessageID},
-		bson.M{"$setOnInsert": m},
-		options.UpdateOne().SetUpsert(true),
-	)
+// Fenêtre retenue pour une conversation dont on ne connaît pas l'état de
+// lecture. Sans elle, une conversation jamais rouverte depuis la liaison
+// remonterait tout son historique comme autant de messages non lus.
+const WhatsAppUnreadWindow = 72 * time.Hour
+
+// Nombre de conversations inspectées pour les non-lus. Au-delà, on regarde des
+// fils que personne n'a touchés depuis des semaines.
+const whatsAppScanDepth = 40
+
+// SaveWhatsAppMessages archive un lot de messages.
+//
+// Écriture idempotente : l'historique poussé par le téléphone recouvre ce qui
+// est déjà arrivé en direct, et une liaison peut renvoyer deux fois le même
+// lot. On garde la première version — un message ne change pas.
+func (s *Store) SaveWhatsAppMessages(ctx context.Context, userID bson.ObjectID, msgs []WhatsAppMessage) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, 0, len(msgs))
+	for _, m := range msgs {
+		m.UserID = userID
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"user_id": userID, "message_id": m.MessageID}).
+			SetUpdate(bson.M{"$setOnInsert": m}).
+			SetUpsert(true))
+	}
+	// Non ordonné : un doublon au milieu du lot ne doit pas jeter la suite.
+	_, err := s.whatsapp().BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	if mongo.IsDuplicateKeyError(err) {
 		return nil
 	}
 	return err
 }
 
-func (s *Store) UnreadWhatsApp(ctx context.Context, userID bson.ObjectID, limit int64) ([]WhatsAppMessage, error) {
-	cur, err := s.whatsapp().Find(ctx,
-		bson.M{"user_id": userID, "read": false},
+// SaveWhatsAppChat enregistre une conversation telle que l'historique la donne :
+// nom, sourdine, archivage et état de lecture d'un coup.
+func (s *Store) SaveWhatsAppChat(ctx context.Context, userID bson.ObjectID, chat WhatsAppChat) error {
+	set := bson.M{"is_group": chat.IsGroup, "muted": chat.Muted, "archived": chat.Archived, "updated_at": time.Now()}
+	if chat.Name != "" {
+		set["name"] = chat.Name
+	}
+	return s.updateWhatsAppChat(ctx, userID, chat.JID, set, bson.M{
+		"last_at":      chat.LastAt,
+		"last_read_at": chat.LastReadAt,
+	})
+}
+
+// TouchWhatsAppChat note qu'un message vient d'arriver dans une conversation.
+func (s *Store) TouchWhatsAppChat(ctx context.Context, userID bson.ObjectID, jid, name string, isGroup bool, at time.Time) error {
+	set := bson.M{"is_group": isGroup, "updated_at": time.Now()}
+	if name != "" {
+		set["name"] = name
+	}
+	return s.updateWhatsAppChat(ctx, userID, jid, set, bson.M{"last_at": at})
+}
+
+// SetWhatsAppChatMuted et SetWhatsAppChatArchived suivent ce qu'il fait depuis
+// son téléphone. La sourdine compte double ici : elle décide de ce qui a le
+// droit de remonter dans les urgences.
+func (s *Store) SetWhatsAppChatMuted(ctx context.Context, userID bson.ObjectID, jid string, muted bool) error {
+	return s.updateWhatsAppChat(ctx, userID, jid, bson.M{"muted": muted, "updated_at": time.Now()}, nil)
+}
+
+func (s *Store) SetWhatsAppChatArchived(ctx context.Context, userID bson.ObjectID, jid string, archived bool) error {
+	return s.updateWhatsAppChat(ctx, userID, jid, bson.M{"archived": archived, "updated_at": time.Now()}, nil)
+}
+
+// MarkWhatsAppChatRead avance l'état de lecture d'une conversation.
+func (s *Store) MarkWhatsAppChatRead(ctx context.Context, userID bson.ObjectID, jid string, at time.Time) error {
+	return s.updateWhatsAppChat(ctx, userID, jid, bson.M{"updated_at": time.Now()}, bson.M{"last_read_at": at})
+}
+
+// updateWhatsAppChat applique une mise à jour partielle.
+//
+// Les horodatages passent par $max et jamais par $set : les événements
+// n'arrivent pas dans l'ordre — un lot d'historique atterrit après les messages
+// du jour — et un $set ferait reculer la dernière lecture, donc réapparaître
+// comme non lu ce qui avait été lu.
+func (s *Store) updateWhatsAppChat(ctx context.Context, userID bson.ObjectID, jid string, set, latest bson.M) error {
+	if jid == "" {
+		return nil
+	}
+	update := bson.M{
+		"$set":         set,
+		"$setOnInsert": bson.M{"user_id": userID, "jid": jid},
+	}
+	max := bson.M{}
+	for key, value := range latest {
+		if ts, ok := value.(time.Time); ok && !ts.IsZero() {
+			max[key] = ts
+		}
+	}
+	if len(max) > 0 {
+		update["$max"] = max
+	}
+	_, err := s.whatsappChats().UpdateOne(ctx,
+		bson.M{"user_id": userID, "jid": jid}, update, options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+// WhatsAppChats rend les conversations connues, la plus active en tête.
+func (s *Store) WhatsAppChats(ctx context.Context, userID bson.ObjectID) ([]WhatsAppChat, error) {
+	cur, err := s.whatsappChats().Find(ctx,
+		bson.M{"user_id": userID},
+		options.Find().SetSort(bson.D{{Key: "last_at", Value: -1}}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out []WhatsAppChat
+	return out, cur.All(ctx, &out)
+}
+
+// WhatsAppMessages rend le contenu d'une conversation, du plus ancien au plus
+// récent — l'ordre dans lequel un fil se lit.
+//
+// `since` borne par le bas quand on ne veut que la suite (« depuis mon dernier
+// message »). `limit` compte à partir de la fin : ce sont les derniers messages
+// qui intéressent, pas les premiers.
+func (s *Store) WhatsAppMessages(ctx context.Context, userID bson.ObjectID, chatJID string, since time.Time, limit int64) ([]WhatsAppMessage, error) {
+	filter := bson.M{"user_id": userID, "chat_jid": chatJID}
+	if !since.IsZero() {
+		filter["timestamp"] = bson.M{"$gt": since}
+	}
+	cur, err := s.whatsapp().Find(ctx, filter,
 		options.Find().SetSort(bson.D{{Key: "timestamp", Value: -1}}).SetLimit(limit),
 	)
 	if err != nil {
 		return nil, err
 	}
 	var out []WhatsAppMessage
-	return out, cur.All(ctx, &out)
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
-func (s *Store) MarkWhatsAppRead(ctx context.Context, userID bson.ObjectID, ids []string) error {
-	filter := bson.M{"user_id": userID}
-	if len(ids) > 0 {
-		filter["message_id"] = bson.M{"$in": ids}
+// LastOwnWhatsAppMessage rend le dernier message que l'utilisateur a écrit dans
+// une conversation. C'est le repère de « depuis mon dernier message » : ce
+// qu'il a dit lui-même est le seul endroit du fil dont il est sûr de se
+// souvenir.
+func (s *Store) LastOwnWhatsAppMessage(ctx context.Context, userID bson.ObjectID, chatJID string) (*WhatsAppMessage, error) {
+	var m WhatsAppMessage
+	err := s.whatsapp().FindOne(ctx,
+		bson.M{"user_id": userID, "chat_jid": chatJID, "from_me": true},
+		options.FindOne().SetSort(bson.D{{Key: "timestamp", Value: -1}}),
+	).Decode(&m)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
 	}
-	_, err := s.whatsapp().UpdateMany(ctx, filter, bson.M{"$set": bson.M{"read": true}})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UnreadWhatsApp rend les conversations où quelque chose n'a pas été lu.
+//
+// Les conversations en sourdine et archivées sont écartées : les mettre en
+// sourdine est une décision que l'utilisateur a déjà prise, et la contredire
+// tous les matins revient à la lui redemander.
+func (s *Store) UnreadWhatsApp(ctx context.Context, userID bson.ObjectID, limit int) ([]WhatsAppThread, error) {
+	chats, err := s.WhatsAppChats(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	out := make([]WhatsAppThread, 0, limit)
+	scanned := 0
+	for _, chat := range chats {
+		if len(out) >= limit || scanned >= whatsAppScanDepth {
+			break
+		}
+		if chat.Muted || chat.Archived || chat.LastAt.IsZero() {
+			continue
+		}
+		scanned++
+
+		since := chat.LastReadAt
+		if since.IsZero() {
+			since = time.Now().Add(-WhatsAppUnreadWindow)
+		}
+		if !chat.LastAt.After(since) {
+			continue
+		}
+
+		msgs, err := s.WhatsAppMessages(ctx, userID, chat.JID, since, 30)
+		if err != nil {
+			return nil, err
+		}
+		thread := WhatsAppThread{Chat: chat}
+		for _, m := range msgs {
+			if m.FromMe {
+				continue
+			}
+			thread.Unread++
+			if m.Mentioned {
+				thread.Mentions++
+			}
+			thread.Latest = append(thread.Latest, m)
+		}
+		if thread.Unread == 0 {
+			continue
+		}
+		// Les cinq derniers suffisent à dire de quoi il retourne ; le reste se
+		// lit avec lire_conversation_whatsapp, si la question se pose.
+		if len(thread.Latest) > 5 {
+			thread.Latest = thread.Latest[len(thread.Latest)-5:]
+		}
+		out = append(out, thread)
+	}
+	return out, nil
+}
+
+// WhatsAppAccounts liste les comptes liés, tous utilisateurs confondus. Sert au
+// démarrage du serveur : un appareil lié qui n'est pas reconnecté ne reçoit
+// rien, et ce qu'il n'a pas reçu ne se rattrape pas.
+func (s *Store) WhatsAppAccounts(ctx context.Context) ([]Connection, error) {
+	cur, err := s.connections().Find(ctx, bson.M{"provider": ProviderWhatsApp})
+	if err != nil {
+		return nil, err
+	}
+	var out []Connection
+	return out, cur.All(ctx, &out)
 }
 
 // --- Interactions -----------------------------------------------------------

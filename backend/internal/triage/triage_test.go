@@ -121,3 +121,80 @@ func TestMergeTronque(t *testing.T) {
 		t.Fatalf("limite non appliquée : %d entrées", len(got))
 	}
 }
+
+// Une réponse à un mail qu'il a envoyé le vise, même quand il n'est qu'en
+// copie. C'est le seul cas où la copie passe le tri : on ne répond pas à
+// quelqu'un pour information.
+func TestReplyToYouPassesEvenInCopy(t *testing.T) {
+	const moi = "mathias@pxcom.aero"
+
+	copie := Mail{
+		De: "Cyril", Adresse: "cyril@daw.ae", Objet: "Re: les deux boxes",
+		Pour: []string{"equipe@daw.ae"}, Copie: []string{"Mathias <" + moi + ">"},
+		Date: time.Now(),
+	}
+	if got := Mails([]Mail{copie}, moi); len(got) != 0 {
+		t.Fatalf("une simple copie ne doit pas remonter : %+v", got)
+	}
+
+	copie.RepondAToi = true
+	got := Mails([]Mail{copie}, moi)
+	if len(got) != 1 {
+		t.Fatalf("une réponse à son propre mail doit remonter, obtenu %d entrées", len(got))
+	}
+	if got[0].Motif != ReasonReply {
+		t.Errorf("motif %q, attendu %q", got[0].Motif, ReasonReply)
+	}
+}
+
+// Mais une réponse robotisée reste une réponse robotisée : un accusé
+// automatique cite bien son mail, il n'attend rien pour autant.
+func TestReplyFromRobotStillFiltered(t *testing.T) {
+	m := Mail{
+		De: "Support", Adresse: "no-reply@outil.io", Objet: "Re: ticket 42",
+		Pour: []string{"mathias@pxcom.aero"}, RepondAToi: true, Date: time.Now(),
+	}
+	if got := Mails([]Mail{m}, "mathias@pxcom.aero"); len(got) != 0 {
+		t.Errorf("un robot qui répond n'attend toujours rien : %+v", got)
+	}
+}
+
+// L'adressage est ce qu'on donne au modèle à la place des listes d'adresses.
+// Il doit nommer la place exacte, pas approximativement.
+func TestAddressing(t *testing.T) {
+	const moi = "mathias@pxcom.aero"
+	moiAddr := "Mathias COUTANT <" + moi + ">"
+
+	cases := []struct {
+		nom  string
+		mail Mail
+		want Adressage
+	}{
+		{"seul destinataire", Mail{Pour: []string{moiAddr}}, AdressageDirect},
+		{"avec d'autres", Mail{Pour: []string{moiAddr, "cyril@daw.ae"}}, AdressageAvecAutres},
+		{"en copie", Mail{Pour: []string{"cyril@daw.ae"}, Copie: []string{moiAddr}}, AdressageCopie},
+		{"absent des champs", Mail{Pour: []string{"equipe@daw.ae"}}, AdressageAbsent},
+		{"diffusion", Mail{Pour: []string{moiAddr}, Diffusion: true}, AdressageDiffusion},
+		{"réponse", Mail{Copie: []string{moiAddr}, RepondAToi: true}, AdressageReponse},
+		// La réponse prime même sur la diffusion : un fil de liste où l'on
+		// répond à son message reste une réponse à son message.
+		{"réponse dans une liste", Mail{Diffusion: true, RepondAToi: true}, AdressageReponse},
+	}
+	for _, c := range cases {
+		if got := Addressing(c.mail, moi); got != c.want {
+			t.Errorf("%s : %q, attendu %q", c.nom, got, c.want)
+		}
+	}
+
+	// Un champ « À » démesuré ne vise personne, même si on y figure.
+	large := Mail{Pour: make([]string, massMailing+1)}
+	large.Pour[0] = moiAddr
+	if got := Addressing(large, moi); got != AdressageDiffusion {
+		t.Errorf("envoi de masse : %q", got)
+	}
+
+	// Sans adresse de référence, on ne prétend rien.
+	if got := Addressing(Mail{Pour: []string{moiAddr}}, ""); got != "" {
+		t.Errorf("sans adresse connue, l'adressage doit rester vide, obtenu %q", got)
+	}
+}

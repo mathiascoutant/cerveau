@@ -32,6 +32,7 @@ type Toolbox interface {
 	UnreadSlack(ctx context.Context, limit int) ([]SlackView, error)
 	ReadSlackChannel(ctx context.Context, name string, limit int) (SlackChannelView, error)
 	UnreadWhatsApp(ctx context.Context, limit int) ([]WhatsAppView, error)
+	ReadWhatsAppChat(ctx context.Context, name string, limit int, sinceMine bool) (WhatsAppChatView, error)
 	CreateEvent(ctx context.Context, draft EventDraft) (store.Action, error)
 	StartNavigation(ctx context.Context, destination string) (NavigationView, store.Action, error)
 	PrepareEmailReply(ctx context.Context, draft EmailReplyDraft) (EmailDraftView, store.Action, error)
@@ -59,6 +60,11 @@ type EmailView struct {
 	De    string `json:"de"`
 	Objet string `json:"objet"`
 	Recu  string `json:"recu"`
+	// PourToi : ce que le mail attend de lui, calculé par le serveur à partir
+	// des champs À et Copie et des en-têtes de filiation. Le modèle ne doit
+	// PAS le redéduire : se chercher parmi quatorze adresses est exactement le
+	// genre de tâche qu'il rate en l'affirmant.
+	PourToi string `json:"pour_toi,omitempty"`
 }
 
 // EmailContentView est un mail avec son contenu, rapatrié à la demande. La
@@ -72,11 +78,21 @@ type EmailContentView struct {
 	// Pour et Copie : à qui le mail était adressé. Un mail envoyé à six
 	// personnes ne se répond pas comme un mail adressé à soi seul, et la
 	// salutation change avec le nombre.
-	Pour    []string `json:"pour,omitempty"`
-	Copie   []string `json:"copie,omitempty"`
-	Objet   string   `json:"objet"`
-	Recu    string   `json:"recu"`
-	Contenu string   `json:"contenu"`
+	Pour  []string `json:"pour,omitempty"`
+	Copie []string `json:"copie,omitempty"`
+	Objet string   `json:"objet"`
+	Recu  string   `json:"recu"`
+	// PourToi : sa place parmi les destinataires, déjà tranchée — destinataire
+	// unique, destinataire parmi d'autres, simple copie, diffusion, ou absent
+	// des champs (copie cachée, alias, liste).
+	PourToi string `json:"pour_toi,omitempty"`
+	// ReponseATonMail : ce message répond à un mail QU'IL A ENVOYÉ. Établi par
+	// les en-têtes — le Message-ID cité se trouve dans sa boîte d'envoi — et
+	// non par un « Re: » dans l'objet, que n'importe qui peut taper.
+	ReponseATonMail bool `json:"reponse_a_ton_mail,omitempty"`
+	// Destinataires : combien de personnes ont reçu ce mail, copie comprise.
+	Destinataires int    `json:"destinataires,omitempty"`
+	Contenu       string `json:"contenu"`
 	// Fil : les messages précédents de la conversation, du plus récent au plus
 	// ancien. Ne se lit pas à voix haute : c'est du contexte, pas du contenu.
 	Fil []ThreadView `json:"fil,omitempty"`
@@ -128,10 +144,52 @@ type SlackMessageView struct {
 	Quand  string `json:"quand"`
 }
 
+// WhatsAppView est une conversation WhatsApp avec ce qui n'y a pas été lu.
+//
+// Le non-lu est ici un vrai non-lu, contrairement à Slack : les autres
+// appareils de l'utilisateur préviennent le serveur quand il ouvre une
+// conversation. Ce qui remonte est donc ce qu'il n'a pas vu, pas ce qui a
+// bougé.
 type WhatsAppView struct {
-	De      string `json:"de"`
-	Message string `json:"message"`
-	Recu    string `json:"recu"`
+	Conversation string `json:"conversation"`
+	Type         string `json:"type"` // "groupe" ou "prive"
+	NonLus       int    `json:"non_lus,omitempty"`
+	// Mentions : messages où il est cité nommément, ou qui répondent à l'un
+	// des siens. Dans un groupe, c'est ce qui sépare ce qui le concerne de ce
+	// qui se dit devant lui.
+	Mentions int `json:"mentions,omitempty"`
+	// Dernier : quand remonte le message le plus récent, déjà situé par
+	// rapport à maintenant.
+	Dernier  string   `json:"dernier,omitempty"`
+	Extraits []string `json:"extraits,omitempty"`
+}
+
+// WhatsAppChatView est le contenu d'une conversation lue à la demande.
+type WhatsAppChatView struct {
+	Conversation string `json:"conversation"`
+	Type         string `json:"type"`
+	// NonLus : parmi les messages rendus, ceux arrivés après sa dernière
+	// lecture connue. C'est ce qui répond à « j'ai des non-lus sur Azul ? »
+	// sans avoir à lister d'abord toutes les conversations.
+	NonLus   int                   `json:"non_lus,omitempty"`
+	Messages []WhatsAppMessageView `json:"messages"`
+	// DepuisTonMessage : la lecture commence juste après le dernier message
+	// qu'il a lui-même écrit.
+	DepuisTonMessage bool `json:"depuis_ton_dernier_message,omitempty"`
+	// PlusAncienDisponible : la limite a été atteinte, il y a du fil avant.
+	// C'est l'invitation à rappeler l'outil plus large quand le contexte
+	// manque, plutôt que de commenter des messages sortis de nulle part.
+	PlusAncienDisponible bool `json:"plus_ancien_disponible,omitempty"`
+}
+
+type WhatsAppMessageView struct {
+	Auteur string `json:"auteur"`
+	Texte  string `json:"texte"`
+	Quand  string `json:"quand"`
+	// DeToi : message écrit par l'utilisateur lui-même.
+	DeToi bool `json:"de_toi,omitempty"`
+	// TeCite : il y est cité nommément, ou ce message répond à l'un des siens.
+	TeCite bool `json:"te_cite,omitempty"`
 }
 
 // NavigationView décrit ce vers quoi la navigation a été lancée. Il n'y a
@@ -205,6 +263,35 @@ type AmbiguousError struct {
 func (e *AmbiguousError) Error() string {
 	return fmt.Sprintf("plusieurs %ss correspondent à %q : %s",
 		e.Quoi, e.Recherche, strings.Join(e.Choix, " ; "))
+}
+
+// ConfirmError dit que le nom prononcé désigne probablement cette
+// conversation-là, sans lui être identique.
+//
+// « le groupe azul » pour « PXCom- Azul technique » : c'est presque sûrement
+// le bon, mais presque ne suffit pas. Il écoute sans vérifier, et un compte
+// rendu du mauvais groupe a exactement l'allure d'un vrai. L'outil nomme donc
+// ce qu'il a trouvé et rend la main pour une question de deux secondes.
+type ConfirmError struct {
+	// Quoi : « conversation », « groupe », « canal ».
+	Quoi      string
+	Recherche string
+	Trouve    string
+}
+
+func (e *ConfirmError) Error() string {
+	return fmt.Sprintf("%q désigne probablement %s, à confirmer", e.Recherche, e.Trouve)
+}
+
+func (e *ConfirmError) instruction() string {
+	return fmt.Sprintf(
+		"Rien n'a été lu. « %s » ne correspond à aucun nom exact, mais désigne très "+
+			"probablement %s : %s.\n"+
+			"Demande-lui de confirmer, en UNE phrase courte qui cite ce nom en entier "+
+			"(« Tu parles du %s %s ? »). N'invente aucun contenu et n'annonce rien de ce qui "+
+			"s'y trouve : tu ne l'as pas lu. Dès qu'il confirme, rappelle le même outil avec "+
+			"ce nom exact.",
+		e.Recherche, e.Quoi, e.Trouve, e.Quoi, e.Trouve)
 }
 
 // instruction est ce que le modèle reçoit à la place du résultat : pas une
@@ -346,11 +433,12 @@ func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, erro
 			}
 			result.Steps = append(result.Steps, call.Name)
 			if err != nil {
-				var amb *AmbiguousError
-				if errors.As(err, &amb) {
-					// Ce n'est pas une panne : l'outil a fait son travail et
-					// rend la main pour qu'on lève le doute.
-					payload = amb.instruction()
+				// Ce n'est pas toujours une panne : certains outils font leur
+				// travail et rendent la main pour qu'on lève un doute. Ils
+				// portent alors la question à poser, pas un message d'erreur.
+				var ask interface{ instruction() string }
+				if errors.As(err, &ask) {
+					payload = ask.instruction()
 				} else {
 					slog.Warn("outil en échec", "outil", call.Name, "err", err)
 					payload = "Erreur : " + err.Error()
@@ -495,15 +583,39 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		return encode(threads), nil, nil
 
 	case "whatsapp_non_lus":
-		limit := limitOf(rawInput, 15)
-		msgs, err := tb.UnreadWhatsApp(ctx, limit)
+		limit := limitOf(rawInput, 10)
+		threads, err := tb.UnreadWhatsApp(ctx, limit)
 		if err != nil {
 			return "", nil, err
 		}
-		if len(msgs) == 0 {
+		if len(threads) == 0 {
 			return "Aucun message WhatsApp non lu.", nil, nil
 		}
-		return encode(msgs), nil, nil
+		return encode(threads), nil, nil
+
+	case "lire_conversation_whatsapp":
+		var in struct {
+			Conversation string `json:"conversation"`
+			Limite       int    `json:"limite"`
+			DepuisMoi    bool   `json:"depuis_mon_dernier_message"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(in.Conversation) == "" {
+			return "", nil, fmt.Errorf("nom de conversation manquant")
+		}
+		view, err := tb.ReadWhatsAppChat(ctx, in.Conversation, in.Limite, in.DepuisMoi)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(view.Messages) == 0 {
+			if view.DepuisTonMessage {
+				return "Conversation « " + view.Conversation + " » trouvée : rien de neuf depuis son dernier message.", nil, nil
+			}
+			return "Conversation « " + view.Conversation + " » trouvée, mais aucun message archivé.", nil, nil
+		}
+		return encode(view), nil, nil
 
 	case "lire_canal_slack":
 		var in struct {
@@ -891,14 +1003,14 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		tools = append(tools,
 			tool(
 				"mails_non_lus",
-				"Récupère les mails non lus de la boîte Gandi (expéditeur, objet, date). Sert à repérer une urgence ou une contrainte non encore vue.",
+				"Récupère les mails non lus de la boîte Gandi (expéditeur, objet, date). Chaque entrée porte pour_toi, qui dit sa place parmi les destinataires — seul destinataire, parmi d'autres, simple copie, diffusion, ou réponse à un mail qu'il a envoyé. C'est calculé, pas déduit : recopie-le, ne le recalcule pas. Sert à repérer une urgence ou une contrainte non encore vue.",
 				object(map[string]any{
 					"limite": map[string]any{"type": "integer", "description": "Nombre maximum de mails (défaut 15)"},
 				}),
 			),
 			tool(
 				"lire_mail",
-				"Ouvre UN mail et renvoie son contenu, ses destinataires, et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
+				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, destinataires) et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 				object(map[string]any{
 					"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 					"non_lu":    map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
@@ -929,22 +1041,33 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			),
 			tool(
 				"lire_canal_slack",
-				"Lit les derniers messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu ou le dernier message d'un canal, d'un groupe ou d'une discussion précise. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct. Il l'est aussi à l'orthographe, parce que la dictée déforme les noms de canaux — « dubaiairwing » te revient en « dubai R wing » : passe le nom TEL QU'IL L'A DIT, l'outil s'occupe du rapprochement. Et si l'outil ne trouve pas mais propose des noms proches, rappelle-le avec le nom exact de la bonne au lieu d'annoncer que tu n'as rien trouvé.",
+				"Lit les messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu d'un canal, mais AUSSI de ta propre initiative : quand quelque chose remonte d'un canal sans le citer nommément, c'est en entrant dans la conversation que tu sauras si ça le concerne. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct. Il l'est aussi à l'orthographe, parce que la dictée déforme les noms de canaux — « dubaiairwing » te revient en « dubai R wing » : passe le nom TEL QU'IL L'A DIT, l'outil s'occupe du rapprochement. Si le nom trouvé n'est pas exactement celui prononcé, l'outil ne lit rien et te demande de faire confirmer : pose la question en citant le nom complet, puis rappelle l'outil avec ce nom exact. S'il ne trouve pas mais propose des noms proches, demande si c'est l'un d'eux au lieu d'annoncer que tu n'as rien trouvé. REMONTE ASSEZ LOIN pour comprendre : un fil se lit depuis son début, pas depuis son dernier message.",
 				object(map[string]any{
 					"canal":  str("Nom de la conversation, du canal ou de la personne. Si plusieurs correspondent, l'outil le dit au lieu de choisir : demande laquelle, puis rappelle avec le nom exact."),
-					"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 10, maximum 30)"},
+					"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 15, maximum 100). Monte franchement quand il faut reconstituer le contexte d'un échange."},
 				}, "canal"),
 			),
 		)
 	}
 	if src.WhatsApp {
-		tools = append(tools, tool(
-			"whatsapp_non_lus",
-			"Récupère les messages WhatsApp Business non lus reçus par l'utilisateur.",
-			object(map[string]any{
-				"limite": map[string]any{"type": "integer", "description": "Nombre maximum de messages (défaut 15)"},
-			}),
-		))
+		tools = append(tools,
+			tool(
+				"whatsapp_non_lus",
+				"État de WhatsApp : les conversations — groupes et messages privés — où il reste des messages qu'il n'a pas lus, avec un extrait. C'est un vrai non-lu : son téléphone dit au serveur jusqu'où il a lu. Le champ mentions compte les messages où il est cité nommément ou qui répondent à l'un des siens, ce qui, dans un groupe, est bien plus fort qu'un simple non-lu. Les conversations qu'il a mises en sourdine n'y figurent pas, et c'est voulu. Le champ dernier dit quand remonte le message le plus récent, déjà situé par rapport à maintenant : recopie-le, ne le recalcule pas.",
+				object(map[string]any{
+					"limite": map[string]any{"type": "integer", "description": "Nombre maximum de conversations (défaut 10)"},
+				}),
+			),
+			tool(
+				"lire_conversation_whatsapp",
+				"Lit une conversation WhatsApp désignée par son nom — un groupe ou un contact — qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande ce qui se dit quelque part, le contenu d'un groupe, ou ce qui a bougé depuis son dernier message. Passe le nom TEL QU'IL L'A DIT : les noms de groupes ne se prononcent jamais en entier (« azul » pour « PXCom- Azul technique »), l'outil s'occupe du rapprochement. Si le nom trouvé n'est pas exactement celui prononcé, l'outil ne lit rien et te demande de faire confirmer : pose la question en citant le nom complet, puis rappelle l'outil avec ce nom exact. Si plusieurs conversations se ressemblent, il te le dit au lieu de choisir. REMONTE ASSEZ LOIN : le dernier message répond presque toujours à quelque chose. Quand le champ plus_ancien_disponible est vrai et que tu ne comprends pas encore de quoi il retourne, rappelle l'outil avec une limite plus grande avant de répondre.",
+				object(map[string]any{
+					"conversation":               str("Nom du groupe ou de la personne, tel qu'il l'a prononcé."),
+					"limite":                     map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 20, maximum 100). Monte franchement quand il faut comprendre un fil, pas de dix en dix."},
+					"depuis_mon_dernier_message": map[string]any{"type": "boolean", "description": "Ne rendre que ce qui a été écrit après son propre dernier message. C'est la réponse à « quoi de neuf depuis que j'ai parlé »."},
+				}, "conversation"),
+			),
+		)
 	}
 
 	return tools
@@ -965,7 +1088,8 @@ func sourceLines(src Sources) string {
 			"- Slack (slack_non_lus pour ce qu'il n'a pas lu, lire_canal_slack pour lire une conversation précise) ;")
 	}
 	if src.WhatsApp {
-		lines = append(lines, "- WhatsApp Business (whatsapp_non_lus) ;")
+		lines = append(lines,
+			"- WhatsApp, ses groupes et ses conversations privées (whatsapp_non_lus pour ce qu'il n'a pas lu, lire_conversation_whatsapp pour entrer dans une conversation précise) ;")
 	}
 	lines = append(lines,
 		"- sa liste à faire (mes_taches pour la lire, ajouter_tache pour y inscrire, terminer_tache, reprogrammer_tache, supprimer_tache) ;",
@@ -984,6 +1108,37 @@ func only(available bool, text string) string {
 	}
 	return text
 }
+
+// conversationRules : comment on désigne une conversation à l'oral, et jusqu'où
+// on la lit. Vaut pour Slack comme pour WhatsApp — c'est le même geste, et deux
+// jeux de consignes pour le même geste finiraient par diverger.
+const conversationRules = `QUAND IL DÉSIGNE UNE CONVERSATION PAR SON NOM
+
+Personne ne prononce le nom entier d'un groupe ou d'un canal. « Le groupe azul » veut dire « PXCom- Azul technique », « le canal dev » veut dire « dev-backend ». Tu passes le nom TEL QU'IL L'A DIT à l'outil : le rapprochement est son travail, pas le tien, et il est fait pour encaisser ce que la dictée a déformé.
+
+L'outil peut te rendre trois choses au lieu du contenu, et chacune appelle une conduite précise :
+
+- IL A TROUVÉ UNE CONVERSATION DONT LE NOM N'EST PAS EXACTEMENT CELUI PRONONCÉ. Rien n'a été lu. Tu nommes ce qu'il a trouvé et tu demandes confirmation, en une phrase : « Tu parles du groupe PXCom- Azul technique ? ». Tu n'annonces rien de ce qui s'y trouve — tu ne l'as pas ouvert. Dès qu'il confirme, tu rappelles l'outil avec ce nom exact et tu réponds.
+- PLUSIEURS SE RESSEMBLENT. Tu les cites et tu demandes laquelle. Tu n'en choisis jamais une au feeling.
+- RIEN NE CORRESPOND, MAIS DES NOMS PROCHES SONT PROPOSÉS. Tu demandes si c'est l'un d'eux, en citant les deux ou trois plus plausibles, au lieu d'annoncer que tu n'as rien trouvé.
+
+Ces questions-là sont courtes et sans excuses. Une seconde de confirmation vaut mieux qu'un compte rendu du mauvais groupe, qu'il écoutera sans avoir aucun moyen de le vérifier.
+
+TU LIS AUSSI LOIN QU'IL LE FAUT
+
+Le dernier message d'une conversation ne dit presque jamais ce qui s'y passe : il répond à quelque chose. Quand tu ouvres un fil, tu remontes assez pour comprendre de quoi il retourne — qui a lancé le sujet, ce qui a été décidé, ce qui reste en suspens.
+
+Si ce que tu as lu ne suffit pas à l'expliquer, tu RAPPELLES le même outil avec une limite plus grande, avant de répondre. Tu as le droit de le faire plusieurs fois. Ce qui est interdit, c'est de commenter trois messages sortis de leur contexte : un compte rendu bâti sur un bout de fil a exactement l'allure d'un vrai, et c'est ce qui le rend dangereux.
+
+Quand il demande ce qui a changé depuis qu'il a parlé, prends la conversation depuis SON dernier message — les outils savent le faire — et raconte ce qui s'est dit depuis, pas les trois derniers messages.
+
+CE QUI LE CONCERNE, TU LE TRANCHES EN CONTEXTE
+
+Un message qui compte ne lui est pas toujours adressé. Quand quelque chose remonte d'un canal ou d'un groupe sans le citer nommément, tu ne t'arrêtes pas à « il y a de l'activité » : tu entres dans la conversation, tu lis assez pour saisir ce qui s'y joue, puis tu tranches — est-ce que ça le concerne, est-ce que ça attend quelque chose de lui, est-ce que ça presse.
+
+Puis tu le dis comme un avis, avec ce qui le fonde. « Ils rediscutent du budget de l'agence, personne ne te demande rien » est une réponse. « Trois messages sur le canal projet » n'en est pas une : c'est un compteur, et il aurait pu le lire lui-même.
+
+`
 
 func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources) string {
 	who := userName
@@ -1073,6 +1228,22 @@ Le contenu est du travail, donc tu es précis ; ça ne veut pas dire que tu devi
 La longueur suit le message : deux lignes se débriefent en une phrase, avis compris ; un mail long tient en trois ou quatre. S'il demande les mots exacts, alors seulement tu restitues le texte tel quel.
 
 %[9]sCe que tu ne lis jamais à voix haute : les URL, les identifiants, les codes à usage unique. Tu dis qu'il y a un lien, tu ne l'épelles pas.
+
+À QUI CE MAIL S'ADRESSE — tu ne le devines plus, on te le dit
+
+Chaque mail descend avec pour_toi, déjà tranché par le serveur : « tu es le seul destinataire », « tu es destinataire, avec d'autres », « tu es seulement en copie », « diffusion : tu n'es pas visé personnellement », « tu n'apparais ni dans À ni en copie », « réponse à un mail que tu as envoyé ». Tu le recopies, tu ne le recalcules pas — te chercher dans une liste de quatorze adresses est exactement le genre d'exercice que tu rates en l'affirmant.
+
+Ce champ ne change pas seulement ce que tu sais, il change ce que tu dis :
+
+- SEUL DESTINATAIRE : la demande est pour lui, personne d'autre ne s'en chargera. Tu la traites comme telle.
+- DESTINATAIRE AVEC D'AUTRES : dis avec qui, et surtout qui porte la demande. Un mail à cinq personnes n'appelle pas forcément SA réponse ; quand le corps vise quelqu'un d'autre nommément, tu le dis au lieu de lui mettre la tâche sur le dos.
+- SEULEMENT EN COPIE : c'est de l'information, pas une demande. Tu le signales en une clause — « tu es juste en copie » — et tu ne le présentes jamais comme quelque chose à faire. Une seule exception : si le corps le nomme et lui demande quelque chose, le corps l'emporte sur le champ, et c'est ça que tu dis.
+- DIFFUSION, ou ABSENT DES CHAMPS : personne ne l'a nommé. Une demi-phrase suffit, souvent aucune.
+- RÉPONSE À UN MAIL QU'IL A ENVOYÉ : le plus engageant de tous, et il prime sur tout le reste. Quelqu'un répond à ce que LUI a écrit — même s'il n'est qu'en copie de la réponse, même s'ils sont dix. Tu ouvres là-dessus : « Cyril te répond sur les boxes ». Ce n'est pas une déduction sur un « Re: » : le message cite l'identifiant d'un mail parti de sa boîte.
+
+Quand c'est une réponse à lui, le champ fil contient ce qu'il avait écrit, marqué de_toi. Sers-t'en pour la seule chose qui l'intéresse à ce moment-là : est-ce qu'on répond vraiment à ce qu'il demandait, ou est-ce qu'on l'esquive ? Dis-le franchement.
+
+destinataires dit combien de personnes ont reçu le mail, copie comprise. C'est ce qui sépare « il t'écrit » de « il écrit à tout le monde », et ça décide de la salutation quand tu rédiges la réponse.
 
 QUAND IL DEMANDE DE PRÉPARER UNE RÉPONSE À UN MAIL
 
@@ -1176,7 +1347,7 @@ QUAND IL DEMANDE SI UN CRÉNEAU EST POSSIBLE
 
 Règle absolue : répondre « oui, c'est possible » sans avoir appelé creer_evenement est une erreur. Un créneau que tu valides se termine toujours par un événement posé dans le calendrier. Si la durée n'est pas précisée, prends une heure.
 
-QUAND TU N'ES PAS SÛR DE QUI IL PARLE
+%[11]sQUAND TU N'ES PAS SÛR DE QUI IL PARLE
 
 Si un outil te répond que la recherche est ambiguë — deux Cyril qui écrivent, deux conversations au même nom — tu ne tranches pas. Tu poses la question, courte, en citant ce qui les sépare : « Cyril Martin ou Cyril Dubois ? », « celui de chez Orange ou celui de la compta ? ». Puis tu rappelles l'outil avec sa réponse.
 
@@ -1205,6 +1376,7 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 		only(src.Slack, ", « ça raconte quoi sur le canal projet »"),
 		only(src.Slack, "Un fil Slack ne se déroule pas message par message : tu dis où en est la conversation, qui a dit quoi qui compte, et ce qui l'attend.\n\n"),
 		identity,
+		only(src.Slack || src.WhatsApp, conversationRules),
 	)
 }
 
