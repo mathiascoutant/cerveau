@@ -137,6 +137,12 @@ type Manager struct {
 	db        *sql.DB
 	journal   Journal
 	log       waLog.Logger
+	// ctx vit aussi longtemps que le processus, et c'est capital : whatsmeow
+	// garde le contexte de connexion pendant TOUTE la vie de la session. Il
+	// pilote la reconnexion automatique, et le canal d'appairage se ferme —
+	// en déconnectant le client — dès qu'il est annulé. Lui donner le contexte
+	// d'une requête HTTP tuait la liaison à la seconde où le code s'affichait.
+	ctx context.Context
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -177,6 +183,7 @@ func NewManager(ctx context.Context, dbPath string, journal Journal) (*Manager, 
 		db:        db,
 		journal:   journal,
 		log:       log,
+		ctx:       context.WithoutCancel(ctx),
 		sessions:  map[string]*session{},
 	}, nil
 }
@@ -209,7 +216,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			slog.Warn("whatsapp : session absente du magasin, réappairage nécessaire", "user", acc.UserID)
 			continue
 		}
-		if _, err := m.connect(ctx, acc.UserID, device); err != nil {
+		if _, err := m.connect(acc.UserID, device); err != nil {
 			slog.Error("whatsapp : reconnexion", "user", acc.UserID, "err", err)
 		}
 	}
@@ -260,9 +267,13 @@ func (m *Manager) newSession(userID string, device *store.Device) *session {
 }
 
 // connect ouvre la session d'un utilisateur déjà lié.
-func (m *Manager) connect(ctx context.Context, userID string, device *store.Device) (*session, error) {
+//
+// La connexion prend m.ctx et pas le contexte de l'appelant : ce contexte-là
+// gouverne la reconnexion automatique jusqu'à l'arrêt du serveur, alors que
+// celui d'un démarrage ou d'une requête ne vaut que le temps de l'appel.
+func (m *Manager) connect(userID string, device *store.Device) (*session, error) {
 	s := m.newSession(userID, device)
-	if err := s.client.ConnectContext(ctx); err != nil {
+	if err := s.client.ConnectContext(m.ctx); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -282,13 +293,17 @@ func (m *Manager) session(userID string) *session {
 // Le code plutôt que le QR : le QR se scanne avec le téléphone, et le téléphone
 // est précisément l'appareil qui affiche l'écran où on lirait le QR. Un code de
 // huit caractères se recopie, lui, d'une app à l'autre.
-func (m *Manager) Pair(ctx context.Context, userID, phone string) (string, error) {
+//
+// Aucun contexte en paramètre, et c'est délibéré : l'appairage survit à la
+// requête qui l'a lancé. Il se termine sur le téléphone, une minute plus tard,
+// alors que la requête a rendu le code depuis longtemps.
+func (m *Manager) Pair(userID, phone string) (string, error) {
 	if !m.Enabled() {
 		return "", errors.New("WhatsApp n'est pas configuré côté serveur")
 	}
 	phone = normalizePhone(phone)
-	if len(phone) < 8 {
-		return "", errors.New("numéro invalide : donne-le au format international, par exemple +33612345678")
+	if len(phone) < 8 || strings.HasPrefix(phone, "0") {
+		return "", errors.New("numéro invalide : il le faut au format international, indicatif compris — +33612345678 et non 0612345678")
 	}
 
 	s := m.newSession(userID, m.container.NewDevice())
@@ -297,30 +312,33 @@ func (m *Manager) Pair(ctx context.Context, userID, phone string) (string, error
 	// la websocket de liaison est prête. On n'affichera aucun QR — mais
 	// réclamer un code avant que WhatsApp soit prêt à le donner échoue, et
 	// c'est le premier QR qui marque ce moment.
-	ready, err := s.client.GetQRChannel(ctx)
+	//
+	// Son contexte est celui du serveur, jamais celui de la requête : whatsmeow
+	// déconnecte le client dès que ce contexte est annulé, et la liaison se
+	// termine sur le téléphone, longtemps après que la requête a rendu le code.
+	qr, err := s.client.GetQRChannel(m.ctx)
 	if err != nil {
 		return "", fmt.Errorf("préparation de la liaison : %w", err)
 	}
-	if err := s.client.ConnectContext(ctx); err != nil {
+	if err := s.client.ConnectContext(m.ctx); err != nil {
 		return "", fmt.Errorf("connexion à WhatsApp : %w", err)
 	}
+
+	ready := s.watchPairing(qr)
 	select {
 	case <-ready:
-	case <-ctx.Done():
-		s.client.Disconnect()
-		return "", ctx.Err()
 	case <-time.After(15 * time.Second):
 		// On tente quand même : l'attente est une précaution, pas une
 		// condition — et un échec ici se relit clairement dans l'erreur.
+		slog.Warn("whatsapp : liaison prête sans code QR préalable", "user", userID)
 	}
-	// Le canal continue de produire des QR pendant toute la liaison. Personne
-	// ne les lit, et un canal plein bloquerait la boucle qui les émet.
-	go func() {
-		for range ready {
-		}
-	}()
 
-	code, err := s.client.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, deviceName)
+	// Le temps de l'échange avec les serveurs de WhatsApp, pas celui du client :
+	// une app qui raccroche ne doit pas annuler un appairage déjà lancé.
+	iqCtx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	defer cancel()
+
+	code, err := s.client.PairPhone(iqCtx, phone, true, whatsmeow.PairClientChrome, deviceName)
 	if err != nil {
 		s.client.Disconnect()
 		return "", fmt.Errorf("demande d'appairage : %w", err)
@@ -459,7 +477,7 @@ func (l *logger) Warnf(msg string, args ...any) {
 	slog.Warn("whatsapp: "+fmt.Sprintf(msg, args...), "module", l.module)
 }
 func (l *logger) Infof(msg string, args ...any) {
-	slog.Debug("whatsapp: "+fmt.Sprintf(msg, args...), "module", l.module)
+	slog.Info("whatsapp: "+fmt.Sprintf(msg, args...), "module", l.module)
 }
 func (l *logger) Debugf(msg string, args ...any) {
 	slog.Debug("whatsapp: "+fmt.Sprintf(msg, args...), "module", l.module)

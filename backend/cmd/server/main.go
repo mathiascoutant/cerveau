@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +22,14 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	// LOG_LEVEL=debug fait parler whatsmeow : c'est le seul moyen de suivre un
+	// appairage qui échoue, la liaison se jouant entre le téléphone et les
+	// serveurs de WhatsApp sans que le nôtre en voie grand-chose.
+	level := slog.LevelInfo
+	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 
 	// .env est optionnel : en production sur le VPS, systemd fournit l'environnement.
 	_ = godotenv.Load()
@@ -55,10 +63,13 @@ func main() {
 	// WhatsApp : une connexion permanente, montée avant le serveur HTTP. Un
 	// appareil lié qui n'est pas connecté ne reçoit rien, et ce qu'il n'a pas
 	// reçu pendant l'arrêt ne se rattrape pas.
+	// Un magasin illisible n'arrête pas le serveur : mails, Slack, agenda et
+	// liste à faire n'ont rien à voir avec WhatsApp, et les priver de service
+	// pour un dossier non inscriptible serait une punition disproportionnée.
+	// L'écran Accès dira que la liaison est impossible.
 	wa, err := whatsapp.NewManager(ctx, cfg.WhatsAppSessionDB, api.NewWhatsAppJournal(st, cipher))
 	if err != nil {
-		slog.Error("WhatsApp indisponible", "err", err)
-		os.Exit(1)
+		slog.Error("WhatsApp indisponible, le reste démarre quand même", "err", err)
 	}
 	defer wa.Close()
 	if wa.Enabled() {

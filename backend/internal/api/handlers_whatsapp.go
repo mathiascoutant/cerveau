@@ -1,10 +1,8 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
@@ -35,12 +33,10 @@ func (s *Server) handleWhatsAppPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Généreux : la liaison passe par un aller-retour avec les serveurs de
-	// WhatsApp, et un code demandé trop tard ne vaut plus rien.
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	defer cancel()
-
-	code, err := s.wa.Pair(ctx, user.ID.Hex(), req.Numero)
+	// Sans contexte de requête : l'appairage se termine sur le téléphone, bien
+	// après que cette réponse est partie. Le lier à la requête revenait à
+	// couper la liaison à la seconde où le code s'affichait.
+	code, err := s.wa.Pair(user.ID.Hex(), req.Numero)
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, err.Error())
 		return

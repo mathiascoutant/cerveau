@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -61,6 +62,64 @@ func (s *session) handle(evt any) {
 		s.setPhase(PhaseOffline, "WhatsApp refuse cette version du client")
 	case *events.PairError:
 		s.fail("appairage refusé : " + e.Error.Error())
+	}
+}
+
+// watchPairing suit le canal de liaison jusqu'à sa conclusion.
+//
+// Il faut le vider quoi qu'il arrive : whatsmeow y pousse un nouveau QR toutes
+// les vingt secondes et, si personne ne les prend, il ferme le canal ET
+// déconnecte le client — en plein appairage. On en profite pour dire ce qui
+// s'est passé : sans ça, une liaison qui échoue ne laisse aucune trace, et
+// l'utilisateur n'a qu'un code qui ne marche pas.
+//
+// Le canal rendu est fermé dès le premier QR, ce qui signale que la websocket
+// est prête à recevoir la demande de code.
+func (s *session) watchPairing(qr <-chan whatsmeow.QRChannelItem) <-chan struct{} {
+	ready := make(chan struct{})
+	go func() {
+		first := true
+		for item := range qr {
+			if item.Event == whatsmeow.QRChannelEventCode {
+				if first {
+					first = false
+					close(ready)
+				}
+				continue
+			}
+			slog.Info("whatsapp : appairage terminé", "user", s.userID, "issue", item.Event, "err", item.Error)
+			if reason := pairingFailure(item); reason != "" {
+				s.fail(reason)
+			}
+		}
+		if first {
+			// Canal fermé sans avoir produit un seul code : ne pas libérer
+			// l'attente laisserait Pair bloqué jusqu'à son délai de garde.
+			close(ready)
+		}
+	}()
+	return ready
+}
+
+// pairingFailure met en mots la fin d'une liaison. Une chaîne vide pour un
+// succès : c'est events.PairSuccess qui s'en occupe, pas le canal.
+func pairingFailure(item whatsmeow.QRChannelItem) string {
+	switch item.Event {
+	case whatsmeow.QRChannelSuccess.Event:
+		return ""
+	case whatsmeow.QRChannelTimeout.Event:
+		return "le code a expiré sans être utilisé, redemande une liaison"
+	case whatsmeow.QRChannelClientOutdated.Event:
+		return "WhatsApp refuse cette version du client"
+	case whatsmeow.QRChannelErrUnexpectedEvent.Event:
+		return "la liaison a été interrompue, réessaie"
+	case whatsmeow.QRChannelEventError:
+		if item.Error != nil {
+			return "liaison refusée : " + item.Error.Error()
+		}
+		return "liaison refusée"
+	default:
+		return "liaison interrompue (" + item.Event + ")"
 	}
 }
 
