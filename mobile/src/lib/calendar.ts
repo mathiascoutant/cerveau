@@ -2,6 +2,7 @@ import * as Calendar from 'expo-calendar';
 
 import { api, AssistantAction } from '../api';
 import { openNavigation } from './navigation';
+import { loadTodos } from './todos';
 
 /** Fenêtre synchronisée vers le backend : hier → 45 jours. */
 const WINDOW_PAST_DAYS = 1;
@@ -97,6 +98,25 @@ async function writableCalendarId(): Promise<string | null> {
 }
 
 /**
+ * Met en mots ce que Raoul vient de faire de sa liste. Le libellé porte le jour
+ * retenu : « c'est noté » sans date ne dit pas ce qui a été inscrit.
+ */
+function todoEffect(action: AssistantAction): string {
+  const title = action.payload?.title ? `« ${action.payload.title} »` : 'La tâche';
+  const when = action.payload?.when ? ` pour ${action.payload.when}` : '';
+  switch (action.payload?.state) {
+    case 'done':
+      return `${title} coché dans ta liste.`;
+    case 'moved':
+      return `${title} déplacé${when}.`;
+    case 'dropped':
+      return `${title} retiré de ta liste.`;
+    default:
+      return `${title} ajouté à ta liste${when || ', sans date'}.`;
+  }
+}
+
+/**
  * Exécute les actions décidées par Raoul côté serveur : écrire un événement
  * dans EventKit, ouvrir Waze. Ce sont des choses que seule l'app peut faire,
  * d'où l'aller-retour.
@@ -104,6 +124,7 @@ async function writableCalendarId(): Promise<string | null> {
 export async function applyActions(actions: AssistantAction[]): Promise<string[]> {
   const done: string[] = [];
   let touchedCalendar = false;
+  let touchedTodos = false;
 
   for (const action of actions) {
     if (action.type === 'navigate') {
@@ -113,6 +134,13 @@ export async function applyActions(actions: AssistantAction[]): Promise<string[]
     // Rien à exécuter sur le téléphone : la réponse est déjà rangée côté
     // serveur. On le signale seulement, pour que l'échange porte la trace du
     // mail qui attend dans l'onglet Réponses.
+    // Une tâche a bougé côté serveur : rien à écrire sur le téléphone, mais la
+    // section « À faire » doit refléter tout de suite ce qu'il vient de dicter.
+    if (action.type === 'todo') {
+      done.push(todoEffect(action));
+      touchedTodos = true;
+      continue;
+    }
     if (action.type === 'email_draft') {
       const to = action.payload?.to ? String(action.payload.to) : 'ton correspondant';
       done.push(`Réponse à ${to} prête dans l’onglet Réponses.`);
@@ -145,6 +173,14 @@ export async function applyActions(actions: AssistantAction[]): Promise<string[]
       touchedCalendar = true;
     } catch (err) {
       done.push(`Échec de l'ajout au calendrier : ${(err as Error).message}`);
+    }
+  }
+
+  if (touchedTodos) {
+    try {
+      await loadTodos(true);
+    } catch {
+      // la liste se rechargera au prochain retour au premier plan
     }
   }
 

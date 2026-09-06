@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { speak, speakOnDevice, stopSpeaking } from '../lib/speech';
 
 import { api, AssistantAnswer } from '../api';
@@ -29,6 +30,12 @@ export type Exchange = {
 
 /** Silence après lequel on considère que la demande est terminée. */
 const SILENCE_MS = 1700;
+/**
+ * Délai laissé pour COMMENCER à parler quand on ouvre le micro sans mot
+ * d'activation. Le silence de fin de phrase ne peut pas servir ici : 1,7 s
+ * après un appui sur le widget, on a à peine remonté le téléphone à l'oreille.
+ */
+const OPENING_MS = 9000;
 /** Garde-fou : au-delà, on envoie ce qu'on a. */
 const MAX_COMMAND_MS = 25000;
 /**
@@ -69,6 +76,19 @@ export function useRaoul() {
   const [inConversation, setInConversation] = useState(false);
 
   const mode = useRef<Mode>('off');
+  // running : une session de reconnaissance est ouverte côté natif. iOS ne la
+  // ferme pas au retour d'abort() — il émet « end » plus tard — et démarrer
+  // dans l'intervalle donne une session qui s'annonce active et n'entend rien.
+  const running = useRef(false);
+  // closing : une fermeture volontaire est en cours. Le « end » qu'elle
+  // provoque ne doit pas déclencher la relance automatique, sinon on rouvre
+  // une session par-dessus celle qu'on vient d'ouvrir.
+  const closing = useRef(false);
+  const endWaiters = useRef<Array<() => void>>([]);
+  // startEpoch départage les démarrages concurrents : deux appuis rapprochés
+  // sur le widget, ou une relance automatique qui croise une ouverture
+  // manuelle. Seul le plus récent va au bout, les autres se retirent.
+  const startEpoch = useRef(0);
   // conversing : « OK Raoul » a été dit et la conversation n'est pas refermée.
   // Tant qu'il est vrai, tout ce qui est prononcé est une demande — plus besoin
   // de réveiller Raoul à chaque phrase.
@@ -88,29 +108,74 @@ export function useRaoul() {
     maxTimer.current = null;
   }, []);
 
+  /** Réveille ceux qui attendaient la fin de la session. */
+  const releaseEndWaiters = useCallback(() => {
+    const waiters = endWaiters.current;
+    endWaiters.current = [];
+    closing.current = false;
+    waiters.forEach((resolve) => resolve());
+  }, []);
+
+  /**
+   * Ferme la session en cours et attend sa fin réelle.
+   *
+   * Le filet de 700 ms couvre le cas où « end » ne viendrait jamais : mieux
+   * vaut repartir sur une session peut-être bancale que rester bloqué sans
+   * micro.
+   */
+  const stopSession = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        if (!SpeechRecognition || !running.current) {
+          resolve();
+          return;
+        }
+        closing.current = true;
+        endWaiters.current.push(resolve);
+        SpeechRecognition.abort();
+        setTimeout(() => {
+          if (endWaiters.current.length > 0) {
+            running.current = false;
+            releaseEndWaiters();
+          }
+        }, 700);
+      }),
+    [releaseEndWaiters],
+  );
+
   const resetBuffers = useCallback(() => {
     finalized.current = '';
     utterance.current = '';
     anchor.current = 0;
   }, []);
 
-  const startRecognition = useCallback(async (nextMode: Mode) => {
-    if (!SpeechRecognition) {
-      setError(VOICE_UNAVAILABLE);
-      return;
-    }
-    try {
-      resetBuffers();
-      mode.current = nextMode;
-      SpeechRecognition.start(RECOGNITION_OPTIONS);
-      setState(nextMode === 'wake' ? 'waiting' : 'listening');
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-      setState('off');
-      mode.current = 'off';
-    }
-  }, [resetBuffers]);
+  const startRecognition = useCallback(
+    async (nextMode: Mode) => {
+      if (!SpeechRecognition) {
+        setError(VOICE_UNAVAILABLE);
+        return;
+      }
+      // Jamais deux sessions à la fois : on attend la fermeture de la
+      // précédente plutôt que d'empiler un start() par-dessus un abort().
+      const epoch = ++startEpoch.current;
+      await stopSession();
+      if (startEpoch.current !== epoch) return; // un démarrage plus récent a pris la main
+      try {
+        resetBuffers();
+        mode.current = nextMode;
+        running.current = true;
+        SpeechRecognition.start(RECOGNITION_OPTIONS);
+        setState(nextMode === 'wake' ? 'waiting' : 'listening');
+        setError(null);
+      } catch (err) {
+        running.current = false;
+        setError((err as Error).message);
+        setState('off');
+        mode.current = 'off';
+      }
+    },
+    [resetBuffers, stopSession],
+  );
 
   /**
    * Rend le micro après une réponse. Tant que la conversation est ouverte, on
@@ -180,14 +245,17 @@ export function useRaoul() {
     [clearTimers, resume],
   );
 
-  const armSilence = useCallback(() => {
-    if (silenceTimer.current) clearTimeout(silenceTimer.current);
-    silenceTimer.current = setTimeout(() => {
-      const command = cleanCommand(currentCommand(finalized, utterance, anchor));
-      if (command.length >= 2) void submit(command);
-      else resume();
-    }, SILENCE_MS);
-  }, [resume, submit]);
+  const armSilence = useCallback(
+    (delay = SILENCE_MS) => {
+      if (silenceTimer.current) clearTimeout(silenceTimer.current);
+      silenceTimer.current = setTimeout(() => {
+        const command = cleanCommand(currentCommand(finalized, utterance, anchor));
+        if (command.length >= 2) void submit(command);
+        else resume();
+      }, delay);
+    },
+    [resume, submit],
+  );
 
   /**
    * Garde-fou de longueur, armé au premier mot entendu et pas avant : en
@@ -280,13 +348,25 @@ export function useRaoul() {
   });
 
   useSpeechEvent('end', () => {
-    // iOS coupe régulièrement la session de reconnaissance. On la relance dans
-    // le mode courant : en conversation ouverte, repartir en attente du mot
-    // d'activation obligerait à redire « OK Raoul » sans raison.
+    running.current = false;
+
+    // Fermeture demandée : quelqu'un attend cette fin pour rouvrir derrière.
+    // Relancer ici ferait une session de trop, et c'est précisément ce qui
+    // rendait Raoul sourd quand on l'ouvrait depuis le widget.
+    if (closing.current) {
+      releaseEndWaiters();
+      return;
+    }
+
+    // Coupure spontanée : iOS ferme régulièrement la session de reconnaissance.
+    // On la relance dans le mode courant — en conversation ouverte, repartir en
+    // attente du mot d'activation obligerait à redire « OK Raoul » sans raison.
     const current = mode.current;
     if ((current === 'wake' || current === 'command') && enabled.current) {
       setTimeout(() => {
-        if (mode.current === current && enabled.current) void startRecognition(current);
+        if (mode.current === current && enabled.current && !running.current) {
+          void startRecognition(current);
+        }
       }, 400);
     }
   });
@@ -328,18 +408,26 @@ export function useRaoul() {
    * « OK Raoul ». La conversation reste ensuite ouverte comme si on l'avait dit.
    */
   const startConversation = useCallback(async () => {
+    // L'app vient peut-être d'être réveillée par le widget : iOS refuse
+    // d'activer le micro tant que le processus n'est pas vraiment au premier
+    // plan, et l'échec est silencieux.
+    await waitForForeground();
     if (!(await ensureMic())) return false;
     enabled.current = true;
     conversing.current = true;
     setInConversation(true);
     stopSpeaking();
-    SpeechRecognition?.abort();
+    // Pas d'abort() ici : startRecognition ferme la session précédente et
+    // attend sa fin. Les enchaîner à la main rouvrait par-dessus.
     await startRecognition('command');
-    armSilence();
+    armSilence(OPENING_MS);
     return true;
   }, [armSilence, ensureMic, startRecognition]);
 
   const stop = useCallback(() => {
+    // Invalide un démarrage encore en attente de la fermeture précédente :
+    // sans ça, couper le micro pouvait être suivi d'une session qui s'ouvre.
+    startEpoch.current++;
     enabled.current = false;
     conversing.current = false;
     setInConversation(false);
@@ -354,9 +442,8 @@ export function useRaoul() {
   /** Bouton « appuyer pour parler » : on saute l'étape du mot d'activation. */
   const pushToTalk = useCallback(async () => {
     if (!(await ensureMic())) return;
-    SpeechRecognition?.abort();
     await startRecognition('command');
-    armSilence();
+    armSilence(OPENING_MS);
   }, [armSilence, ensureMic, startRecognition]);
 
   /** Saisie clavier, pour tester sans parler. */
@@ -384,6 +471,31 @@ export function useRaoul() {
     inConversation,
     isEnabled: enabled,
   };
+}
+
+/**
+ * Attend que l'app soit réellement active.
+ *
+ * Ouvrir Raoul depuis le widget démarre l'écoute au moment où l'écran se monte,
+ * alors qu'iOS peut encore être en transition (« inactive »). Une session de
+ * reconnaissance démarrée là s'annonce active et ne délivre jamais de résultat.
+ * Le délai de garde évite de rester bloqué si l'état n'arrivait jamais.
+ */
+function waitForForeground(timeoutMs = 2500): Promise<void> {
+  if (AppState.currentState === 'active') return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      clearTimeout(timer);
+      sub.remove();
+      resolve();
+    });
+    timer = setTimeout(() => {
+      sub.remove();
+      resolve();
+    }, timeoutMs);
+  });
 }
 
 function joinText(a: string, b: string): string {

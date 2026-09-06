@@ -1,41 +1,53 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Banner, Button, Card, Divider, EmptyState, ScreenHeader, SectionLabel, StatTile, Txt } from '../components/ui';
+import { tabBarSpace } from '../components/TabBar';
 import { api, Digest, Interaction, Provider } from '../api';
-import { theme } from '../theme';
+import { load, useSlot } from '../lib/cache';
+import { alpha, theme } from '../theme';
+
+/**
+ * Le Journal ne se charge pas quand on ouvre son onglet — il se charge au
+ * lancement de l'app, pendant qu'on regarde l'écran de Raoul. La synthèse
+ * demande le modèle, donc plusieurs secondes : les attendre à chaque visite
+ * était du temps perdu qu'aucune contrainte n'imposait.
+ */
+export function loadJournal(force = false) {
+  return Promise.all([
+    load<Digest>(DIGEST_KEY, () => api.digest(force), force),
+    load<Interaction[]>(HISTORY_KEY, () => api.history().then((r) => r.interactions), force),
+  ]);
+}
+
+export const DIGEST_KEY = 'digest';
+const HISTORY_KEY = 'history';
 
 export function JournalScreen() {
-  const [digest, setDigest] = useState<Digest | null>(null);
-  const [history, setHistory] = useState<Interaction[]>([]);
-  const [loading, setLoading] = useState(true);
+  const insets = useSafeAreaInsets();
+  const digestSlot = useSlot<Digest>(DIGEST_KEY);
+  const historySlot = useSlot<Interaction[]>(HISTORY_KEY);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (refresh = false) => {
-    setError(null);
-    try {
-      const [d, h] = await Promise.allSettled([api.digest(refresh), api.history()]);
-      if (d.status === 'fulfilled') setDigest(d.value);
-      else setError(d.reason?.message ?? 'synthèse indisponible');
-      if (h.status === 'fulfilled') setHistory(h.value.interactions);
-    } finally {
-      setLoading(false);
-      setBusy(false);
-    }
-  }, []);
+  const digest = digestSlot.data;
+  const history = historySlot.data ?? [];
+  const error = digestSlot.error;
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadJournal();
+  }, []);
 
   const refresh = () => {
     setBusy(true);
-    void load(true);
+    void loadJournal(true).finally(() => setBusy(false));
   };
 
-  if (loading) {
+  // Le squelette n'apparaît que la toute première fois. Ensuite le contenu
+  // précédent reste à l'écran pendant qu'on le remplace : un écran qui se vide
+  // pour se recharger donne l'impression d'avoir perdu quelque chose.
+  if (!digest && digestSlot.loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={theme.colors.primary} size="large" />
@@ -49,7 +61,7 @@ export function JournalScreen() {
   return (
     <ScrollView
       style={styles.screen}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingBottom: tabBarSpace(insets.bottom) }]}
       refreshControl={
         <RefreshControl refreshing={busy} onRefresh={refresh} tintColor={theme.colors.primary} />
       }
@@ -146,7 +158,7 @@ export function JournalScreen() {
           <SectionLabel>Slack</SectionLabel>
           {digest.slack.map((t, i) => (
             <View key={`${t.canal}-${i}`} style={styles.item}>
-              <View style={styles.slackHead}>
+              <View style={styles.threadHead}>
                 <Txt variant="bodyStrong" style={styles.flex} numberOfLines={1}>
                   {t.canal}
                 </Txt>
@@ -167,15 +179,20 @@ export function JournalScreen() {
       {digest?.whatsapp.length ? (
         <Card>
           <SectionLabel>WhatsApp</SectionLabel>
-          {digest.whatsapp.map((m, i) => (
-            <View key={`${m.recu}-${i}`} style={styles.item}>
-              <Txt variant="bodyStrong">{m.de}</Txt>
-              <Txt variant="mono" tone="muted" numberOfLines={2}>
-                {m.message}
-              </Txt>
-              <Txt variant="mono" tone="faint">
-                {m.recu}
-              </Txt>
+          {digest.whatsapp.map((t, i) => (
+            <View key={`${t.conversation}-${i}`} style={styles.item}>
+              <View style={styles.threadHead}>
+                <Txt variant="bodyStrong" style={styles.flex} numberOfLines={1}>
+                  {t.conversation}
+                </Txt>
+                {t.mentions ? <Pill tone="warning" text={`cité ${t.mentions}×`} /> : null}
+                {t.non_lus ? <Pill tone="primary" text={`${t.non_lus} non lus`} /> : null}
+              </View>
+              {t.extraits?.slice(0, 2).map((x) => (
+                <Txt key={x} variant="mono" tone="muted" numberOfLines={2}>
+                  {x}
+                </Txt>
+              ))}
             </View>
           ))}
         </Card>
@@ -208,7 +225,9 @@ export function JournalScreen() {
                     ? `« ${a.payload.title} » ajouté au calendrier`
                     : a.type === 'email_draft'
                       ? `Réponse à ${a.payload.to} préparée`
-                      : a.type}
+                      : a.type === 'todo'
+                        ? todoLabel(a.payload)
+                        : a.type}
                 </Txt>
               </View>
             ))}
@@ -217,6 +236,21 @@ export function JournalScreen() {
       )}
     </ScrollView>
   );
+}
+
+/** Ce qu'une action de liste a changé, en une ligne. */
+function todoLabel(payload: Record<string, any>): string {
+  const title = `« ${payload.title} »`;
+  switch (payload.state) {
+    case 'done':
+      return `${title} coché`;
+    case 'moved':
+      return `${title} déplacé${payload.when ? ` pour ${payload.when}` : ''}`;
+    case 'dropped':
+      return `${title} retiré de la liste`;
+    default:
+      return `${title} inscrit${payload.when ? ` pour ${payload.when}` : ' sans date'}`;
+  }
 }
 
 /**
@@ -235,7 +269,7 @@ function Pill({ text, tone }: { text: string; tone: 'primary' | 'warning' | 'fai
         ? theme.colors.primary
         : theme.colors.textFaint;
   return (
-    <View style={[styles.pill, { borderColor: `${color}55` }]}>
+    <View style={[styles.pill, { borderColor: alpha(color, 0.35), backgroundColor: alpha(color, 0.12) }]}>
       <Txt variant="mono" style={{ color }}>
         {text}
       </Txt>
@@ -256,16 +290,16 @@ function formatHour(iso: string): string {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  screen: { flex: 1, backgroundColor: theme.colors.background },
+  // Pas de fond : l'aurore peinte par App.tsx doit rester visible sous le
+  // verre des cartes, sinon il n'y a plus rien à flouter.
+  screen: { flex: 1 },
   content: {
-    paddingHorizontal: theme.space.xl,
+    paddingHorizontal: theme.space.lg,
     paddingTop: theme.space.md,
-    paddingBottom: theme.space.xxxl,
     gap: theme.space.lg,
   },
   center: {
     flex: 1,
-    backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.space.lg,
@@ -275,7 +309,7 @@ const styles = StyleSheet.create({
   item: { gap: 3 },
   eventRow: { flexDirection: 'row', gap: theme.space.md, alignItems: 'flex-start' },
   eventTime: { width: 46, fontVariant: ['tabular-nums'] },
-  slackHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
+  threadHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
   pill: {
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: theme.radius.pill,

@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Banner, Card, Divider, EmptyState, ScreenHeader, SectionLabel, Txt } from '../components/ui';
+import { tabBarSpace } from '../components/TabBar';
 import { api, EmailDraft } from '../api';
 import { speak, stopSpeaking } from '../lib/speech';
 import { theme } from '../theme';
@@ -24,6 +26,7 @@ import { theme } from '../theme';
  * l'expédie soi-même — un mail parti par erreur ne se rattrape pas.
  */
 export function DraftsScreen() {
+  const insets = useSafeAreaInsets();
   const [drafts, setDrafts] = useState<EmailDraft[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -100,7 +103,7 @@ export function DraftsScreen() {
   return (
     <ScrollView
       style={styles.screen}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingBottom: tabBarSpace(insets.bottom) }]}
       refreshControl={
         <RefreshControl
           refreshing={busy}
@@ -229,16 +232,16 @@ function formatWhen(iso: string): string {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  screen: { flex: 1, backgroundColor: theme.colors.background },
+  // Pas de fond : l'aurore peinte par App.tsx doit rester visible sous le
+  // verre des cartes, sinon il n'y a plus rien à flouter.
+  screen: { flex: 1 },
   content: {
-    paddingHorizontal: theme.space.xl,
+    paddingHorizontal: theme.space.lg,
     paddingTop: theme.space.md,
-    paddingBottom: theme.space.xxxl,
     gap: theme.space.lg,
   },
   center: {
     flex: 1,
-    backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -262,7 +265,7 @@ const styles = StyleSheet.create({
     gap: theme.space.sm,
     minHeight: theme.touchMin,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.surfaceActive,
+    backgroundColor: theme.colors.glassRaised,
   },
   actionPressed: { opacity: 0.6 },
 });

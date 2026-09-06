@@ -1,10 +1,25 @@
-import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useKeepAwake } from 'expo-keep-awake';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Banner, Card, Chip, EmptyState, SectionLabel, Txt } from '../components/ui';
+import { Banner, Card, Chip, SectionLabel, Txt } from '../components/ui';
+import { Glass } from '../components/glass';
 import { Orb } from '../components/Orb';
+import { loadUrgent, Urgences } from '../components/Urgences';
+import { AFaire } from '../components/AFaire';
+import { loadTodos } from '../lib/todos';
+import { tabBarSpace } from '../components/TabBar';
 import { useRaoul, RaoulState } from '../hooks/useRaoul';
 import { api, SourceStatus } from '../api';
 import { theme } from '../theme';
@@ -56,6 +71,8 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
   } = useRaoul();
   const [sources, setSources] = useState<SourceStatus[]>([]);
   const [draft, setDraft] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const insets = useSafeAreaInsets();
 
   useKeepAwake();
 
@@ -69,9 +86,17 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
     return () => {
       alive = false;
     };
-  }, [listening]);
+  }, [listening, refreshing]);
 
   const active = state !== 'off';
+
+  // Tirer vers le bas force la régénération de la liste — le seul geste qui
+  // redemande le modèle. Le reste du temps le serveur rend son cache tant que
+  // rien de neuf n'est arrivé.
+  const refresh = useCallback(() => {
+    setRefreshing(true);
+    void Promise.all([loadUrgent(true), loadTodos(true)]).finally(() => setRefreshing(false));
+  }, []);
 
   // Arrivée par le widget : on allume l'écoute et on saute le mot
   // d'activation — l'appui sur le widget en tient lieu.
@@ -81,22 +106,32 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listenRequest]);
 
+  const send = () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft('');
+    void askText(text);
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={80}
+      keyboardVerticalOffset={theme.space.sm}
     >
       <ScrollView
-        style={styles.screen}
+        style={styles.flex}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.primary} />
+        }
       >
         <View style={styles.header}>
           <View style={styles.brandRow}>
-            <View style={styles.mark}>
+            <Glass radius={theme.radius.md} tone={theme.colors.primary} style={styles.mark}>
               <Feather name="cpu" size={16} color={theme.colors.primary} />
-            </View>
+            </Glass>
             <Txt variant="title">Raoul</Txt>
           </View>
           {/* Seules les sources branchées s'affichent : la pastille grise
@@ -142,6 +177,15 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
           ) : null}
         </View>
 
+        {/* Ce qu'il te reste à faire, avant tout le reste de l'écran. C'est la
+            raison d'ouvrir l'app quand on ne vient pas lui parler.
+
+            Deux listes, et l'ordre n'est pas indifférent : ce que tu t'es
+            engagé à faire aujourd'hui passe devant ce qui vient d'arriver dans
+            ta boîte. Un message peut attendre demain, une tâche datée non. */}
+        <AFaire />
+        <Urgences />
+
         {!voiceAvailable && (
           <Banner tone="warning" icon="smartphone">
             <Txt variant="bodyStrong" tone="warning">
@@ -171,12 +215,14 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
                 onPress={() => void askText(e)}
                 accessibilityRole="button"
                 accessibilityLabel={`Demander : ${e}`}
-                style={({ pressed }) => [styles.example, pressed && styles.examplePressed]}
+                style={({ pressed }) => pressed && styles.pressed}
               >
-                <Txt variant="small" style={styles.flex}>
-                  {e}
-                </Txt>
-                <Feather name="arrow-up-right" size={15} color={theme.colors.textFaint} />
+                <Glass radius={theme.radius.md} variant="subtle" style={styles.example}>
+                  <Txt variant="small" style={styles.flex}>
+                    {e}
+                  </Txt>
+                  <Feather name="arrow-up-right" size={15} color={theme.colors.textFaint} />
+                </Glass>
               </Pressable>
             ))}
           </View>
@@ -208,53 +254,41 @@ export function AssistantScreen({ listenRequest = 0 }: Props) {
         )}
       </ScrollView>
 
-      <View style={styles.composer}>
-        <Feather name="edit-3" size={16} color={theme.colors.textFaint} />
-        <TextInputBox
-          value={draft}
-          onChange={setDraft}
-          onSubmit={() => {
-            const text = draft.trim();
-            if (!text) return;
-            setDraft('');
-            void askText(text);
-          }}
-        />
+      {/* Le composeur flotte lui aussi, juste au-dessus de la barre d'onglets :
+          il appartient à la couche des commandes, pas à celle du contenu. */}
+      <View style={[styles.composerWrap, { marginBottom: tabBarSpace(insets.bottom) }]}>
+        <Glass variant="chrome" radius={theme.radius.xl} style={styles.composer}>
+          <Feather name="edit-3" size={16} color={theme.colors.textFaint} />
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            onSubmitEditing={send}
+            placeholder="Écris ta demande"
+            placeholderTextColor={theme.colors.textFaint}
+            returnKeyType="send"
+            accessibilityLabel="Écrire une demande à Raoul"
+            style={styles.composerInput}
+          />
+          {draft.trim() ? (
+            <Pressable
+              onPress={send}
+              accessibilityRole="button"
+              accessibilityLabel="Envoyer la demande"
+              style={({ pressed }) => [styles.send, pressed && styles.pressed]}
+            >
+              <Feather name="arrow-up" size={16} color={theme.colors.onPrimary} />
+            </Pressable>
+          ) : null}
+        </Glass>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
-/** Champ de saisie du composeur, séparé pour garder l'écran lisible. */
-function TextInputBox({
-  value,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-}) {
-  const { TextInput } = require('react-native') as typeof import('react-native');
-  return (
-    <TextInput
-      value={value}
-      onChangeText={onChange}
-      onSubmitEditing={onSubmit}
-      placeholder="Écris ta demande"
-      placeholderTextColor={theme.colors.textFaint}
-      returnKeyType="send"
-      accessibilityLabel="Écrire une demande à Raoul"
-      style={styles.composerInput}
-    />
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  screen: { flex: 1, backgroundColor: theme.colors.background },
   content: {
-    paddingHorizontal: theme.space.xl,
+    paddingHorizontal: theme.space.lg,
     paddingTop: theme.space.md,
     paddingBottom: theme.space.xl,
     gap: theme.space.lg,
@@ -262,16 +296,14 @@ const styles = StyleSheet.create({
   header: { gap: theme.space.md },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space.md },
   mark: {
-    width: 32,
-    height: 32,
-    borderRadius: theme.radius.sm,
-    backgroundColor: `${theme.colors.primary}18`,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.space.sm },
 
-  statusBlock: { gap: theme.space.xs, marginTop: -theme.space.md },
+  statusBlock: { gap: theme.space.xs, marginTop: -theme.space.lg },
   centered: { textAlign: 'center' },
   partial: { fontStyle: 'italic' },
 
@@ -281,27 +313,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: theme.space.md,
     minHeight: theme.touchMin,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
     paddingHorizontal: theme.space.lg,
     paddingVertical: theme.space.md,
   },
-  examplePressed: { backgroundColor: theme.colors.surfaceActive },
+  pressed: { opacity: 0.7 },
 
   thread: { gap: theme.space.md },
   effect: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
 
+  composerWrap: { paddingHorizontal: theme.space.lg },
   composer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.space.md,
-    paddingHorizontal: theme.space.xl,
-    paddingVertical: theme.space.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.space.lg,
+    paddingVertical: theme.space.xs,
   },
   composerInput: {
     flex: 1,
@@ -309,5 +335,17 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontFamily: theme.type.body.font,
     fontSize: theme.type.body.fontSize,
+  },
+  send: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primary,
+    shadowColor: theme.colors.primary,
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
   },
 });

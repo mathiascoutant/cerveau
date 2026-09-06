@@ -94,7 +94,7 @@ function withRaoulWidget(config) {
       // rejette le paquet pour incohérence de numérotation.
       MARKETING_VERSION: appVersionOf(project),
       CURRENT_PROJECT_VERSION: buildNumberOf(project),
-      IPHONEOS_DEPLOYMENT_TARGET: deploymentTargetOf(project),
+      IPHONEOS_DEPLOYMENT_TARGET: widgetDeploymentTarget(project),
       DEVELOPMENT_TEAM: developmentTeamOf(project),
       TARGETED_DEVICE_FAMILY: '"1,2"',
       SWIFT_VERSION: '5.0',
@@ -147,6 +147,42 @@ function appSetting(project, name) {
 const appVersionOf = (p) => appSetting(p, 'MARKETING_VERSION');
 const buildNumberOf = (p) => appSetting(p, 'CURRENT_PROJECT_VERSION');
 const deploymentTargetOf = (p) => appSetting(p, 'IPHONEOS_DEPLOYMENT_TARGET');
+
+/**
+ * Version minimale sous laquelle un widget SwiftUI ne se lie plus.
+ *
+ * SwiftUI a été scindé avec iOS 18 : une partie de son implémentation vit
+ * désormais dans SwiftUICore, dont le SDK réserve le lien direct à SwiftUI
+ * lui-même. Une cible qui vise une version antérieure se retrouve à devoir
+ * lier elle-même un module qui n'existait pas à l'époque qu'elle vise, et
+ * l'éditeur de liens refuse :
+ *
+ *     ld: cannot link directly with 'SwiftUICore' because product being built
+ *         is not an allowed client of it
+ *
+ * L'erreur ne dit rien de la version minimale, d'où le temps qu'elle coûte à
+ * diagnostiquer. Elle apparaît aussi bien en local que sur EAS.
+ */
+const WIDGET_MIN_DEPLOYMENT_TARGET = 18;
+
+/**
+ * Version minimale du widget : celle de l'app, sans jamais descendre sous le
+ * plancher ci-dessus.
+ *
+ * Le widget suit l'app par défaut — deux versions minimales différentes dans
+ * un même paquet sont une source d'ennuis à la validation. Mais l'app peut
+ * viser plus bas qu'un widget SwiftUI ne sait le faire, et dans ce cas c'est
+ * le widget qui gagne : mieux vaut une extension qui exige iOS 18 qu'une
+ * extension qui ne se construit pas.
+ */
+function widgetDeploymentTarget(project) {
+  const app = deploymentTargetOf(project);
+  const parsed = Number.parseFloat(app);
+  if (!Number.isFinite(parsed) || parsed < WIDGET_MIN_DEPLOYMENT_TARGET) {
+    return `${WIDGET_MIN_DEPLOYMENT_TARGET}.0`;
+  }
+  return app;
+}
 const developmentTeamOf = (p) => appSetting(p, 'DEVELOPMENT_TEAM');
 
 function unquote(value) {

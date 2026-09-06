@@ -39,6 +39,9 @@ export type VoiceInfo = {
   engine: 'elevenlabs' | 'device';
   voice_id?: string;
   model?: string;
+  /** Langue imposée à la synthèse. Sans elle, le modèle devine — et prend
+   *  l'accent anglais dès qu'un mot n'a pas l'air français. */
+  language?: string;
 };
 
 export type SourceStatus = {
@@ -62,7 +65,24 @@ export type SlackItem = {
   mentions?: number;
   extraits?: string[];
 };
-export type WhatsAppItem = { de: string; message: string; recu: string };
+export type WhatsAppItem = {
+  conversation: string;
+  type?: 'groupe' | 'prive';
+  non_lus?: number;
+  mentions?: number;
+  dernier?: string;
+  extraits?: string[];
+};
+
+/** Où en est la liaison WhatsApp. Un compte lié dont la session est fermée ne
+ *  reçoit rien : la distinction se voit à l'écran. */
+export type WhatsAppStatus = {
+  phase: 'deconnecte' | 'appairage' | 'connecte';
+  code?: string;
+  numero?: string;
+  erreur?: string;
+  expire_dans?: number;
+};
 export type EventItem = { titre: string; debut: string; fin: string; lieu?: string };
 
 export type Digest = {
@@ -91,6 +111,68 @@ export type EmailDraft = {
   /** Code court de la langue du mail (« fr », « en »), pas celle de l'app. */
   language?: string;
   source_subject?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Le message d'où sort une tâche, tel que Raoul l'a lu.
+ *
+ * `origine` vaut « mail » ou le nom du canal Slack : c'est le mot que
+ * l'utilisateur reconnaît, pas un identifiant de fournisseur.
+ */
+export type UrgentSource = {
+  origine: string;
+  de: string;
+  titre: string;
+  /** Déjà mis en mots dans le fuseau de l'utilisateur (« il y a 20 min »). */
+  quand: string;
+};
+
+/**
+ * Une chose à faire, pas un message à lire.
+ *
+ * Deux étages côté serveur produisent cette liste : un tri déterministe écarte
+ * ce qui ne s'adresse pas personnellement à l'utilisateur, puis le modèle
+ * regroupe ce qui reste par sujet et nomme l'action. Trois mails sur le même
+ * devis donnent donc une seule entrée, dont `sources` contient les trois.
+ */
+export type UrgentTask = {
+  action: string;
+  urgence: 'haute' | 'moyenne';
+  /** D'où ça vient et ce qui est attendu — le texte affiché au dépliage. */
+  pourquoi: string;
+  sources: UrgentSource[];
+};
+
+export type Urgent = {
+  taches: UrgentTask[];
+  /** Sources réellement interrogées : « rien à traiter » et « rien de branché »
+   *  se ressemblent trop pour laisser l'app deviner. */
+  sources: string[];
+  unavailable?: string[];
+  generated_at: string;
+};
+
+/**
+ * Une chose qu'il s'est engagé à faire, et le jour où il compte la faire.
+ *
+ * À ne pas confondre avec UrgentTask, qui lui ressemble et ne vit pas du tout
+ * pareil : une urgence est déduite des messages non traités et disparaît quand
+ * le message est traité, une tâche est écrite par lui et reste jusqu'à ce
+ * qu'elle soit cochée.
+ */
+export type Todo = {
+  id: string;
+  title: string;
+  note?: string;
+  /** ISO. Absent tant qu'il n'a pas dit quand il la ferait. */
+  due?: string;
+  /** Une heure précise a été donnée, pas seulement un jour. */
+  timed?: boolean;
+  done: boolean;
+  done_at?: string;
+  source?: { origine?: string; de?: string; titre?: string };
   created_at: string;
   updated_at: string;
 };
@@ -301,6 +383,9 @@ export const api = {
   digest: (refresh = false) =>
     request<Digest>(`/digest${refresh ? '?refresh=1' : ''}`),
 
+  /** Ce qu'il reste à faire. `refresh` force la régénération. */
+  urgent: (refresh = false) => request<Urgent>(`/urgent${refresh ? '?refresh=1' : ''}`),
+
   history: () => request<{ interactions: Interaction[] }>('/history'),
 
   connections: () => request<{ connections: Connection[] }>('/connections'),
@@ -321,15 +406,19 @@ export const api = {
       body: JSON.stringify({ user_token: userToken }),
     }),
 
-  connectWhatsApp: (phoneNumberId: string, accessToken: string, wabaId?: string) =>
-    request<Connection>('/connections/whatsapp', {
-      method: 'PUT',
-      body: JSON.stringify({
-        phone_number_id: phoneNumberId,
-        access_token: accessToken,
-        waba_id: wabaId,
-      }),
+  /**
+   * Démarre la liaison WhatsApp et rend le code à taper dans l'app WhatsApp.
+   *
+   * Un code plutôt qu'un QR : le QR se scanne avec le téléphone, or c'est ce
+   * téléphone-là qui affiche l'écran où on le lirait.
+   */
+  pairWhatsApp: (numero: string) =>
+    request<{ code: string; statut: WhatsAppStatus }>('/connections/whatsapp/pair', {
+      method: 'POST',
+      body: JSON.stringify({ numero }),
     }),
+
+  whatsAppStatus: () => request<WhatsAppStatus>('/connections/whatsapp/status'),
 
   disconnect: (provider: Provider) =>
     request<{ provider: string }>(`/connections/${provider}`, { method: 'DELETE' }),
@@ -357,6 +446,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
+
+  /** Tout ce qui reste à faire, plus ce qui vient d'être coché. */
+  todos: () => request<{ todos: Todo[] }>('/todos'),
+
+  addTodo: (input: {
+    title: string;
+    note?: string;
+    /** « 2026-08-27 », ou avec l'heure. Vide : pas encore de jour. */
+    due?: string;
+    source?: { origine?: string; de?: string; titre?: string };
+  }) => request<Todo>('/todos', { method: 'POST', body: JSON.stringify(input) }),
+
+  /** `due` absent ne touche pas à la date ; `due: ''` la retire. */
+  updateTodo: (id: string, patch: { done?: boolean; due?: string }) =>
+    request<Todo>(`/todos/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deleteTodo: (id: string) => request<{ deleted: string }>(`/todos/${id}`, { method: 'DELETE' }),
 
   drafts: () => request<{ drafts: EmailDraft[] }>('/drafts'),
 

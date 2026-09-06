@@ -12,8 +12,11 @@ import {
   ViewProps,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 
-import { theme } from '../theme';
+import { Glass, GlassCard } from './glass';
+import { alpha, theme } from '../theme';
 
 export type IconName = React.ComponentProps<typeof Feather>['name'];
 
@@ -65,11 +68,12 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
 /* Conteneurs                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/** Carte de contenu : une plaque de verre au rythme interne fixé. */
 export function Card({ style, children, ...rest }: ViewProps) {
   return (
-    <View style={[styles.card, style]} {...rest}>
+    <GlassCard style={style} {...rest}>
       {children}
-    </View>
+    </GlassCard>
   );
 }
 
@@ -80,7 +84,11 @@ export function ScreenHeader({ title, subtitle }: { title: string; subtitle?: st
       <Txt variant="display" accessibilityRole="header">
         {title}
       </Txt>
-      {subtitle ? <Txt variant="small" tone="muted">{subtitle}</Txt> : null}
+      {subtitle ? (
+        <Txt variant="small" tone="muted">
+          {subtitle}
+        </Txt>
+      ) : null}
     </View>
   );
 }
@@ -105,7 +113,9 @@ type ButtonProps = {
 
 /**
  * Le retour au toucher passe par une mise à l'échelle légère plutôt qu'un
- * changement de disposition : la carte ne bouge pas, seul le bouton réagit.
+ * changement de disposition : la carte ne bouge pas, seul le bouton réagit. Un
+ * retour haptique le double — sur verre, l'écrasement visuel est discret, la
+ * vibration confirme que l'appui a été pris.
  */
 export function Button({
   label,
@@ -122,8 +132,7 @@ export function Button({
     Animated.spring(scale, {
       toValue: to,
       useNativeDriver: true,
-      speed: 40,
-      bounciness: 4,
+      ...theme.motion.spring,
     }).start();
 
   const fg =
@@ -133,35 +142,57 @@ export function Button({
         ? theme.colors.danger
         : theme.colors.text;
 
+  const inner = loading ? (
+    <ActivityIndicator color={fg} size="small" />
+  ) : (
+    <>
+      {icon ? <Feather name={icon} size={16} color={fg} /> : null}
+      <Text style={[styles.buttonLabel, { color: fg }]}>{label}</Text>
+    </>
+  );
+
+  const press = (
+    <Pressable
+      onPress={() => {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onPress();
+      }}
+      onPressIn={() => animate(0.97)}
+      onPressOut={() => animate(1)}
+      disabled={inactive}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: inactive, busy: Boolean(loading) }}
+      style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+    >
+      {inner}
+    </Pressable>
+  );
+
   return (
-    <Animated.View style={{ transform: [{ scale }] }}>
-      <Pressable
-        onPress={onPress}
-        onPressIn={() => animate(0.97)}
-        onPressOut={() => animate(1)}
-        disabled={inactive}
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        accessibilityState={{ disabled: inactive, busy: Boolean(loading) }}
-        style={({ pressed }) => [
-          styles.button,
-          variant === 'primary' && styles.buttonPrimary,
-          variant === 'secondary' && styles.buttonSecondary,
-          variant === 'ghost' && styles.buttonGhost,
-          variant === 'danger' && styles.buttonDanger,
-          pressed && styles.buttonPressed,
-          inactive && styles.buttonDisabled,
-        ]}
-      >
-        {loading ? (
-          <ActivityIndicator color={fg} size="small" />
-        ) : (
-          <>
-            {icon ? <Feather name={icon} size={16} color={fg} /> : null}
-            <Text style={[styles.buttonLabel, { color: fg }]}>{label}</Text>
-          </>
-        )}
-      </Pressable>
+    <Animated.View style={[{ transform: [{ scale }] }, inactive && styles.buttonDisabled]}>
+      {variant === 'primary' ? (
+        <View style={styles.buttonGlowWrap}>
+          <LinearGradient
+            colors={[theme.colors.primary, theme.colors.primaryDim]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.buttonFill}
+          >
+            {press}
+          </LinearGradient>
+        </View>
+      ) : variant === 'ghost' ? (
+        press
+      ) : (
+        <Glass
+          radius={theme.radius.md}
+          variant="plain"
+          tone={variant === 'danger' ? theme.colors.danger : undefined}
+        >
+          {press}
+        </Glass>
+      )}
     </Animated.View>
   );
 }
@@ -180,30 +211,28 @@ type FieldProps = TextInputProps & {
 
 export function Field({ label, hint, error, style, ...rest }: FieldProps) {
   const [focused, setFocused] = React.useState(false);
+  const tone = error ? theme.colors.danger : focused ? theme.colors.primary : undefined;
   return (
     <View style={styles.field}>
       <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        placeholderTextColor={theme.colors.textFaint}
-        autoCapitalize="none"
-        autoCorrect={false}
-        accessibilityLabel={label}
-        {...rest}
-        onFocus={(e) => {
-          setFocused(true);
-          rest.onFocus?.(e);
-        }}
-        onBlur={(e) => {
-          setFocused(false);
-          rest.onBlur?.(e);
-        }}
-        style={[
-          styles.input,
-          focused && styles.inputFocused,
-          Boolean(error) && styles.inputError,
-          style,
-        ]}
-      />
+      <Glass radius={theme.radius.md} variant="plain" tone={tone} sheen={false}>
+        <TextInput
+          placeholderTextColor={theme.colors.textFaint}
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel={label}
+          {...rest}
+          onFocus={(e) => {
+            setFocused(true);
+            rest.onFocus?.(e);
+          }}
+          onBlur={(e) => {
+            setFocused(false);
+            rest.onBlur?.(e);
+          }}
+          style={[styles.input, style]}
+        />
+      </Glass>
       {error ? (
         <View style={styles.fieldFooter}>
           <Feather name="alert-circle" size={12} color={theme.colors.danger} />
@@ -239,7 +268,7 @@ export function StatusDot({ state }: { state: DotState }) {
         ? theme.colors.success
         : theme.colors.textFaint;
   return (
-    <View style={[styles.dotHalo, state === 'on' && { backgroundColor: `${color}22` }]}>
+    <View style={[styles.dotHalo, state === 'on' && { backgroundColor: alpha(color, 0.18) }]}>
       <View style={[styles.dot, { backgroundColor: color }]} />
     </View>
   );
@@ -264,25 +293,28 @@ export function Chip({
         ? theme.colors.primary
         : theme.colors.textFaint;
   return (
-    <View
-      style={[styles.chip, state === 'on' && styles.chipActive]}
+    <Glass
+      radius={theme.radius.pill}
+      variant="subtle"
+      tone={state === 'on' ? theme.colors.primary : undefined}
+      style={styles.chip}
       accessibilityLabel={`${label}${count ? `, ${count}` : ''}${state === 'on' ? ', connecté' : ', non connecté'}`}
     >
       <Feather name={icon} size={13} color={tint} />
       <Text style={[styles.chipLabel, state === 'on' && { color: theme.colors.text }]}>{label}</Text>
       {count ? <Text style={styles.chipCount}>{count}</Text> : null}
-    </View>
+    </Glass>
   );
 }
 
 /** Tuile de statistique pour l'écran Journal. */
 export function StatTile({ value, label, icon }: { value: number; label: string; icon: IconName }) {
   return (
-    <View style={styles.stat} accessibilityLabel={`${value} ${label}`}>
+    <Glass radius={theme.radius.md} style={styles.stat} accessibilityLabel={`${value} ${label}`}>
       <Feather name={icon} size={15} color={theme.colors.textMuted} />
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </Glass>
   );
 }
 
@@ -298,13 +330,13 @@ export function EmptyState({
 }) {
   return (
     <View style={styles.empty}>
-      <View style={styles.emptyIcon}>
+      <Glass radius={theme.radius.pill} style={styles.emptyIcon}>
         <Feather name={icon} size={20} color={theme.colors.textFaint} />
-      </View>
+      </Glass>
       <Txt variant="bodyStrong" tone="muted">
         {title}
       </Txt>
-      <Txt variant="small" tone="faint" style={{ textAlign: 'center' }}>
+      <Txt variant="small" tone="faint" style={styles.centered}>
         {message}
       </Txt>
     </View>
@@ -328,16 +360,17 @@ export function Banner({
         ? theme.colors.warning
         : theme.colors.primary;
   return (
-    <View style={[styles.banner, { borderColor: `${color}55`, backgroundColor: `${color}12` }]}>
-      <Feather name={icon} size={15} color={color} style={{ marginTop: 2 }} />
-      <View style={{ flex: 1, gap: theme.space.xs }}>{children}</View>
-    </View>
+    <Glass radius={theme.radius.md} tone={color} style={styles.banner}>
+      <Feather name={icon} size={15} color={color} style={styles.bannerIcon} />
+      <View style={styles.bannerBody}>{children}</View>
+    </Glass>
   );
 }
 
 /* -------------------------------------------------------------------------- */
 
 const styles = StyleSheet.create({
+  centered: { textAlign: 'center' },
   sectionLabel: {
     fontFamily: theme.type.label.font,
     fontSize: theme.type.label.fontSize,
@@ -345,14 +378,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.1,
     textTransform: 'uppercase',
     color: theme.colors.textFaint,
-  },
-  card: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    padding: theme.space.lg,
-    gap: theme.space.md,
   },
   screenHeader: { gap: theme.space.xs, marginBottom: theme.space.xs },
   divider: {
@@ -363,24 +388,22 @@ const styles = StyleSheet.create({
 
   button: {
     minHeight: theme.touchMin,
-    borderRadius: theme.radius.md,
     paddingHorizontal: theme.space.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.space.sm,
   },
-  buttonPrimary: { backgroundColor: theme.colors.primary },
-  buttonSecondary: {
-    backgroundColor: theme.colors.surfaceRaised,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderStrong,
-  },
-  buttonGhost: { backgroundColor: 'transparent' },
-  buttonDanger: {
-    backgroundColor: 'transparent',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.danger}66`,
+  buttonFill: { borderRadius: theme.radius.md, overflow: 'hidden' },
+  // Le halo du bouton principal : une lueur teal juste sous la plaque, qui le
+  // désigne comme l'action de l'écran sans avoir à grossir.
+  buttonGlowWrap: {
+    borderRadius: theme.radius.md,
+    shadowColor: theme.colors.primary,
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 6,
   },
   buttonPressed: { opacity: 0.85 },
   buttonDisabled: { opacity: 0.45 },
@@ -395,18 +418,12 @@ const styles = StyleSheet.create({
   },
   input: {
     minHeight: theme.touchMin,
-    backgroundColor: theme.colors.surfaceRaised,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
     color: theme.colors.text,
     fontFamily: theme.type.body.font,
     fontSize: theme.type.body.fontSize,
     paddingHorizontal: theme.space.lg,
     paddingVertical: theme.space.md,
   },
-  inputFocused: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surfaceActive },
-  inputError: { borderColor: theme.colors.danger },
   fieldFooter: { flexDirection: 'row', alignItems: 'center', gap: theme.space.xs },
 
   dotHalo: {
@@ -422,14 +439,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.space.xs + 2,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.pill,
     paddingHorizontal: theme.space.md,
     paddingVertical: theme.space.sm,
   },
-  chipActive: { borderColor: `${theme.colors.primary}55` },
   chipLabel: {
     fontFamily: theme.type.small.font,
     fontSize: 13,
@@ -444,10 +456,6 @@ const styles = StyleSheet.create({
 
   stat: {
     flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
     paddingVertical: theme.space.md,
     alignItems: 'center',
     gap: 2,
@@ -462,10 +470,8 @@ const styles = StyleSheet.create({
 
   empty: { alignItems: 'center', gap: theme.space.sm, paddingVertical: theme.space.xl },
   emptyIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: theme.colors.surfaceRaised,
+    width: 48,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: theme.space.xs,
@@ -474,8 +480,8 @@ const styles = StyleSheet.create({
   banner: {
     flexDirection: 'row',
     gap: theme.space.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: theme.radius.md,
     padding: theme.space.md,
   },
+  bannerIcon: { marginTop: 2 },
+  bannerBody: { flex: 1, gap: theme.space.xs },
 });

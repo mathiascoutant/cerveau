@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
   Banner,
@@ -14,6 +15,10 @@ import {
   StatusDot,
   Txt,
 } from '../components/ui';
+import { tabBarSpace } from '../components/TabBar';
+import { loadUrgent } from '../components/Urgences';
+import { loadJournal } from './JournalScreen';
+import { clearCache } from '../lib/cache';
 import {
   api,
   Connection,
@@ -22,6 +27,7 @@ import {
   Provider,
   setApiUrl,
   VoiceInfo,
+  WhatsAppStatus,
 } from '../api';
 import {
   calendarSupported,
@@ -30,9 +36,10 @@ import {
   syncCalendar,
 } from '../lib/calendar';
 import { frenchVoices } from '../lib/speech';
-import { theme } from '../theme';
+import { alpha, theme } from '../theme';
 
 export function ConnectionsScreen() {
+  const insets = useSafeAreaInsets();
   const [connections, setConnections] = useState<Record<string, Connection>>({});
   const [serverUrl, setServerUrl] = useState('');
   const [name, setName] = useState('');
@@ -95,7 +102,7 @@ export function ConnectionsScreen() {
   return (
     <ScrollView
       style={styles.screen}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingBottom: tabBarSpace(insets.bottom) }]}
       keyboardShouldPersistTaps="handled"
     >
       <ScreenHeader
@@ -140,7 +147,12 @@ export function ConnectionsScreen() {
           onPress={() =>
             run('server', async () => {
               await setApiUrl(serverUrl);
+              // Changer de serveur, c'est changer d'utilisateur : ce qui est
+              // en cache appartient au précédent et n'a plus rien à faire là.
+              clearCache();
               await api.status();
+              void loadJournal(true);
+              void loadUrgent(true);
             })
           }
         />
@@ -204,10 +216,8 @@ export function ConnectionsScreen() {
 
       <WhatsAppSource
         connection={connections.whatsapp}
-        busy={busy === 'whatsapp'}
-        onConnect={(phoneId, token) =>
-          run('whatsapp', async () => void (await api.connectWhatsApp(phoneId, token)))
-        }
+        busy={busy === 'disconnect-whatsapp'}
+        onPaired={() => void refresh()}
         onDisconnect={() => disconnect('whatsapp')}
       />
 
@@ -222,7 +232,7 @@ export function ConnectionsScreen() {
           />
           <Txt variant="mono" tone={voice?.engine === 'elevenlabs' ? 'default' : 'faint'}>
             {voice?.engine === 'elevenlabs'
-              ? `ElevenLabs · ${voice.model ?? 'modèle par défaut'}`
+              ? `ElevenLabs · ${voice.model ?? 'modèle par défaut'}${voice.language ? ` · ${voice.language}` : ''}`
               : 'ElevenLabs · inactif (aucune clé sur le serveur)'}
           </Txt>
         </View>
@@ -430,45 +440,123 @@ function SlackSource({
 function WhatsAppSource({
   connection,
   busy,
-  onConnect,
+  onPaired,
   onDisconnect,
 }: {
   connection?: Connection;
   busy: boolean;
-  onConnect: (phoneId: string, token: string) => void;
+  onPaired: () => void;
   onDisconnect: () => void;
 }) {
-  const [phoneId, setPhoneId] = useState('');
-  const [token, setToken] = useState('');
+  const [numero, setNumero] = useState('');
+  const [status, setStatus] = useState<WhatsAppStatus | null>(null);
+  const [pairing, setPairing] = useState(false);
   const connected = connection?.status === 'connected';
+
+  // Tant qu'un code est affiché, on interroge le serveur : la liaison se
+  // termine sur le téléphone, pas ici. Sans ce sondage, l'écran resterait sur
+  // son code après que tout a marché.
+  useEffect(() => {
+    if (!pairing && !connected) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await api.whatsAppStatus();
+        if (!alive) return;
+        setStatus(s);
+        if (s.phase === 'connecte' && pairing) {
+          setPairing(false);
+          onPaired();
+        }
+        if (s.phase === 'deconnecte' && pairing && s.erreur) setPairing(false);
+      } catch {
+        // serveur momentanément injoignable : on retentera au tour suivant
+      }
+    };
+    void tick();
+    const timer = setInterval(tick, pairing ? 3000 : 30000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [pairing, connected, onPaired]);
+
+  const start = async () => {
+    setPairing(true);
+    try {
+      const res = await api.pairWhatsApp(numero.trim());
+      setStatus(res.statut ?? { phase: 'appairage', code: res.code });
+    } catch (err) {
+      setPairing(false);
+      Alert.alert('Liaison impossible', (err as Error).message);
+    }
+  };
 
   return (
     <Source
       icon="message-circle"
-      title="WhatsApp Business"
+      title="WhatsApp"
       connected={connected}
       label={connection?.label}
       error={connection?.last_error}
-      hint="API Cloud officielle. Elle ne donne aucun historique : Raoul voit les messages reçus à partir du branchement du webhook."
+      hint="Ton vrai compte, vu comme un appareil lié : groupes et conversations privées. Raoul lit, il n’écrit jamais et ne pose aucune coche bleue."
     >
       {connected ? (
-        <Button label="Déconnecter" variant="danger" icon="log-out" loading={busy} onPress={onDisconnect} />
+        <>
+          <Txt variant="small" tone={status?.phase === 'connecte' ? 'muted' : 'default'}>
+            {status?.phase === 'connecte'
+              ? 'Session ouverte : les messages arrivent en direct.'
+              : 'Session fermée — le serveur ne reçoit rien pour l’instant.'}
+          </Txt>
+          <Txt variant="small" tone="faint">
+            L’historique se limite à ce que ton téléphone a poussé à la liaison, plus tout ce qui
+            arrive depuis.
+          </Txt>
+          <Button
+            label="Délier l’appareil"
+            variant="danger"
+            icon="log-out"
+            loading={busy}
+            onPress={onDisconnect}
+          />
+        </>
+      ) : status?.code && pairing ? (
+        <>
+          <Txt variant="mono" style={styles.pairCode}>
+            {status.code}
+          </Txt>
+          <Banner tone="info" icon="smartphone">
+            <Txt variant="small" tone="muted">
+              Sur ton téléphone : WhatsApp → Réglages → Appareils connectés → Connecter un appareil
+              → « Connecter avec le numéro de téléphone », puis tape ce code.
+            </Txt>
+          </Banner>
+          <Txt variant="small" tone="faint">
+            Le code expire au bout de deux à trois minutes. Si tu le rates, redemande-en un.
+          </Txt>
+          <Button label="Annuler" variant="ghost" onPress={() => setPairing(false)} />
+        </>
       ) : (
         <>
-          <Field label="Phone number ID" placeholder="1234567890" value={phoneId} onChangeText={setPhoneId} />
           <Field
-            label="Token d’accès permanent"
-            placeholder="••••••••"
-            value={token}
-            onChangeText={setToken}
-            secureTextEntry
+            label="Ton numéro WhatsApp"
+            placeholder="+33612345678"
+            value={numero}
+            onChangeText={setNumero}
+            keyboardType="phone-pad"
+            hint="Au format international. C’est le numéro du compte à lier, pas celui d’un contact."
           />
+          {status?.erreur ? (
+            <Txt variant="small" tone="muted">
+              {status.erreur}
+            </Txt>
+          ) : null}
           <Button
-            label="Connecter"
+            label="Obtenir un code de liaison"
             icon="link"
-            loading={busy}
-            disabled={!phoneId.trim() || !token.trim()}
-            onPress={() => onConnect(phoneId.trim(), token.trim())}
+            loading={busy || pairing}
+            disabled={numero.trim().length < 8}
+            onPress={start}
           />
         </>
       )}
@@ -478,11 +566,12 @@ function WhatsAppSource({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  screen: { flex: 1, backgroundColor: theme.colors.background },
+  // Pas de fond : l'aurore peinte par App.tsx doit rester visible sous le
+  // verre des cartes, sinon il n'y a plus rien à flouter.
+  screen: { flex: 1 },
   content: {
-    paddingHorizontal: theme.space.xl,
+    paddingHorizontal: theme.space.lg,
     paddingTop: theme.space.md,
-    paddingBottom: theme.space.xxxl,
     gap: theme.space.lg,
   },
   sourceHead: { flexDirection: 'row', alignItems: 'center', gap: theme.space.md },
@@ -490,10 +579,18 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.surfaceRaised,
+    backgroundColor: alpha(theme.colors.primary, 0.12),
     alignItems: 'center',
     justifyContent: 'center',
   },
   sourceState: { flexDirection: 'row', alignItems: 'center', gap: theme.space.xs },
   voiceRow: { flexDirection: 'row', alignItems: 'center', gap: theme.space.sm },
+  // Le code d'appairage se recopie à la main d'une app à l'autre : il doit se
+  // lire d'un coup d'œil, sans zoomer.
+  pairCode: {
+    fontSize: 30,
+    letterSpacing: 6,
+    textAlign: 'center',
+    paddingVertical: theme.space.md,
+  },
 });
