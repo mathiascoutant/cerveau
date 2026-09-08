@@ -22,6 +22,9 @@ type askResponse struct {
 	Reply      string         `json:"reply"`
 	Actions    []store.Action `json:"actions"`
 	Steps      []string       `json:"steps,omitempty"`
+	// SpeechURL : la réponse est déjà en cours de synthèse à cette adresse.
+	// L'app y va directement, sans repasser par POST /assistant/speech.
+	SpeechURL string `json:"speech_url,omitempty"`
 }
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
@@ -149,11 +152,17 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 	if result.Actions == nil {
 		result.Actions = []store.Action{}
 	}
+
+	// La voix se fabrique à partir d'ici, pas quand le téléphone la réclamera.
+	// Entre les deux il y a le trajet de cette réponse, le décodage, la reprise
+	// de la session audio et — avant — un aller-retour POST /assistant/speech
+	// entier : autant de silence pendant lequel ElevenLabs peut déjà travailler.
 	httpx.JSON(w, http.StatusOK, askResponse{
 		Transcript: transcript,
 		Reply:      result.Reply,
 		Actions:    result.Actions,
 		Steps:      result.Steps,
+		SpeechURL:  s.prepareSpeech(user.ID, result.Reply),
 	})
 }
 

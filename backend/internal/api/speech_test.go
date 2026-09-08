@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,24 +39,82 @@ func TestSpeechTicketReusableUntilExpiry(t *testing.T) {
 	}
 }
 
-// Le son fabriqué est gardé avec le ticket : une plage d'octets demandée après
-// coup ne doit pas relancer — ni refacturer — une synthèse.
-func TestSpeechTicketCachesAudio(t *testing.T) {
+// Le son fabriqué est gardé avec le ticket : les plages d'octets demandées
+// ensuite ne doivent relancer — ni refacturer — aucune synthèse.
+func TestSpeechTicketSynthesizesOnce(t *testing.T) {
 	tickets := newSpeechTickets()
 	id, err := tickets.issue(bson.NewObjectID(), "bonjour")
 	if err != nil {
 		t.Fatalf("issue : %v", err)
 	}
-
-	tickets.cache(id, []byte("des octets mp3"))
-
 	entry, ok := tickets.lookup(id)
 	if !ok {
 		t.Fatal("ticket introuvable")
 	}
-	if string(entry.audio) != "des octets mp3" {
-		t.Errorf("audio en cache : %q", entry.audio)
+
+	synth := &countingSynth{audio: "des octets mp3"}
+	for range 3 { // le lecteur sonde, puis lit par plages
+		entry.synthesize(synth)
 	}
+	<-entry.ready
+
+	if entry.err != nil {
+		t.Fatalf("synthèse : %v", entry.err)
+	}
+	if string(entry.audio) != "des octets mp3" {
+		t.Errorf("audio : %q", entry.audio)
+	}
+	if n := synth.calls.Load(); n != 1 {
+		t.Errorf("%d appels à ElevenLabs, attendu 1", n)
+	}
+}
+
+// Une connexion refermée par le lecteur ne doit pas emporter la synthèse avec
+// elle : c'est ce qui obligeait la requête suivante à tout recommencer.
+func TestSpeechSynthesisSurvivesClientCancel(t *testing.T) {
+	tickets := newSpeechTickets()
+	id, err := tickets.issue(bson.NewObjectID(), "bonjour")
+	if err != nil {
+		t.Fatalf("issue : %v", err)
+	}
+	entry, _ := tickets.lookup(id)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	synth := &countingSynth{audio: "des octets mp3", waitFor: ctx}
+	entry.synthesize(synth)
+	cancel() // le lecteur raccroche pendant la synthèse
+
+	select {
+	case <-entry.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("la synthèse ne s'est jamais terminée")
+	}
+	if entry.err != nil {
+		t.Fatalf("la synthèse a été annulée avec la requête : %v", entry.err)
+	}
+	if string(entry.audio) != "des octets mp3" {
+		t.Errorf("audio : %q", entry.audio)
+	}
+}
+
+// countingSynth compte les allers-retours et, si waitFor est posé, ne rend la
+// main qu'une fois ce contexte terminé — de quoi simuler une synthèse encore
+// en cours quand le lecteur referme sa connexion.
+type countingSynth struct {
+	audio   string
+	calls   atomic.Int32
+	waitFor context.Context
+}
+
+func (c *countingSynth) Speak(ctx context.Context, text string) (io.ReadCloser, error) {
+	c.calls.Add(1)
+	if c.waitFor != nil {
+		<-c.waitFor.Done()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(c.audio)), nil
 }
 
 func TestSpeechTicketExpires(t *testing.T) {
