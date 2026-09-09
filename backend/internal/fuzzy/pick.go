@@ -1,6 +1,7 @@
 package fuzzy
 
 import (
+	"slices"
 	"sort"
 	"strings"
 )
@@ -88,20 +89,40 @@ func Resolve(query string, names [][]string) (winner int, tied []int) {
 //
 // La comparaison se fait sur la forme serrée : la ponctuation, les accents, les
 // espaces et les majuscules ne distinguent rien à l'oral.
+//
+// Les deux côtés sont lus DE LA MÊME FAÇON, et c'est le point. Le nom d'une
+// conversation porte lui aussi, très souvent, le mot qui l'annonce : Slack ne
+// nomme pas ses messages privés, le libellé est fabriqué — « DM Xavier » — et un
+// groupe s'appelle « Azul - PXCom Technical Group ». Ne dépouiller que la
+// question revenait à comparer « xavier » à « dmxavier », à conclure que ce
+// n'était pas le même nom, et à demander confirmation d'un nom que personne ne
+// peut prononcer autrement : « DM Xavier » ne se dit pas à voix haute.
 func Exact(query string, names ...string) bool {
-	forms := append([]string{Normalize(query)}, Variants(query)...)
-	for _, form := range forms {
-		tight := Tight(form)
-		if tight == "" {
-			continue
-		}
-		for _, name := range names {
-			if tight == Tight(name) {
-				return true
+	asked := readings(query)
+	for _, name := range names {
+		for _, candidate := range readings(name) {
+			for _, form := range asked {
+				if form == candidate {
+					return true
+				}
 			}
 		}
 	}
 	return false
+}
+
+// readings rend les formes serrées sous lesquelles un nom peut être reconnu :
+// tel quel, et débarrassé des mots qui l'annoncent.
+func readings(s string) []string {
+	out := make([]string, 0, 3)
+	for _, form := range Variants(s) {
+		tight := Tight(form)
+		if tight == "" || slices.Contains(out, tight) {
+			continue
+		}
+		out = append(out, tight)
+	}
+	return out
 }
 
 // Nombre de candidats proposés au choix : au-delà, la question devient une
@@ -115,6 +136,18 @@ var leadIns = []string{
 	"le message de ", "les messages de ", "la conv ",
 	"canal ", "conversation ", "groupe ", "discussion ", "conv ", "diese ", "dm ",
 	"le ", "la ", "les ",
+}
+
+// Les mêmes, quand ils suivent le nom au lieu de le précéder. « le groupe Azul »
+// et « Azul groupe » se disent aussi bien l'un que l'autre, et un nom de groupe
+// finit très souvent par le mot lui-même — « Azul - PXCom Technical Group ».
+// Dépouiller les deux bouts les fait se rejoindre.
+//
+// Seuls les mots qui nomment une SORTE de conversation figurent ici. Les
+// articles n'y sont pas : un nom peut finir par « les », jamais être annoncé
+// par un « les » traînant.
+var trailers = []string{
+	" groupe", " group", " canal", " conversation", " discussion", " conv",
 }
 
 // Variants rend les lectures possibles d'un nom dicté : tel quel, et débarrassé
@@ -132,6 +165,12 @@ func Variants(query string) []string {
 		for _, lead := range leadIns {
 			if after, ok := strings.CutPrefix(stripped, lead); ok && strings.TrimSpace(after) != "" {
 				stripped = after
+				changed = true
+			}
+		}
+		for _, trail := range trailers {
+			if before, ok := strings.CutSuffix(stripped, trail); ok && strings.TrimSpace(before) != "" {
+				stripped = before
 				changed = true
 			}
 		}

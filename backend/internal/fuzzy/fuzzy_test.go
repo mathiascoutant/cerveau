@@ -126,3 +126,54 @@ func TestExactSeparatesNameFromResemblance(t *testing.T) {
 		}
 	}
 }
+
+// Le nom du candidat porte souvent, lui aussi, le mot qui l'annonce : Slack ne
+// nomme pas ses messages privés — le libellé « DM Xavier » est fabriqué — et un
+// groupe s'appelle « … Group ». Ne dépouiller que la question demandait de
+// confirmer un nom que personne ne prononce ainsi.
+func TestExactStripsBothSides(t *testing.T) {
+	// Un message privé Slack : aucun nom côté API, seulement le libellé.
+	dm := []string{"", "DM Xavier"}
+	for _, said := range []string{"Xavier", "DM Xavier", "le message de Xavier"} {
+		if !Exact(said, dm...) {
+			t.Errorf("%q désigne bien le message privé avec Xavier", said)
+		}
+	}
+
+	// Un groupe dont le nom se termine par le mot « group », désigné à l'oral
+	// avec le mot placé de l'autre côté.
+	const azul = "Azul - PXCom Technical Group"
+	for _, said := range []string{
+		"Azul PX Com Technical groupe",
+		"le groupe Azul PXCom Technical",
+		"Azul PXCom Technical Group",
+	} {
+		if !Exact(said, azul) {
+			t.Errorf("%q est le nom du groupe, à la dictée près", said)
+		}
+	}
+
+	// Ce qui reste une approximation doit toujours faire demander confirmation :
+	// c'est là qu'un compte rendu du mauvais groupe se glisserait.
+	for _, said := range []string{"azul", "ce groupe", "Oui", "technical"} {
+		if Exact(said, azul) {
+			t.Errorf("%q n'est pas le nom du groupe", said)
+		}
+	}
+	if Exact("Azul", "PXCom <> SAA <> HiFLy") {
+		t.Error("un nom sans rapport ne doit jamais passer pour exact")
+	}
+}
+
+// Le dépouillement ne doit pas manger un nom qui EST fait de ces mots-là.
+func TestExactKeepsNamesMadeOfLeadIns(t *testing.T) {
+	if !Exact("les devs", "les-devs") {
+		t.Error("« les-devs » s'appelle vraiment ainsi")
+	}
+	if !Exact("devs", "les-devs") {
+		t.Error("on le désigne aussi sans son article")
+	}
+	if !Exact("le groupe", "Le Groupe") {
+		t.Error("une conversation peut s'appeler « Le Groupe »")
+	}
+}
