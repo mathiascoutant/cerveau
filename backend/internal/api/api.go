@@ -30,6 +30,7 @@ type Server struct {
 
 	pending *pendingOAuth
 	speech  *speechTickets
+	confirm *confirmations
 }
 
 func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa *whatsapp.Manager) *Server {
@@ -44,6 +45,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),
+		confirm: newConfirmations(),
 	}
 }
 

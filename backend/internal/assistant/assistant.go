@@ -289,9 +289,14 @@ func (e *ConfirmError) instruction() string {
 			"probablement %s : %s.\n"+
 			"Demande-lui de confirmer, en UNE phrase courte qui cite ce nom en entier "+
 			"(« Tu parles du %s %s ? »). N'invente aucun contenu et n'annonce rien de ce qui "+
-			"s'y trouve : tu ne l'as pas lu. Dès qu'il confirme, rappelle le même outil avec "+
-			"ce nom exact.",
-		e.Recherche, e.Quoi, e.Trouve, e.Quoi, e.Trouve)
+			"s'y trouve : tu ne l'as pas lu.\n"+
+			"Dès qu'il confirme — « oui », « ouais », « c'est ça », ou une reformulation "+
+			"approximative du nom — rappelle le même outil en passant EXACTEMENT « %s », "+
+			"mot pour mot. Surtout pas ce qu'il vient de prononcer : ses mots ne sont pas "+
+			"le nom exact, c'est précisément ce qui a déclenché cette demande, et les "+
+			"repasser te ramènerait ici. Tu lui poserais alors une deuxième fois la "+
+			"question à laquelle il vient de répondre.",
+		e.Recherche, e.Quoi, e.Trouve, e.Quoi, e.Trouve, e.Trouve)
 }
 
 // instruction est ce que le modèle reçoit à la place du résultat : pas une
@@ -1043,7 +1048,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 				"lire_canal_slack",
 				"Lit les messages d'une conversation Slack désignée par son nom, qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande le contenu d'un canal, mais AUSSI de ta propre initiative : quand quelque chose remonte d'un canal sans le citer nommément, c'est en entrant dans la conversation que tu sauras si ça le concerne. Le nom est tolérant : « projet », « #projet » ou le prénom d'un contact pour un message direct. Il l'est aussi à l'orthographe, parce que la dictée déforme les noms de canaux — « dubaiairwing » te revient en « dubai R wing » : passe le nom TEL QU'IL L'A DIT, l'outil s'occupe du rapprochement. Si le nom trouvé n'est pas exactement celui prononcé, l'outil ne lit rien et te demande de faire confirmer : pose la question en citant le nom complet, puis rappelle l'outil avec ce nom exact. S'il ne trouve pas mais propose des noms proches, demande si c'est l'un d'eux au lieu d'annoncer que tu n'as rien trouvé. REMONTE ASSEZ LOIN pour comprendre : un fil se lit depuis son début, pas depuis son dernier message.",
 				object(map[string]any{
-					"canal":  str("Nom de la conversation, du canal ou de la personne. Si plusieurs correspondent, l'outil le dit au lieu de choisir : demande laquelle, puis rappelle avec le nom exact."),
+					"canal":  str("Nom de la conversation, du canal ou de la personne, tel qu'il l'a prononcé. Quand l'outil demande de lever une ambiguïté ou de faire confirmer, repasse le nom exact qu'il a rendu, mot pour mot — pas ce que l'utilisateur a dit pour répondre."),
 					"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 15, maximum 100). Monte franchement quand il faut reconstituer le contexte d'un échange."},
 				}, "canal"),
 			),
@@ -1062,7 +1067,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 				"lire_conversation_whatsapp",
 				"Lit une conversation WhatsApp désignée par son nom — un groupe ou un contact — qu'elle contienne des non-lus ou non. À utiliser dès qu'on te demande ce qui se dit quelque part, le contenu d'un groupe, ou ce qui a bougé depuis son dernier message. Passe le nom TEL QU'IL L'A DIT : les noms de groupes ne se prononcent jamais en entier (« azul » pour « PXCom- Azul technique »), l'outil s'occupe du rapprochement. Si le nom trouvé n'est pas exactement celui prononcé, l'outil ne lit rien et te demande de faire confirmer : pose la question en citant le nom complet, puis rappelle l'outil avec ce nom exact. Si plusieurs conversations se ressemblent, il te le dit au lieu de choisir. REMONTE ASSEZ LOIN : le dernier message répond presque toujours à quelque chose. Quand le champ plus_ancien_disponible est vrai et que tu ne comprends pas encore de quoi il retourne, rappelle l'outil avec une limite plus grande avant de répondre.",
 				object(map[string]any{
-					"conversation":               str("Nom du groupe ou de la personne, tel qu'il l'a prononcé."),
+					"conversation":               str("Nom du groupe ou de la personne, tel qu'il l'a prononcé. UNE exception : quand l'outil vient de demander une confirmation, c'est le nom exact qu'il a rendu qu'il faut repasser, mot pour mot — pas ce que l'utilisateur a dit pour confirmer."),
 					"limite":                     map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 20, maximum 100). Monte franchement quand il faut comprendre un fil, pas de dix en dix."},
 					"depuis_mon_dernier_message": map[string]any{"type": "boolean", "description": "Ne rendre que ce qui a été écrit après son propre dernier message. C'est la réponse à « quoi de neuf depuis que j'ai parlé »."},
 				}, "conversation"),

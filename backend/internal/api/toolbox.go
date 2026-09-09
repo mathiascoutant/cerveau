@@ -204,7 +204,8 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 		}
 		return assistant.SlackChannelView{}, err
 	}
-	label, messages, err := slack.New(creds.UserToken).ReadConversation(ctx, name, limit)
+	client := slack.New(creds.UserToken)
+	label, messages, err := client.ReadConversation(ctx, name, limit)
 	if err != nil {
 		var amb *slack.AmbiguousConversationError
 		if errors.As(err, &amb) {
@@ -214,11 +215,23 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 		}
 		var unsure *slack.UnconfirmedConversationError
 		if errors.As(err, &unsure) {
-			return assistant.SlackChannelView{}, &assistant.ConfirmError{
-				Quoi: "canal", Recherche: unsure.Query, Trouve: unsure.Found,
+			if !t.srv.confirm.askedOnce(t.user.ID, "slack:"+unsure.Found) {
+				return assistant.SlackChannelView{}, &assistant.ConfirmError{
+					Quoi: "canal", Recherche: unsure.Query, Trouve: unsure.Found,
+				}
 			}
+			// Déjà demandé une fois : on relit sous le libellé que le client a
+			// lui-même trouvé, le seul que son contrôle d'exactitude accepte.
+			// Un message privé n'a pas de nom côté Slack, seulement ce libellé
+			// — « DM Xavier » — et personne ne dit « DM Xavier » à voix haute :
+			// sans ce rattrapage, la question était strictement sans issue.
+			label, messages, err = client.ReadConversation(ctx, unsure.Found, limit)
+			if err != nil {
+				return assistant.SlackChannelView{}, err
+			}
+		} else {
+			return assistant.SlackChannelView{}, err
 		}
-		return assistant.SlackChannelView{}, err
 	}
 	out := assistant.SlackChannelView{Canal: label}
 	for _, m := range messages {
@@ -306,7 +319,11 @@ func (t *userToolbox) ReadWhatsAppChat(ctx context.Context, name string, limit i
 			Query: name, Nearest: whatsapp.Nearest(chats, name, 6),
 		}
 	}
-	if whatsapp.NeedsConfirmation(name, chat) {
+	// La question ne se pose qu'une fois par conversation : la cible est le JID,
+	// pas le nom prononcé, qui change à chaque tour (« ce groupe », « oui »)
+	// pendant que la conversation visée reste la même. Voir confirmations.go.
+	if whatsapp.NeedsConfirmation(name, chat) &&
+		!t.srv.confirm.askedOnce(t.user.ID, "whatsapp:"+chat.JID) {
 		return assistant.WhatsAppChatView{}, &assistant.ConfirmError{
 			Quoi: chatWord(chat.IsGroup), Recherche: name, Trouve: chat.Name,
 		}
