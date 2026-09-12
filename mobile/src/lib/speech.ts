@@ -150,19 +150,25 @@ function fallback(reason: string): void {
  * multilingue et reconnaît de lui-même la langue du texte, ce qui compte quand
  * Raoul lit une réponse de mail rédigée en anglais au milieu d'une phrase
  * française.
+ *
+ * `prepared` est l'adresse d'un son dont le serveur a déjà lancé la fabrication
+ * — c'est ce que rend /assistant/ask avec la réponse. La donner évite l'aller-
+ * retour qui servait à réclamer un ticket, et surtout laisse ElevenLabs
+ * travailler pendant que la réponse arrive jusqu'ici. Sans elle, on demande le
+ * ticket comme avant : une phrase fabriquée par l'app n'en a pas.
  */
-export async function speak(text: string, lang?: string): Promise<void> {
+export async function speak(text: string, lang?: string, prepared?: string): Promise<void> {
   stopped = false;
   if (!text.trim()) return;
 
   if (remoteAvailable) {
     try {
-      const ticket = await api.speak(text);
+      const path = prepared ?? (await api.speak(text)).url;
       if (stopped) return;
       const base = await getApiUrl();
       await prepareAudioMode();
       if (stopped) return;
-      if (await play(base + ticket.url)) {
+      if (await play(base + path)) {
         lastIssue = null;
         return;
       }

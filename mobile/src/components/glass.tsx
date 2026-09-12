@@ -80,11 +80,11 @@ export function Glass({
       <BlurView
         intensity={INTENSITY[variant]}
         tint="dark"
-        // Le flou natif d'Android reste expérimental et coûte cher : on ne le
-        // demande que pour les barres fixes, où le contenu défile dessous et
-        // où l'absence de flou rendrait les deux plans illisibles ensemble.
-        // Ailleurs, expo-blur pose un voile translucide, ce qui suffit.
-        experimentalBlurMethod={variant === 'chrome' ? 'dimezisBlurView' : 'none'}
+        // Le flou natif d'Android coûte cher : on ne le demande que pour les
+        // barres fixes, où le contenu défile dessous et où l'absence de flou
+        // rendrait les deux plans illisibles ensemble. Ailleurs, expo-blur pose
+        // un voile translucide, ce qui suffit.
+        blurMethod={variant === 'chrome' ? 'dimezisBlurView' : 'none'}
         style={StyleSheet.absoluteFill}
       />
       <View

@@ -220,7 +220,7 @@ export function useRaoul() {
       // audio en fond), mais rien ne garantit qu'on puisse en démarrer un une
       // fois passé en arrière-plan.
       setState('speaking');
-      const spoken = speak(answer.reply);
+      const spoken = speak(answer.reply, undefined, answer.speech_url);
 
       let effects: string[] = [];
       if (answer.actions?.length) {

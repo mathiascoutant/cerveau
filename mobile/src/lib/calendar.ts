@@ -1,4 +1,11 @@
-import * as Calendar from 'expo-calendar';
+// « /legacy » et non « expo-calendar » tout court : depuis le SDK 56, l'entrée
+// principale du module a basculé sur une API à objets, et les fonctions *Async
+// qui restent sous ce nom ne sont plus que des souches qui lèvent à l'appel.
+// Elles compilent toujours — c'est ce qui rend le piège discret : ici, la sonde
+// ci-dessous les aurait attrapées et l'app serait passée en mode « pas
+// d'agenda » sans rien dire. Le jour où l'on migre vers l'API à objets, c'est
+// tout ce fichier qui change ; en attendant, la ligne de repli est explicite.
+import * as Calendar from 'expo-calendar/legacy';
 
 import { api, AssistantAction } from '../api';
 import { openNavigation } from './navigation';

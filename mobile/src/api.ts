@@ -189,6 +189,12 @@ export type AssistantAnswer = {
   reply: string;
   actions: AssistantAction[];
   steps?: string[];
+  /**
+   * Adresse du son de cette réponse, dont le serveur a déjà lancé la synthèse.
+   * Absente quand le serveur n'a pas de voix distante — l'app lit alors avec
+   * celle du téléphone.
+   */
+  speech_url?: string;
 };
 
 let cachedToken: string | null = null;
