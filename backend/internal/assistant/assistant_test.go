@@ -49,6 +49,8 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"chercher_brouillon":         nil,
 		"modifier_brouillon":         {"id", "corps"},
 		"chercher_historique":        nil,
+		"retenir":                    {"categorie", "contenu"},
+		"oublier":                    {"sujet"},
 		"ajouter_tache":              {"titre"},
 		"mes_taches":                 {"quand"},
 		"terminer_tache":             {"recherche"},
@@ -147,7 +149,7 @@ func TestLimitOf(t *testing.T) {
 func TestSystemPromptCarriesTemporalContext(t *testing.T) {
 	paris, _ := time.LoadLocation("Europe/Paris")
 	now := time.Date(2026, 8, 20, 19, 30, 0, 0, paris)
-	prompt := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true, Slack: true, WhatsApp: true})
+	prompt := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true, Slack: true, WhatsApp: true}, nil)
 
 	for _, needle := range []string{"Mathias", "mathias@exemple.fr", "20 August 2026", "19h30", "Europe/Paris"} {
 		if !strings.Contains(prompt, needle) {
@@ -207,7 +209,7 @@ func TestSystemPromptOmitsDisconnectedSources(t *testing.T) {
 	paris, _ := time.LoadLocation("Europe/Paris")
 	now := time.Date(2026, 8, 20, 19, 30, 0, 0, paris)
 
-	prompt := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true})
+	prompt := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true}, nil)
 	if strings.Contains(prompt, "WhatsApp") {
 		t.Error("le prompt cite WhatsApp alors que le compte n'est pas branché")
 	}

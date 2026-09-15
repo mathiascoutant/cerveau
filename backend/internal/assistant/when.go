@@ -76,3 +76,64 @@ func frenchDate(t, now time.Time) string {
 	}
 	return fmt.Sprintf("%d %s %d", t.Day(), frenchMonths[int(t.Month())-1], t.Year())
 }
+
+// Deadline met une échéance en mots, tournée vers l'avant.
+//
+// When regarde en arrière — « hier à 16h30 » — et ne sait pas dire une date qui
+// n'est pas encore arrivée. Ce sont deux lectures opposées du même écart, et la
+// distinction qui compte le plus ici n'existe même pas dans l'autre sens : une
+// échéance DÉPASSÉE. C'est l'information la plus lourde qu'un mail puisse
+// porter, et la plus facile à rater quand on lit un message de la semaine
+// dernière.
+//
+// `timed` dit si une heure figurait vraiment dans le texte. Sans lui, une
+// échéance au jour ressortirait « vendredi à 00h00 », c'est-à-dire un rendez-vous
+// auquel personne ne s'est engagé.
+func Deadline(t, now time.Time, loc *time.Location, timed bool) string {
+	if t.IsZero() {
+		return ""
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	t = t.In(loc)
+	now = now.In(loc)
+
+	at := ""
+	if timed {
+		at = " à " + t.Format("15h04")
+	}
+
+	// Une échéance à l'heure près se juge à l'heure près ; une échéance au jour
+	// court jusqu'au soir, donc elle n'est dépassée qu'une fois le jour tourné.
+	switch days := daysBetween(now, t); {
+	case timed && t.Before(now), !timed && days > 0:
+		return "dépassée depuis " + since(t, now, loc)
+	case days == 0:
+		return "aujourd'hui" + at
+	case days == -1:
+		return "demain" + at
+	case days > -7:
+		return frenchWeekday(t) + at
+	case days > -14:
+		return frenchWeekday(t) + " prochain" + at
+	}
+	return "le " + frenchDate(t, now) + at
+}
+
+// since dit depuis quand c'est passé, du plus parlant au plus précis.
+func since(t, now time.Time, loc *time.Location) string {
+	switch days := daysBetween(now, t); days {
+	case 0:
+		return "ce matin"
+	case 1:
+		return "hier"
+	case 2:
+		return "avant-hier"
+	default:
+		if days < 7 {
+			return frenchWeekday(t)
+		}
+		return "le " + frenchDate(t, now)
+	}
+}

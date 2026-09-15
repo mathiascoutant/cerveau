@@ -136,6 +136,7 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		UserEmail: email,
 		History:   history,
 		Sources:   s.sources(ctx, user),
+		Facts:     s.facts(ctx, user),
 	})
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, "Raoul n'a pas pu répondre : "+err.Error())

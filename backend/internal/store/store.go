@@ -100,6 +100,13 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
 		{s.todos(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "done", Value: 1}, {Key: "due", Value: 1}}}},
+		// Unique sur la clé : c'est cet index qui fait qu'un deuxième « Cyril »
+		// remplace le premier au lieu de s'ajouter à côté.
+		{s.facts(), mongo.IndexModel{
+			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: unique(),
+		}},
+		{s.facts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
 		{s.urgentDismissals(), mongo.IndexModel{
 			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "key", Value: 1}},
 			Options: unique(),

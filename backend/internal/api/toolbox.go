@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
+	"github.com/mathiascoutant/cerveau/backend/internal/echeance"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
@@ -126,6 +127,13 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		PourToi:         string(triage.Addressing(toTriageMail(msg), creds.Email)),
 		ReponseATonMail: msg.AnswersYou,
 		Destinataires:   len(msg.To) + len(msg.Cc),
+	}
+	// L'échéance se lit dans le corps, donc elle n'existe qu'ici : la liste des
+	// non-lus ne descend que les enveloppes, et rapatrier quinze corps pour y
+	// chercher une date coûterait quinze allers-retours IMAP.
+	if d := echeance.Trouver(msg.Body, msg.Date, t.location()); d != nil {
+		view.Echeance = assistant.Deadline(d.Quand, time.Now(), t.location(), d.Heure)
+		view.EcheanceDite = d.Extrait
 	}
 	// L'adresse de sa propre boîte sert à reconnaître ses envois dans le fil :
 	// « j'ai dit quoi dans le mail d'avant » n'a de réponse que si on sait

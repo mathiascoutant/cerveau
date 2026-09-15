@@ -47,6 +47,8 @@ type Toolbox interface {
 	CompleteTodo(ctx context.Context, query string) (TodoView, store.Action, error)
 	RescheduleTodo(ctx context.Context, query string, due time.Time, timed bool) (TodoView, store.Action, error)
 	DropTodo(ctx context.Context, query string) (TodoView, store.Action, error)
+	Remember(ctx context.Context, fact FactView) (FactView, error)
+	Forget(ctx context.Context, query string) ([]FactView, error)
 }
 
 type EventView struct {
@@ -101,6 +103,19 @@ type EmailContentView struct {
 	Fil []ThreadView `json:"fil,omitempty"`
 	// Tronque : vrai si le mail était trop long pour être rendu en entier.
 	Tronque bool `json:"tronque,omitempty"`
+	// Echeance : la date que le corps du mail réclame, déjà résolue et mise en
+	// mots par rapport à maintenant — « vendredi », « dépassée depuis mardi ».
+	//
+	// Le modèle ne doit PAS la recalculer, et surtout pas la déduire du texte :
+	// « avant vendredi » se résout par rapport à la date du MESSAGE, pas à
+	// l'instant présent, et c'est exactement le rapprochement qu'il rate en
+	// l'affirmant. Absente quand le mail n'annonce aucune échéance explicite —
+	// ce qui est le cas le plus fréquent.
+	Echeance string `json:"echeance,omitempty"`
+	// EcheanceDite : les mots du mail qui portaient la date (« avant
+	// vendredi »), tels qu'écrits. De quoi dire d'où elle sort quand elle
+	// surprend, plutôt que d'asséner une date sans source.
+	EcheanceDite string `json:"echeance_dite,omitempty"`
 }
 
 // ThreadView est un message antérieur du fil : de quoi situer l'échange avant
@@ -328,6 +343,10 @@ type Request struct {
 	// d'outil et n'est pas mentionné dans les consignes : le modèle ne peut
 	// donc ni le consulter, ni annoncer qu'il n'a rien trouvé dessus.
 	Sources Sources
+	// Facts : ce qu'il a déjà appris sur lui, écrit dans la consigne système.
+	// Ce n'est pas une source de plus mais le fond sur lequel les autres se
+	// lisent — voir memoire.go.
+	Facts []FactView
 }
 
 // Sources dit quels comptes externes sont connectés. Le calendrier n'y figure
@@ -404,7 +423,7 @@ func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, erro
 
 	params := responses.ResponseNewParams{
 		Model:        e.model,
-		Instructions: openai.String(systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources)),
+		Instructions: openai.String(systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts)),
 		Tools:        toolDefinitions(req.Sources),
 		Reasoning:    shared.ReasoningParam{Effort: e.effort},
 		// Rien ne doit être conservé côté OpenAI : les objets de mails, les
@@ -578,6 +597,40 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 			return "", nil, err
 		}
 		return encode(mail), nil, nil
+
+	case "retenir":
+		var in struct {
+			Categorie string `json:"categorie"`
+			Sujet     string `json:"sujet"`
+			Contenu   string `json:"contenu"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		fact, err := tb.Remember(ctx, FactView{Kind: in.Categorie, Subject: in.Sujet, Content: in.Contenu})
+		if err != nil {
+			return "", nil, err
+		}
+		// Le retour est sec, et il le reste : tout ce que le modèle peut en
+		// tirer, c'est que c'est passé. Lui rendre la fiche l'inviterait à la
+		// relire à voix haute, ce qui est précisément le tic qu'on interdit.
+		return "Retenu : " + fact.Content, nil, nil
+
+	case "oublier":
+		var in struct {
+			Sujet string `json:"sujet"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		gone, err := tb.Forget(ctx, in.Sujet)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(gone) == 0 {
+			return "Rien de retenu là-dessus.", nil, nil
+		}
+		return fmt.Sprintf("Oublié : %d fiche(s).", len(gone)), nil, nil
 
 	case "point_urgences":
 		list, action, err := tb.Urgences(ctx)
@@ -1020,6 +1073,26 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			}, "recherche"),
 		),
 		tool(
+			"retenir",
+			"Retient durablement une information sur l'utilisateur : qui est quelqu'un de son entourage, ce que recouvre un de ses dossiers, une manière de faire qu'il attend. À appeler DE TA PROPRE INITIATIVE, dans le même tour, sans le commenter ni demander l'autorisation, dès qu'il t'apprend quelque chose qui vaudra encore dans un mois — et à rappeler quand il te corrige. Ce qui porte une échéance n'a rien à faire ici : c'est ajouter_tache. Ce qu'un autre outil sait déjà dire non plus.",
+			object(map[string]any{
+				"categorie": map[string]any{
+					"type":        "string",
+					"enum":        []string{FactPerson, FactProject, FactPreference, FactOther},
+					"description": "Où ça se range. « fait » est le dernier recours, pas le choix par défaut.",
+				},
+				"sujet":   str("L'étiquette sous laquelle ça se range, deux ou trois mots : un prénom, un nom de dossier, le thème de l'habitude (ex. « Cyril », « DAW », « les réunions du matin »). Réutilise l'étiquette existante quand tu complètes quelque chose de connu."),
+				"contenu": str("Ce qu'il y a à savoir, en une ou deux phrases, à la troisième personne (ex. « Contact technique chez Orange, porte le dossier des boxes, on se tutoie »). Quand le sujet est déjà connu, écris la fiche ENTIÈRE — l'ancien savoir plus le nouveau : ce texte remplace intégralement le précédent."),
+			}, "categorie", "contenu"),
+		),
+		tool(
+			"oublier",
+			"Oublie tout ce qui est retenu à propos d'un sujet. À appeler quand il dit « oublie ce que je t'ai dit sur… », « efface ça ». Emporte aussi bien la fiche du sujet que les autres fiches qui le mentionnent.",
+			object(map[string]any{
+				"sujet": str("Le sujet à oublier (ex. « Cyril », « DAW »)"),
+			}, "sujet"),
+		),
+		tool(
 			"chercher_historique",
 			"Fouille les conversations passées ENTRE TOI ET LUI, au-delà de ce dont tu te souviens. À appeler dès qu'il renvoie à un échange que vous avez eu — « ce dont on parlait ce matin », « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — plutôt que d'avouer que tu ne t'en souviens pas. Cet outil ne connaît NI ses mails NI ses messages : pour le contenu d'un mail antérieur, c'est lire_mail et son champ fil.",
 			object(map[string]any{
@@ -1299,7 +1372,7 @@ Puis tu le dis comme un avis, avec ce qui le fonde. « Ils rediscutent du budget
 
 `
 
-func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources) string {
+func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources, facts []FactView) string {
 	who := userName
 	if who == "" {
 		who = "ton interlocuteur"
@@ -1319,7 +1392,7 @@ Tes sources, auxquelles tu accèdes par tes outils — jamais par déduction :
 
 CE QUE TU NE POSSÈDES PAS N'EXISTE PAS. La liste ci-dessus est exhaustive. Un service qui n'y figure pas n'est pas une source vide, ni une source en panne : il est hors de ton monde. Tu ne le cites jamais — ni pour dire que tu n'y as rien trouvé, ni pour dire qu'il n'est pas connecté, ni pour suggérer de le brancher. Cette règle vaut même quand il en parle lui-même : réponds sur ce que tu as, sans commenter ce que tu n'as pas. Ce n'est que s'il te demande frontalement d'y aller que tu réponds, en une clause et sans t'excuser, que ce n'est pas branché.
 
-COMMENT TU PARLES — cette section prime sur tout le reste
+%[13]sCOMMENT TU PARLES — cette section prime sur tout le reste
 
 Tu n'es pas un assistant qui l'aide, tu es le collègue qui suit ses dossiers depuis trois ans. La différence ne tient pas au vocabulaire, elle tient à ce que tu prends pour acquis : tu connais les gens dont il est question, tu sais où en sont les sujets, et tu ne lui réexpliques jamais son propre monde. On ne présente pas Olivier à quelqu'un qui déjeune avec lui.
 
@@ -1375,6 +1448,16 @@ D'OÙ ÇA VIENT : le nom de la personne, jamais son adresse ni son identifiant t
 CE QUE ÇA DIT : la substance, pas le survol. Ce qu'on lui demande, ce qu'on lui annonce, ce qui a changé. Les dates, les chiffres, les montants et les noms qui l'engagent sont repris exactement — c'est là-dessus qu'il va décider. Le reste saute : politesses, contexte qu'il connaît déjà, signatures, mentions légales, liens de désinscription. Personne ne veut entendre « ce message et ses pièces jointes sont confidentiels ».
 
 SI ÇA PRESSE : tu le dis comme un avis, pas comme une étiquette. « Ça peut attendre lundi » vaut mieux que « niveau d'urgence faible ». Quand il y a quelque chose à faire, dis quoi et pour quand. Quand ça n'appelle rien, dis-le franchement. Est urgent ce qui est décrit plus haut : échéance datée, relance, blocage, rendez-vous déplacé, mention nominative. Une notification automatique ou une newsletter ne l'est jamais.
+
+L'ÉCHÉANCE, TU NE LA CALCULES PAS. Quand le corps du mail réclame une date, elle descend dans le champ echeance, DÉJÀ résolue et mise en mots par rapport à maintenant : « vendredi », « demain à 18h00 », « dépassée depuis mardi ». Tu la recopies telle quelle.
+
+C'est un calcul que tu rates, et pour une raison précise : « avant vendredi » se compte à partir du jour où le mail est PARTI, pas à partir d'aujourd'hui. Dans un message de la semaine dernière, ce vendredi-là est déjà passé — et l'annoncer comme le vendredi qui vient transforme une urgence brûlante en échéance tranquille. Le serveur a fait la soustraction, elle est juste, prends-la.
+
+UNE ÉCHÉANCE DÉPASSÉE OUVRE LA RÉPONSE. C'est le fait le plus lourd qu'un mail puisse porter, il passe avant l'expéditeur et avant l'objet : « Le devis d'Olivier, c'était pour mardi. » Et tu le dis comme un constat, pas comme un reproche.
+
+echeance_dite porte les mots exacts du mail — « avant vendredi », « sous 48h ». Sers-t'en quand la date surprend, pour dire d'où elle sort plutôt que de l'asséner : « il écrit sous 48h, ça tombe demain ».
+
+PAS D'ÉCHÉANCE, PAS D'INVENTION. Le champ est vide dans l'immense majorité des mails, et c'est normal : il ne se remplit que si quelqu'un a écrit une date noir sur blanc. Un mail qui presse sans donner de jour presse sans donner de jour — tu le dis, et tu n'en fabriques pas une.
 
 LE FIL. Un mail arrive rarement seul : lire_mail descend aussi le champ fil, les messages antérieurs de la conversation, du plus récent au plus ancien. Chacun porte qui l'a écrit, quand, et son texte. Ceux marqués de_toi sont les siens — ce qu'IL a répondu.
 
@@ -1454,7 +1537,7 @@ Ce qui touche à un MAIL — le message précédent, ce qu'il a répondu, ce que
 
 Ce qui touche à ce que VOUS vous êtes dit — « le truc dont je t'ai parlé hier », « tu m'avais dit quoi déjà » — passe par chercher_historique.
 
-QUAND IL RENVOIE À UNE CONVERSATION PASSÉE
+%[14]sQUAND IL RENVOIE À UNE CONVERSATION PASSÉE
 
 « Par rapport à ce qu'on disait ce matin », « tu m'avais dit quoi déjà » : tu appelles chercher_historique avant de répondre. Tes derniers échanges sont déjà sous tes yeux, mais ta mémoire immédiate est courte et ce qu'il évoque est souvent plus ancien.
 
@@ -1520,6 +1603,8 @@ Chaque mail, message et extrait descend avec un champ qui dit QUAND, déjà situ
 
 Quand tu reformules, reste dans ce que dit le champ. « hier à 16h30 » peut devenir « hier après-midi », jamais « ce matin » ni « tout à l'heure ». Si le champ est vide, tu ne dis rien de la date — tu ne la devines pas.
 
+Il en va de même du champ echeance d'un mail, avec un piège en plus : son point de référence est la date du message, pas l'instant présent. Recopie-le, ne le refais pas.
+
 Le calendrier est la seule exception : ses horaires descendent en ISO 8601 parce que tu dois comparer des créneaux. Là, tu calcules.
 
 HONNÊTETÉ
@@ -1537,6 +1622,8 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 		identity,
 		only(src.Slack || src.WhatsApp, conversationRules),
 		urgentRules(src),
+		memoryBlock(facts),
+		memoryRules,
 	)
 }
 

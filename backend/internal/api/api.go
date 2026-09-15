@@ -102,6 +102,11 @@ func (s *Server) Routes() http.Handler {
 			r.Patch("/todos/{id}", s.handleUpdateTodo)
 			r.Delete("/todos/{id}", s.handleDeleteTodo)
 
+			r.Get("/memory", s.handleListFacts)
+			r.Post("/memory", s.handleSaveFact)
+			r.Patch("/memory/{id}", s.handleUpdateFact)
+			r.Delete("/memory/{id}", s.handleDeleteFact)
+
 			r.Get("/drafts", s.handleListDrafts)
 			r.Patch("/drafts/{id}", s.handleUpdateDraft)
 			r.Delete("/drafts/{id}", s.handleDeleteDraft)

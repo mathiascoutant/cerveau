@@ -279,3 +279,58 @@ type UrgentDismissal struct {
 	Action      string    `bson:"action,omitempty" json:"action,omitempty"`
 	DismissedAt time.Time `bson:"dismissed_at" json:"dismissed_at"`
 }
+
+// Fact est une chose que Raoul retient durablement sur son utilisateur : une
+// personne, un projet, une préférence, ou un fait isolé.
+//
+// C'est ce qui manque à une mémoire faite uniquement de conversations passées.
+// Chercher « Cyril » dans six mois d'historique rend quarante échanges où le
+// nom apparaît, et il faut les relire pour en tirer ce qu'un collègue sait
+// depuis le premier jour : Cyril est le contact technique chez Orange, on se
+// tutoie, et il porte le dossier des boxes. Ce savoir-là ne se retrouve pas,
+// il se retient — et il doit être là AVANT qu'on pose la question, parce que
+// c'est lui qui décide comment on lit le mail qui arrive.
+//
+// La distinction avec Todo est nette : une tâche se termine, un fait reste.
+// « Relancer Olivier jeudi » est une tâche ; « Olivier est mon associé » est un
+// fait. Rien de ce qui porte une échéance n'a sa place ici.
+type Fact struct {
+	ID     bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID bson.ObjectID `bson:"user_id" json:"-"`
+	// Kind : « personne », « projet », « preference » ou « fait ». Voir les
+	// constantes Fact* pour ce que chacune recouvre.
+	Kind string `bson:"kind" json:"kind"`
+	// Subject : ce dont ça parle, en deux ou trois mots — « Cyril », « DAW »,
+	// « les réunions du matin ». C'est l'étiquette sous laquelle l'information
+	// se range et se remplace : réapprendre quelque chose sur Cyril met à jour
+	// la fiche Cyril au lieu d'en créer une deuxième.
+	Subject string `bson:"subject,omitempty" json:"subject,omitempty"`
+	// Content : ce qu'il y a à savoir, en une phrase.
+	Content string `bson:"content" json:"content"`
+	// Key : l'empreinte qui porte l'unicité, calculée par le store. Elle
+	// n'intéresse ni l'app ni le modèle.
+	Key string `bson:"key" json:"-"`
+	// Origin : d'où vient l'information — « voix » quand Raoul l'a retenue en
+	// écoutant, « app » quand elle a été saisie à la main. L'app s'en sert pour
+	// dire ce qui a été appris tout seul.
+	Origin    string    `bson:"origin,omitempty" json:"origin,omitempty"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// Les quatre catégories. Elles sont volontairement peu nombreuses : un modèle à
+// qui on donne douze tiroirs range mal, et une mémoire mal rangée ne se relit
+// pas.
+const (
+	// FactPerson : quelqu'un de son entourage pro ou perso — qui c'est, ce
+	// qu'on fait ensemble, comment on se parle.
+	FactPerson = "personne"
+	// FactProject : un dossier en cours, ce qu'il recouvre, où il en est.
+	FactProject = "projet"
+	// FactPreference : une manière de faire qu'il attend — l'heure à laquelle
+	// il refuse les réunions, la façon dont il veut ses mails.
+	FactPreference = "preference"
+	// FactOther : ce qui ne rentre dans aucune des trois. Le tiroir de dernier
+	// recours, pas le tiroir par défaut.
+	FactOther = "fait"
+)

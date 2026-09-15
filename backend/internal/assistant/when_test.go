@@ -92,3 +92,47 @@ func TestAmbiguousInstruction(t *testing.T) {
 		t.Errorf("la consigne ne doit pas se présenter comme une erreur :\n%s", got)
 	}
 }
+
+// L'échéance se lit vers l'avant, et la distinction qui compte — dépassée — n'a
+// pas d'équivalent dans When.
+func TestDeadline(t *testing.T) {
+	paris, _ := time.LoadLocation("Europe/Paris")
+	// Mardi 8 septembre 2026, 14h00.
+	now := time.Date(2026, 9, 8, 14, 0, 0, 0, paris)
+
+	cases := []struct {
+		name  string
+		when  time.Time
+		timed bool
+		want  string
+	}{
+		{"aujourd'hui", time.Date(2026, 9, 8, 0, 0, 0, 0, paris), false, "aujourd'hui"},
+		{"aujourd'hui à l'heure", time.Date(2026, 9, 8, 18, 0, 0, 0, paris), true, "aujourd'hui à 18h00"},
+		{"demain", time.Date(2026, 9, 9, 0, 0, 0, 0, paris), false, "demain"},
+		{"cette semaine", time.Date(2026, 9, 11, 0, 0, 0, 0, paris), false, "vendredi"},
+		{"semaine suivante", time.Date(2026, 9, 17, 0, 0, 0, 0, paris), false, "jeudi prochain"},
+		{"plus loin", time.Date(2026, 10, 3, 0, 0, 0, 0, paris), false, "le 3 octobre"},
+		{"dépassée hier", time.Date(2026, 9, 7, 0, 0, 0, 0, paris), false, "dépassée depuis hier"},
+		{"dépassée la semaine passée", time.Date(2026, 9, 1, 0, 0, 0, 0, paris), false, "dépassée depuis le 1 septembre"},
+		{"heure passée aujourd'hui", time.Date(2026, 9, 8, 9, 0, 0, 0, paris), true, "dépassée depuis ce matin"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Deadline(c.when, now, paris, c.timed); got != c.want {
+				t.Errorf("Deadline = %q, attendu %q", got, c.want)
+			}
+		})
+	}
+
+	// Une échéance au jour court jusqu'au soir : à 14h, « aujourd'hui » n'est
+	// pas dépassée. La dire dépassée ferait renoncer à quelque chose de encore
+	// faisable.
+	if got := Deadline(time.Date(2026, 9, 8, 0, 0, 0, 0, paris), now, paris, false); got != "aujourd'hui" {
+		t.Errorf("échéance du jour à 14h : %q, ne doit pas être dépassée", got)
+	}
+
+	if got := Deadline(time.Time{}, now, paris, false); got != "" {
+		t.Errorf("date nulle : %q, attendu vide", got)
+	}
+}
