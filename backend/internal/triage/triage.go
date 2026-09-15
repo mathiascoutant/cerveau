@@ -53,6 +53,10 @@ type Item struct {
 	// Compte : nombre de messages derrière l'entrée (Slack regroupe par
 	// conversation). Zéro quand la notion n'a pas de sens.
 	Compte int
+	// Fil : l'entrée vient d'un échange déjà commencé, pas d'un premier
+	// message. Ce qu'on en fait est laissé au modèle — mais lui ne peut pas le
+	// savoir, l'en-tête qui l'établit ne lui parvient jamais.
+	Fil bool
 }
 
 // Mail est ce que le tri a besoin de savoir d'un mail. Volontairement plus
@@ -68,6 +72,13 @@ type Mail struct {
 	// Diffusion : le message porte les en-têtes d'une liste ou d'un envoi
 	// automatique (List-Id, List-Unsubscribe, Precedence, Auto-Submitted).
 	Diffusion bool
+	// DansUnFil : ce mail répond à quelque chose — l'en-tête In-Reply-To est
+	// renseigné. Le sujet n'est donc pas neuf, on est au milieu d'un échange.
+	//
+	// À ne pas confondre avec RepondAToi, qui dit que c'est à LUI qu'on répond.
+	// Un fil peut très bien se dérouler entre deux autres personnes avec lui en
+	// destinataire, et ça ne s'attend pas pareil qu'un premier message.
+	DansUnFil bool
 	// RepondAToi : ce mail répond à un message que l'utilisateur a envoyé.
 	//
 	// Ce n'est pas une déduction sur l'objet : c'est l'en-tête In-Reply-To du
@@ -184,6 +195,7 @@ func Mails(mails []Mail, moi string) []Item {
 			De:     displayName(m.De, m.Adresse),
 			Quand:  m.Date,
 			Motif:  motif,
+			Fil:    m.DansUnFil,
 		})
 	}
 	return out

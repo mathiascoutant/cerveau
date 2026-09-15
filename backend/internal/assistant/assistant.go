@@ -38,6 +38,9 @@ type Toolbox interface {
 	PrepareEmailReply(ctx context.Context, draft EmailReplyDraft) (EmailDraftView, store.Action, error)
 	FindEmailDrafts(ctx context.Context, query string) ([]EmailDraftView, error)
 	UpdateEmailDraft(ctx context.Context, id, subject, body string) (EmailDraftView, store.Action, error)
+	Urgences(ctx context.Context) (UrgentListView, store.Action, error)
+	OuvrirUrgence(ctx context.Context, ref string) (UrgentDetailView, store.Action, error)
+	UrgenceTraitee(ctx context.Context, ref string) (UrgentDoneView, store.Action, error)
 	SearchHistory(ctx context.Context, query string, since time.Time) ([]MemoryView, error)
 	AddTodo(ctx context.Context, draft TodoDraft) (TodoView, store.Action, error)
 	Todos(ctx context.Context, scope string) (TodoListView, error)
@@ -576,6 +579,44 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		}
 		return encode(mail), nil, nil
 
+	case "point_urgences":
+		list, action, err := tb.Urgences(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(list.Taches) == 0 {
+			// L'action part quand même : l'écran doit se mettre à jour pour
+			// montrer qu'il n'y a plus rien, pas garder la liste d'avant.
+			return "Rien à traiter : la liste est vide.", &action, nil
+		}
+		return encode(list), &action, nil
+
+	case "ouvrir_urgence":
+		var in struct {
+			Laquelle string `json:"laquelle"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		detail, action, err := tb.OuvrirUrgence(ctx, in.Laquelle)
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(detail), &action, nil
+
+	case "urgence_traitee":
+		var in struct {
+			Laquelle string `json:"laquelle"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		done, action, err := tb.UrgenceTraitee(ctx, in.Laquelle)
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(done), &action, nil
+
 	case "slack_non_lus":
 		limit := limitOf(rawInput, 10)
 		threads, err := tb.UnreadSlack(ctx, limit)
@@ -1075,6 +1116,33 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		)
 	}
 
+	// Les urgences n'existent que s'il y a une messagerie à trier. Sans aucune
+	// source branchée, la liste serait vide par construction, et un outil qui ne
+	// peut rien rendre est un outil que le modèle finira par appeler pour rien.
+	if src.Mail || src.Slack || src.WhatsApp {
+		tools = append(tools,
+			tool(
+				"point_urgences",
+				"Fait le point sur ce qu'il a à traiter, et l'AFFICHE dans l'app sous forme de blocs. C'est la même liste que celle de son écran d'accueil : mêmes lignes, même ordre, mêmes rangs. À appeler dès qu'il demande un point sur ses urgences, ce qui l'attend, ce qu'il a à traiter, ce qui a bougé, ou ce qu'il a raté. Chaque ligne porte un rang à partir de 1 — c'est par là qu'il la désignera ensuite.",
+				object(map[string]any{}),
+			),
+			tool(
+				"ouvrir_urgence",
+				"Sélectionne UNE ligne de la liste à traiter — elle se met en avant à l'écran, les autres s'effacent — et rend le message complet qui est derrière : le corps du mail et son fil, ou la conversation Slack ou WhatsApp. À appeler dès qu'il désigne une ligne : « on part sur le premier », « le mail de Cyril », « raconte-moi celle du devis ». Sers-toi du contenu rendu pour lui dire ce qu'il a à savoir, pas pour lui relire le message.",
+				object(map[string]any{
+					"laquelle": str("Comment il l'a désignée : son rang (« le premier », « 2 »), le nom de la personne, ou quelques mots du sujet. Passe ce qu'il a dit, l'outil s'occupe du rapprochement ; s'il hésite entre deux lignes, il te le dit au lieu de choisir."),
+				}, "laquelle"),
+			),
+			tool(
+				"urgence_traitee",
+				"Retire une ligne de la liste à traiter : elle disparaît de l'écran et ne reviendra pas. À appeler dès qu'il dit qu'une chose est réglée, faite, envoyée, ou qu'il l'a déjà traitée (« celle-là c'est bon », « j'ai déjà répondu à Cyril »). Ne confonds pas avec terminer_tache, qui coche une tâche de SA liste à lui : ici on écarte une urgence déduite de ses messages. L'outil rend ce qu'il reste et la ligne suivante, de quoi lui proposer d'enchaîner.",
+				object(map[string]any{
+					"laquelle": str("La ligne visée : son rang, le nom de la personne, ou quelques mots du sujet. Quand il vient de parler d'une ligne et dit « c'est bon », c'est de celle-là qu'il parle — passe-la, ne redemande pas."),
+				}, "laquelle"),
+			),
+		)
+	}
+
 	return tools
 }
 
@@ -1096,6 +1164,10 @@ func sourceLines(src Sources) string {
 		lines = append(lines,
 			"- WhatsApp, ses groupes et ses conversations privées (whatsapp_non_lus pour ce qu'il n'a pas lu, lire_conversation_whatsapp pour entrer dans une conversation précise) ;")
 	}
+	if src.Mail || src.Slack || src.WhatsApp {
+		lines = append(lines,
+			"- ce qu'il a à traiter, la liste affichée sur son écran d'accueil (point_urgences pour en faire le point, ouvrir_urgence pour entrer dans une ligne, urgence_traitee pour l'en retirer) ;")
+	}
 	lines = append(lines,
 		"- sa liste à faire (mes_taches pour la lire, ajouter_tache pour y inscrire, terminer_tache, reprogrammer_tache, supprimer_tache) ;",
 		"- vos échanges passés (chercher_historique) et les réponses de mail déjà préparées (chercher_brouillon, modifier_brouillon) ;",
@@ -1112,6 +1184,88 @@ func only(available bool, text string) string {
 		return ""
 	}
 	return text
+}
+
+// urgentRules : la conduite du point sur les urgences, du premier « fais-moi un
+// point » jusqu'au dernier bloc retiré de l'écran.
+//
+// C'est la seule partie de Raoul où ce qu'il dit et ce que l'app montre doivent
+// coïncider à l'instant près : les blocs s'affichent, se sélectionnent et
+// disparaissent au rythme de la conversation. D'où une consigne aussi détaillée
+// pour trois outils — ce n'est pas leur usage qui est difficile, c'est de ne
+// jamais décrire à voix haute ce que l'écran est déjà en train de montrer.
+//
+// Le bloc n'existe pas sans messagerie branchée : sans source, la liste est
+// vide par construction et ces règles n'auraient rien à régir.
+func urgentRules(src Sources) string {
+	if !src.Mail && !src.Slack && !src.WhatsApp {
+		return ""
+	}
+
+	rules := `LE POINT SUR CE QU'IL A À TRAITER
+
+C'est le geste central de l'app, et il ne ressemble à aucun autre : ce que tu dis et ce qu'il voit sont la même chose, au même instant. Trois outils, trois moments.
+
+1. LE POINT. « Fais-moi un point sur les urgences », « j'ai quoi à traiter », « qu'est-ce qui m'attend » : tu appelles point_urgences. Les blocs s'affichent sur son écran pendant que tu parles — donc tu ne récites pas la liste, tu la commentes. Tu donnes le volume, tu nommes les deux ou trois qui comptent, tu t'arrêtes. Le reste est à l'écran, il sait lire. « Trois trucs. Cyril te relance sur les boxes depuis mardi, et Westent attend le devis pour ce soir. Le troisième peut attendre. »
+
+Les lignes portent un rang à partir de 1, et c'est celui qu'il a sous les yeux : tu peux t'en servir pour désigner (« le premier, c'est Cyril »), jamais pour énumérer. Tu n'énumères jamais.
+
+2. ENTRER DANS UNE LIGNE. « On part sur le premier », « le mail de Cyril », « celle du devis » : tu appelles ouvrir_urgence. Le bloc passe au premier plan à l'écran, les autres s'effacent, et l'outil te rend le message ENTIER — le corps du mail et son fil, ou la conversation.
+
+Ce qu'il attend là n'est pas la lecture du message, c'est ce qu'il doit savoir avant d'agir. Quatre choses, dans l'ordre où elles comptent :
+
+- QUI DEMANDE QUOI, précisément. Le fait, pas sa description : la somme, la date, la phrase qui engage.
+- DEPUIS QUAND ça attend, et si c'est une relance. Plusieurs sources sur la même ligne veulent dire que le sujet traîne — dis-le, c'est une information en soi.
+- SI ÇA LE VISE VRAIMENT. pour_toi et reponse_a_ton_mail sont déjà tranchés par le serveur : quelqu'un qui répond à un mail qu'il a envoyé attend une suite, une simple copie n'attend rien. Et quand le corps désigne nommément quelqu'un d'autre, tu le dis — c'est peut-être une ligne qui n'aurait pas dû lui tomber dessus, et l'apprendre lui fait gagner plus que n'importe quel résumé.
+- CE QU'IL Y A À FAIRE, et ce que tu ferais. Tu tranches. Tu ne présentes pas deux options.
+
+SERS-TOI DU FIL. Ce qu'il a lui-même écrit avant est marqué de_toi : c'est ce qui permet de dire si on répond vraiment à ce qu'il demandait ou si on l'esquive. C'est souvent la seule chose qui compte, et personne d'autre que toi n'ira la vérifier.
+
+Si l'outil rend une note au lieu du contenu, le message n'a pas pu être rouvert. Tu réponds avec ce que la ligne dit et tu le signales en une clause. Tu n'inventes pas ce qu'il contenait.
+
+Puis tu te tais. Tu ne proposes pas de rédiger, tu ne demandes pas ce qu'il compte faire : il vient d'entendre de quoi décider, laisse-le décider.
+
+3. LA RETIRER. « C'est bon », « je l'ai déjà traité », « j'ai répondu », « celle-là c'est réglé » : tu appelles urgence_traitee. Le bloc disparaît de l'écran, et il ne reviendra pas.
+
+Puis tu proposes la suite en une phrase courte, et tu t'arrêtes pour de vrai : « Ok. On passe à Westent ? » Pas de récapitulatif, pas d'inventaire de ce qui reste — c'est affiché. S'il ne reste rien, trois mots suffisent.
+
+IL ENCHAÎNE SANS NOMMER. « Oui », « suivant », « celle d'après » désignent la ligne suivante : tu l'ouvres sans redemander. Et quand il dit « c'est bon » juste après que tu lui as parlé d'une ligne, c'est de CELLE-LÀ qu'il parle — ne repose pas la question, il vient de te la donner.
+
+NE CONFONDS PAS AVEC SA LISTE À FAIRE. Une urgence est déduite de ses messages et s'écarte avec urgence_traitee ; une tâche est écrite par lui et se coche avec terminer_tache. S'il dit « j'ai répondu à Cyril » alors que la ligne de Cyril vient d'être ouverte, c'est l'urgence.
+
+`
+
+	if src.Slack || src.WhatsApp {
+		rules += newsRules(src)
+	}
+	return rules
+}
+
+// newsRules sépare deux demandes qui se ressemblent et ne se filtrent pas
+// pareil : ce qui le vise, et ce qui bouge.
+//
+// Se tromper de mode a un coût asymétrique. Répondre « rien pour toi » à qui
+// voulait les nouvelles lui fait croire qu'il ne se passe rien ; lui déverser
+// l'activité de huit canaux quand il demandait ses urgences lui fait fermer
+// l'app. La règle vaut pour les deux messageries, parce que la question se pose
+// dans les mêmes termes et que le filtre est le même des deux côtés.
+func newsRules(src Sources) string {
+	services := []string{}
+	if src.Slack {
+		services = append(services, "Slack")
+	}
+	if src.WhatsApp {
+		services = append(services, "WhatsApp")
+	}
+	return fmt.Sprintf(`DEUX FAÇONS DE REGARDER %[1]s, ET IL FAUT ENTENDRE LAQUELLE
+
+CE QUI LE CONCERNE — « j'ai raté quelque chose ? », « il y a des urgences ? », un point sur ce qu'il a à traiter. Tu ne remontes que ce qui lui est adressé : un message privé, une mention nominative, une réponse à ce qu'il a écrit. L'activité d'un canal ou d'un groupe où personne ne le cite ne compte pas, et tu ne la mentionnes pas, pas même pour dire qu'elle existe.
+
+LES NOUVELLES — « dis-moi les news sur %[2]s », « il se passe quoi sur %[2]s », « quoi de neuf dans les groupes ». Là il ne demande pas ce qui le vise, il demande ce qui bouge, et le filtre saute. Tu fais le tour des conversations qui ont bougé, une phrase chacune : DE QUOI ÇA PARLE, jamais combien de messages. « Sur le canal projet ils ont décalé la démo à jeudi. Sur design, Untel cherche un avis sur la maquette. Le reste c'est du bruit. »
+
+Quand l'extrait ne suffit pas à dire ce qui s'y passe, tu entres dans la conversation pour le savoir. Un compteur de non-lus n'est pas une nouvelle : il aurait pu le lire lui-même. Cinq ou six conversations au maximum, les autres liquidées en une demi-clause, et tu t'arrêtes.
+
+`, strings.ToUpper(strings.Join(services, " ET ")), services[0])
 }
 
 // conversationRules : comment on désigne une conversation à l'oral, et jusqu'où
@@ -1210,7 +1364,7 @@ Exemple de ton, à ne pas recopier comme un modèle : « Sept mails, dont deux q
 
 Ce que tu considères urgent : une demande explicite avec échéance, une relance, un rendez-vous confirmé ou déplacé%[7]s. Ce qui ne l'est pas : notifications automatiques, newsletters, résumés hebdomadaires, mises à jour de plateformes. Dis franchement quand le reste n'a aucun intérêt.
 
-QUAND IL DEMANDE DE LIRE UN MAIL OU UN MESSAGE
+%[12]sQUAND IL DEMANDE DE LIRE UN MAIL OU UN MESSAGE
 
 « Lis-moi mon dernier mail », « qu'est-ce que dit celui d'Olivier »%[8]s : tu ouvres le message avec l'outil qui en donne le contenu. Les outils de non-lus ne suffisent pas, ils ne portent que les enveloppes.
 
@@ -1382,6 +1536,7 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 		only(src.Slack, "Un fil Slack ne se déroule pas message par message : tu dis où en est la conversation, qui a dit quoi qui compte, et ce qui l'attend.\n\n"),
 		identity,
 		only(src.Slack || src.WhatsApp, conversationRules),
+		urgentRules(src),
 	)
 }
 

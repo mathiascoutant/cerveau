@@ -258,3 +258,24 @@ type TodoQuery struct {
 	Search string
 	Limit  int64
 }
+
+// UrgentDismissal : une urgence que l'utilisateur a déclarée traitée.
+//
+// Elle existe parce que « c'est fait » et « le message a disparu » ne sont pas
+// le même événement. Répondre à un mail ne le marque pas lu, archiver un fil
+// Slack ne se voit pas tout de suite : sans cette trace, une urgence écartée à
+// la voix reviendrait à la régénération suivante, et c'est exactement le genre
+// de résurrection qui fait cesser de croire à une liste.
+//
+// Key est l'empreinte des sources de la tâche, pas de son libellé : le modèle
+// reformule son action d'un appel à l'autre, mais il recopie ses sources telles
+// qu'on les lui a données.
+type UrgentDismissal struct {
+	ID     bson.ObjectID `bson:"_id,omitempty" json:"-"`
+	UserID bson.ObjectID `bson:"user_id" json:"-"`
+	Key    string        `bson:"key" json:"-"`
+	// Action : le libellé au moment où il l'a écartée. Ne sert à rien au
+	// filtrage — seulement à relire ce qui a été traité quand on débogue.
+	Action      string    `bson:"action,omitempty" json:"action,omitempty"`
+	DismissedAt time.Time `bson:"dismissed_at" json:"dismissed_at"`
+}

@@ -29,6 +29,11 @@ type MessageView struct {
 	// modèle ne peut pas le déduire de ce qu'on lui donne, et ça pèse sur
 	// l'urgence : on ne répond pas à quelqu'un pour information.
 	Motif string `json:"motif,omitempty"`
+	// Fil : le message s'inscrit dans un échange déjà entamé. Établi par les
+	// en-têtes de filiation, pas par un « Re: » dans l'objet, et invisible au
+	// modèle autrement — or un premier contact et la quatrième relance sur le
+	// même sujet n'appellent ni la même urgence ni la même phrase.
+	Fil bool `json:"suite_d_un_echange,omitempty"`
 }
 
 // SourceView est le message d'où sort une tâche, recopié pour l'affichage.
@@ -41,6 +46,15 @@ type SourceView struct {
 
 // TaskView est une chose à faire, pas un message à lire.
 type TaskView struct {
+	// ID désigne la tâche pour tout ce qui vient après sa production : la
+	// sélectionner à la voix, la retirer de l'écran, la retenir comme traitée.
+	//
+	// Il n'est PAS produit par le modèle — il est calculé par le serveur à
+	// partir des sources, après coup. Deux raisons : un identifiant inventé par
+	// un modèle ne survit pas à la régénération suivante, et les sources sont
+	// la seule chose stable d'une tâche (le libellé, lui, se reformule d'un
+	// appel à l'autre alors que le sujet n'a pas bougé).
+	ID string `json:"id,omitempty"`
 	// Action : un verbe et son objet, à l'infinitif. « Répondre au mail de
 	// Westent », « Configurer deux boxes pour DAW ».
 	Action string `json:"action"`
@@ -130,6 +144,8 @@ FORMAT DE « pourquoi ». Deux phrases maximum : d'où ça vient, qui le demande
 FORMAT DE « sources ». Les messages qui ont produit la tâche, recopiés TELS QUELS depuis les données fournies — même origine, même expéditeur, même titre, même date. N'invente aucune source et n'en reformule aucune.
 
 « urgence » vaut "haute" si ça se joue aujourd'hui ou si quelqu'un attend depuis plusieurs jours, "moyenne" sinon. Rien de moins urgent n'entre dans la liste.
+
+LE CHAMP « suite_d_un_echange » dit que le message n'ouvre pas le sujet : il répond à quelque chose, l'échange a commencé avant. Ce n'est pas un « Re: » dans l'objet, que n'importe qui tape à la main — c'est l'en-tête de filiation. Quand il est vrai, quelqu'un attend depuis plus longtemps que la date du message ne le laisse croire, et le « pourquoi » doit le dire (« il revient à la charge », « c'est la suite de votre échange sur le devis ») plutôt que de présenter la demande comme neuve.
 
 LE CHAMP « motif » dit pourquoi le message a été retenu, et il pèse. « réponse à un mail que tu as envoyé » est le plus fort : quelqu'un répond à ce que %[1]s a écrit, la balle est dans son camp et il attend probablement une suite — c'est une urgence haute sauf preuve du contraire, et le « pourquoi » doit dire que c'est une réponse à son propre mail. Un message privé ou une citation nominative engagent plus qu'un mail où il figure parmi plusieurs destinataires.
 

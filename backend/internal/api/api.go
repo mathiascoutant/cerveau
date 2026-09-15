@@ -83,6 +83,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/history", s.handleHistory)
 			r.Get("/digest", s.handleDigest)
 			r.Get("/urgent", s.handleUrgent)
+			r.Post("/urgent/{id}/done", s.handleUrgentDone)
 
 			r.Get("/connections", s.handleListConnections)
 			r.Put("/connections/gandi", s.handleConnectGandi)

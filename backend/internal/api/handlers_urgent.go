@@ -5,9 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
@@ -43,8 +48,46 @@ type urgentResponse struct {
 }
 
 // handleUrgent rend ce qu'il reste à faire, pas ce qu'il reste à lire.
+func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	out, err := s.urgentList(ctx, user, r.URL.Query().Get("refresh") != "")
+	if err != nil {
+		httpx.Error(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// handleUrgentDone retire une urgence de la liste.
 //
-// Deux étages, et la séparation est volontaire :
+// Le geste existe à l'écran comme à la voix, et il doit valoir la même chose
+// des deux côtés : c'est la même empreinte qui part en base, donc la ligne
+// écartée d'un balayage ne revient pas parce que Raoul a régénéré la liste.
+func (s *Server) handleUrgentDone(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		httpx.Error(w, http.StatusBadRequest, "identifiant manquant")
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	if err := s.store.DismissUrgent(r.Context(), user.ID, id, body.Action); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "impossible d'enregistrer")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// urgentList construit ce qu'il reste à faire.
+//
+// Trois étages, et la séparation est volontaire :
 //
 //   - le tri (internal/triage) écarte tout ce qui ne s'adresse pas
 //     personnellement à l'utilisateur. Déterministe, testé, sans modèle : « suis-je
@@ -52,15 +95,15 @@ type urgentResponse struct {
 //     change d'avis d'un appel à l'autre n'est pas un filtre ;
 //   - la synthèse (assistant.Tasks) fait ce qu'aucune règle ne sait faire :
 //     reconnaître que trois messages parlent du même sujet, écarter ce qui
-//     n'attend aucune action, et nommer ce qui reste en six mots.
+//     n'attend aucune action, et nommer ce qui reste en six mots ;
+//   - le tamis final retire ce qu'il a déjà déclaré traité. Il vient APRÈS le
+//     modèle et pas avant, parce qu'une tâche n'existe qu'une fois nommée :
+//     c'est le regroupement par sujet qui décide de ce qu'on écarte, et trois
+//     mails sur le même devis se traitent d'un seul « c'est fait ».
 //
 // L'appel au modèle est mis en cache sur l'empreinte des messages : tant que
 // rien de neuf n'est arrivé, la liste ne peut pas avoir changé.
-func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
-	user := userFrom(r.Context())
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-
+func (s *Server) urgentList(ctx context.Context, user *store.User, refresh bool) (urgentResponse, error) {
 	tb := s.toolbox(user)
 	src := s.sources(ctx, user)
 
@@ -128,8 +171,7 @@ func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
 
 	retained := triage.Merge(urgentMessages, fromMail, fromChat, fromWhatsApp)
 	if len(retained) == 0 {
-		httpx.JSON(w, http.StatusOK, out)
-		return
+		return out, nil
 	}
 
 	messages := make([]assistant.MessageView, 0, len(retained))
@@ -141,17 +183,17 @@ func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
 			Extrait: item.Apercu,
 			Quand:   tb.when(item.Quand),
 			Motif:   motif(item.Motif),
+			Fil:     item.Fil,
 		})
 	}
 
 	print := fingerprint(retained)
 	cached, err := s.store.LatestTasks(ctx, user.ID)
 	fresh := err == nil && cached.Fingerprint == print && time.Since(cached.GeneratedAt) < tasksMaxAge
-	if fresh && r.URL.Query().Get("refresh") == "" {
+	if fresh && !refresh {
 		if err := json.Unmarshal([]byte(cached.Payload), &out.Taches); err == nil {
 			out.GeneratedAt = cached.GeneratedAt
-			httpx.JSON(w, http.StatusOK, out)
-			return
+			return s.sift(ctx, user, out), nil
 		}
 		// Cache illisible (format d'une version précédente) : on régénère.
 	}
@@ -167,21 +209,76 @@ func (s *Server) handleUrgent(w http.ResponseWriter, r *http.Request) {
 		if cached != nil {
 			if err := json.Unmarshal([]byte(cached.Payload), &out.Taches); err == nil {
 				out.GeneratedAt = cached.GeneratedAt
-				httpx.JSON(w, http.StatusOK, out)
-				return
+				return s.sift(ctx, user, out), nil
 			}
 		}
-		httpx.Error(w, http.StatusBadGateway, "liste à traiter indisponible")
-		return
+		return out, errors.New("liste à traiter indisponible")
 	}
 
 	if tasks != nil {
 		out.Taches = tasks
 	}
+	// L'identifiant est posé avant la mise en cache : une tâche relue du cache
+	// doit porter le même que le jour où elle a été produite, sinon l'app
+	// perdrait la sélection en cours à chaque relecture.
+	for i := range out.Taches {
+		out.Taches[i].ID = taskKey(out.Taches[i])
+	}
 	if payload, err := json.Marshal(out.Taches); err == nil {
 		_ = s.store.SaveTasks(ctx, user.ID, string(payload), print)
 	}
-	httpx.JSON(w, http.StatusOK, out)
+	return s.sift(ctx, user, out), nil
+}
+
+// sift retire les tâches déjà déclarées traitées, et pose l'identifiant de
+// celles qui n'en auraient pas (listes mises en cache avant son existence).
+//
+// Une erreur de lecture ne fait rien échouer : au pire une ligne réapparaît, ce
+// qui se corrige d'un mot, alors qu'un écran vide sur une panne de base se
+// lirait comme « tu n'as rien à faire ».
+func (s *Server) sift(ctx context.Context, user *store.User, out urgentResponse) urgentResponse {
+	done, err := s.store.DismissedUrgents(ctx, user.ID)
+	if err != nil {
+		slog.Warn("urgences : traitées illisibles", "err", err)
+		done = nil
+	}
+	kept := make([]assistant.TaskView, 0, len(out.Taches))
+	for _, t := range out.Taches {
+		if t.ID == "" {
+			t.ID = taskKey(t)
+		}
+		if done[t.ID] {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	out.Taches = kept
+	return out
+}
+
+// taskKey identifie une tâche par ses sources, jamais par son libellé.
+//
+// Le modèle reformule « Répondre au mail de Westent » en « Répondre à Westent
+// sur le devis » d'une génération à l'autre sans que rien n'ait bougé ; les
+// sources, elles, lui sont données et il les recopie. Une tâche écartée reste
+// donc écartée même si la phrase qui la nomme a changé.
+//
+// Sans source — le cas ne devrait pas exister, le schéma l'exige — on retombe
+// sur le libellé : un identifiant fragile vaut mieux que pas d'identifiant.
+func taskKey(t assistant.TaskView) string {
+	h := sha256.New()
+	if len(t.Sources) == 0 {
+		h.Write([]byte(t.Action))
+	}
+	for _, src := range t.Sources {
+		h.Write([]byte(src.Origine))
+		h.Write([]byte{0})
+		h.Write([]byte(src.De))
+		h.Write([]byte{0})
+		h.Write([]byte(src.Titre))
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // motif met en mots la raison pour laquelle le tri a retenu un message.
@@ -272,6 +369,7 @@ func toTriageMail(m gandi.Message) triage.Mail {
 		Pour:       m.To,
 		Copie:      m.Cc,
 		Diffusion:  m.Bulk,
+		DansUnFil:  len(m.InReplyTo) > 0,
 		RepondAToi: m.AnswersYou,
 	}
 }

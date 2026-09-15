@@ -56,6 +56,14 @@ func (s *Store) emailDrafts() *mongo.Collection { return s.db.Collection("email_
 func (s *Store) taskLists() *mongo.Collection   { return s.db.Collection("task_lists") }
 func (s *Store) todos() *mongo.Collection       { return s.db.Collection("todos") }
 
+// urgentDismissals garde ce que l'utilisateur a déclaré traité. Les entrées
+// s'effacent seules au bout d'une semaine (index TTL) : passé ce délai, le
+// message qui les avait produites a forcément quitté les non-lus, et une
+// dispense de réapparition n'a plus rien à dispenser.
+func (s *Store) urgentDismissals() *mongo.Collection {
+	return s.db.Collection("urgent_dismissals")
+}
+
 func (s *Store) ensureIndexes(ctx context.Context) error {
 	// Un builder d'options par index : le driver mémorise le nom auto-généré,
 	// donc partager la même instance ferait porter le nom du premier index à
@@ -92,6 +100,14 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
 		{s.todos(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "done", Value: 1}, {Key: "due", Value: 1}}}},
+		{s.urgentDismissals(), mongo.IndexModel{
+			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "key", Value: 1}},
+			Options: unique(),
+		}},
+		{s.urgentDismissals(), mongo.IndexModel{
+			Keys:    bson.D{{Key: "dismissed_at", Value: 1}},
+			Options: options.Index().SetExpireAfterSeconds(int32(dismissalTTL / time.Second)),
+		}},
 	}
 	for _, spec := range specs {
 		if _, err := spec.col.Indexes().CreateOne(ctx, spec.model); err != nil {
@@ -587,6 +603,46 @@ func (s *Store) LatestTasks(ctx context.Context, userID bson.ObjectID) (*TaskLis
 		return nil, ErrNotFound
 	}
 	return &t, err
+}
+
+// dismissalTTL : durée de vie d'une urgence écartée. Une semaine couvre
+// largement le délai entre « j'ai répondu » et la disparition du message des
+// non-lus, sans garder indéfiniment des empreintes qui ne correspondent plus à
+// rien.
+const dismissalTTL = 7 * 24 * time.Hour
+
+// DismissUrgent note qu'une urgence a été traitée. Idempotent : le redire ne
+// fait que repousser l'expiration.
+func (s *Store) DismissUrgent(ctx context.Context, userID bson.ObjectID, key, action string) error {
+	if key == "" {
+		return nil
+	}
+	_, err := s.urgentDismissals().UpdateOne(ctx,
+		bson.M{"user_id": userID, "key": key},
+		bson.M{"$set": bson.M{"action": action, "dismissed_at": time.Now()}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	return err
+}
+
+// DismissedUrgents rend les empreintes des urgences déjà traitées.
+//
+// Une erreur de lecture ne doit pas faire échouer la liste : l'appelant reçoit
+// un ensemble vide, et le pire qui puisse arriver est qu'une ligne réapparaisse.
+func (s *Store) DismissedUrgents(ctx context.Context, userID bson.ObjectID) (map[string]bool, error) {
+	cur, err := s.urgentDismissals().Find(ctx, bson.M{"user_id": userID})
+	if err != nil {
+		return nil, err
+	}
+	var rows []UrgentDismissal
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		out[r.Key] = true
+	}
+	return out, nil
 }
 
 // SearchInteractions retrouve des échanges passés par leur contenu.

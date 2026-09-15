@@ -32,6 +32,9 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		t.Fatalf("désérialisation : %v\npayload: %s", err, raw)
 	}
 
+	// Les outils qui ne prennent légitimement aucun paramètre.
+	noArgs := map[string]bool{"point_urgences": true}
+
 	want := map[string][]string{
 		"consulter_calendrier":       {"debut", "fin"},
 		"mails_non_lus":              nil,
@@ -51,6 +54,9 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"terminer_tache":             {"recherche"},
 		"reprogrammer_tache":         {"recherche"},
 		"supprimer_tache":            {"recherche"},
+		"point_urgences":             nil,
+		"ouvrir_urgence":             {"laquelle"},
+		"urgence_traitee":            {"laquelle"},
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("attendu %d outils, obtenu %d", len(want), len(tools))
@@ -71,7 +77,11 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		if tool.Parameters.Type != "object" {
 			t.Errorf("%s : schéma de type %q, attendu \"object\"", tool.Name, tool.Parameters.Type)
 		}
-		if len(tool.Parameters.Properties) == 0 {
+		// Un schéma vide est légitime pour un outil qui ne prend rien —
+		// « fais le point » n'a pas de paramètre. Ailleurs, c'est le signe d'un
+		// schéma oublié, et le modèle appellerait l'outil sans savoir quoi lui
+		// passer : on distingue donc les deux au lieu de tout autoriser.
+		if len(tool.Parameters.Properties) == 0 && !noArgs[tool.Name] {
 			t.Errorf("%s : aucune propriété déclarée", tool.Name)
 		}
 		for _, field := range required {
