@@ -7,9 +7,16 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-// Longueur d'un extrait conservé. Au-delà, on garde le début : ce qui compte
-// pour décider s'il faut ouvrir la conversation tient dans les premières lignes.
-const maxBody = 400
+// Longueur d'un message conservé. C'est l'archive, pas un aperçu : WhatsApp ne
+// garde rien côté serveur, et ce qui est coupé ici est perdu pour toujours. Un
+// long message qui explique une décision doit arriver entier au moment où l'on
+// demande un débrief — à 400 caractères, on en gardait la première phrase.
+const maxBody = 4000
+
+// maxQuoted : longueur de l'extrait cité quand un message répond à un autre.
+// Assez pour savoir à quoi il répond, pas pour recopier le message d'origine,
+// qui est de toute façon dans l'archive.
+const maxQuoted = 240
 
 // content lit un message chiffré et rend ce qu'il faut en garder : son texte,
 // sa nature, et les personnes qu'il cite.
@@ -74,6 +81,31 @@ func content(msg *waE2E.Message) (body, kind string, ctx *waE2E.ContextInfo) {
 		return withCaption("événement", m.GetName()), "événement", m.GetContextInfo()
 	}
 	return "", "", nil
+}
+
+// quotedContext rend « ↪ en réponse à Cyril : « … » » quand le message cite un
+// message précédent.
+//
+// Sans ça, « oui, go pour jeudi » ne dit pas à quoi on dit oui. Dans un groupe
+// animé, la réponse arrive souvent vingt messages après la question : un modèle
+// qui ne voit que la réponse la rattache au message juste au-dessus, et le
+// débrief attribue la décision au mauvais sujet.
+func quotedContext(ctx *waE2E.ContextInfo, who string) string {
+	if ctx == nil || ctx.GetQuotedMessage() == nil {
+		return ""
+	}
+	body, _, _ := content(ctx.GetQuotedMessage())
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	if r := []rune(body); len(r) > maxQuoted {
+		body = string(r[:maxQuoted]) + "…"
+	}
+	if who == "" {
+		return "↪ en réponse à « " + body + " »"
+	}
+	return "↪ en réponse à " + who + " : « " + body + " »"
 }
 
 // withCaption assemble la nature du message et la légende qui l'accompagne :

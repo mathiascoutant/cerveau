@@ -39,9 +39,10 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		store:  st,
 		cipher: cipher,
 		wa:     wa,
-		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort),
-		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
-		tts:    tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
+		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort).
+			WithDeep(cfg.OpenAIDeepModel, cfg.OpenAIDeepEffort),
+		stt: stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
+		tts: tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),
@@ -66,7 +67,13 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/oauth/slack/callback", s.handleSlackOAuthCallback)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		// Pas de login : l'app poste son identifiant d'appareil et reçoit un token.
+		// Connexion par compte : le token revient pour cet appareil, et tout
+		// ce qui est branché sur le compte le suit d'un téléphone à l'autre.
+		r.Post("/auth/login", s.handleLogin)
+		r.Post("/auth/signup", s.handleSignup)
+
+		// Héritage : l'app d'avant les comptes s'identifiait par son appareil.
+		// Gardé pour qu'elle ne soit pas coupée avant sa mise à jour.
 		r.Post("/session", s.handleSession)
 
 		// Hors du groupe authentifié : le lecteur audio natif ne sait pas
@@ -77,6 +84,7 @@ func (s *Server) Routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireUser)
 
+			r.Post("/auth/logout", s.handleLogout)
 			r.Get("/me", s.handleMe)
 			r.Patch("/me", s.handleUpdateMe)
 			r.Get("/status", s.handleStatus)

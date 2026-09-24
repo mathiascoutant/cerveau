@@ -157,9 +157,12 @@ type SlackChannelView struct {
 }
 
 type SlackMessageView struct {
-	Auteur string `json:"auteur"`
-	Texte  string `json:"texte"`
-	Quand  string `json:"quand"`
+	Auteur   string   `json:"auteur"`
+	Texte    string   `json:"texte"`
+	Quand    string   `json:"quand"`
+	Fichiers []string `json:"fichiers,omitempty"`
+	// Fil : les réponses données dans le fil du message, dans l'ordre.
+	Fil []SlackMessageView `json:"reponses_dans_le_fil,omitempty"`
 }
 
 // WhatsAppView est une conversation WhatsApp avec ce qui n'y a pas été lu.
@@ -373,6 +376,9 @@ type Engine struct {
 	client openai.Client
 	model  shared.ResponsesModel
 	effort shared.ReasoningEffort
+	// deepModel et deepEffort servent au débrief — voir debrief.go.
+	deepModel  shared.ResponsesModel
+	deepEffort shared.ReasoningEffort
 }
 
 // New construit le moteur. `effort` pilote le budget de raisonnement :
@@ -454,7 +460,16 @@ func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, erro
 		}
 
 		for _, call := range calls {
-			payload, action, err := e.runTool(ctx, tb, loc, call.Name, call.Arguments)
+			var (
+				payload string
+				action  *store.Action
+				err     error
+			)
+			if call.Name == "debriefer" {
+				payload, err = e.debrief(ctx, tb, req, now, loc, call.Arguments)
+			} else {
+				payload, action, err = e.runTool(ctx, tb, loc, call.Name, call.Arguments)
+			}
 			if action != nil {
 				result.Actions = append(result.Actions, *action)
 			}
@@ -1189,6 +1204,32 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		)
 	}
 
+	if src.Mail || src.Slack || src.WhatsApp {
+		var sources []string
+		if src.Mail {
+			sources = append(sources, "mail")
+		}
+		if src.Slack {
+			sources = append(sources, "slack")
+		}
+		if src.WhatsApp {
+			sources = append(sources, "whatsapp")
+		}
+		tools = append(tools, tool(
+			"debriefer",
+			"Fait le débrief approfondi d'un mail ou d'une conversation : lit tout le fil (jusqu'à cent messages, réponses dans les fils et messages cités compris) et le confie à une lecture attentive qui reconstitue le sujet, qui a dit quoi, ce qui est décidé, ce qui reste ouvert et ce qu'on attend de lui. À utiliser dès qu'il demande un débrief, un résumé, une explication, « ce qui se passe », « où ça en est » ou « ce qu'on attend de moi » sur un mail ou une conversation. Le nom se passe comme pour les outils de lecture — tel qu'il l'a dit — et les demandes de confirmation ou d'ambiguïté se traitent de la même façon. Renvoie L'ESSENTIEL à restituer et LES DÉTAILS à garder pour la suite.",
+			object(map[string]any{
+				"source": map[string]any{
+					"type":        "string",
+					"enum":        sources,
+					"description": "Où se trouve ce qu'il faut débriefer.",
+				},
+				"cible":    str("Pour un mail : expéditeur ou fragment d'objet (vide = le plus récent). Pour une conversation : son nom tel qu'il l'a prononcé — ou, après une demande de confirmation, le nom exact rendu par l'outil."),
+				"question": str("Sa demande telle qu'il l'a formulée, s'il vise quelque chose de précis (« qu'est-ce qu'ils attendent de moi », « on en est où sur le devis »). Vide pour un débrief général."),
+			}, "source", "cible"),
+		))
+	}
+
 	// Les urgences n'existent que s'il y a une messagerie à trier. Sans aucune
 	// source branchée, la liste serait vide par construction, et un outil qui ne
 	// peut rien rendre est un outil que le modèle finira par appeler pour rien.
@@ -1620,7 +1661,7 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 		only(src.Slack, ", « ça raconte quoi sur le canal projet »"),
 		only(src.Slack, "Un fil Slack ne se déroule pas message par message : tu dis où en est la conversation, qui a dit quoi qui compte, et ce qui l'attend.\n\n"),
 		identity,
-		only(src.Slack || src.WhatsApp, conversationRules),
+		only(src.Slack || src.WhatsApp, conversationRules)+only(src.Mail || src.Slack || src.WhatsApp, debriefRules),
 		urgentRules(src),
 		memoryBlock(facts),
 		memoryRules,

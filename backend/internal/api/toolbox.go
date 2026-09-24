@@ -243,11 +243,19 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 	}
 	out := assistant.SlackChannelView{Canal: label}
 	for _, m := range messages {
-		out.Messages = append(out.Messages, assistant.SlackMessageView{
-			Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand),
-		})
+		out.Messages = append(out.Messages, t.slackMessage(m))
 	}
 	return out, nil
+}
+
+func (t *userToolbox) slackMessage(m slack.Message) assistant.SlackMessageView {
+	v := assistant.SlackMessageView{
+		Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers,
+	}
+	for _, r := range m.Fil {
+		v.Fil = append(v.Fil, t.slackMessage(r))
+	}
+	return v
 }
 
 // whatsAppThreads rend les conversations non lues telles que le journal les

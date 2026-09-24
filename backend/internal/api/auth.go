@@ -14,20 +14,19 @@ type ctxKey string
 
 const userCtxKey ctxKey = "cerveau.user"
 
-// requireUser résout l'utilisateur à partir du token d'appareil. Il n'y a pas de
-// mot de passe : le token est émis une fois pour toutes au premier lancement et
-// stocké dans le Keychain iOS.
+// requireUser résout l'utilisateur à partir du token de session, émis à la
+// connexion par adresse et mot de passe et gardé dans le Keychain iOS.
 func (s *Server) requireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearer(r)
 		if token == "" {
-			httpx.Error(w, http.StatusUnauthorized, "token d'appareil manquant")
+			httpx.Error(w, http.StatusUnauthorized, "non connecté")
 			return
 		}
-		user, err := s.store.UserByToken(r.Context(), token)
+		user, err := s.store.UserBySession(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				httpx.Error(w, http.StatusUnauthorized, "appareil inconnu, relancez l'initialisation")
+				httpx.Error(w, http.StatusUnauthorized, "session expirée, reconnecte-toi")
 				return
 			}
 			httpx.Error(w, http.StatusInternalServerError, "erreur d'authentification")

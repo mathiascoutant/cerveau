@@ -20,6 +20,10 @@ type Config struct {
 	// Effort de raisonnement : none/minimal/low/medium/high. « low » est le bon
 	// compromis pour du vocal, où la latence compte autant que la finesse.
 	OpenAIEffort string
+	// Modèle et effort du débrief approfondi (voir assistant/debrief.go). Vides,
+	// gpt-5.4 en effort medium.
+	OpenAIDeepModel  string
+	OpenAIDeepEffort string
 
 	// Speech-to-text (endpoint compatible OpenAI /v1/audio/transcriptions :
 	// soit api.openai.com, soit un whisper.cpp / faster-whisper auto-hébergé sur le VPS).
@@ -49,6 +53,9 @@ type Config struct {
 	PublicBaseURL string
 
 	DefaultTimezone string
+	// AllowSignup ouvre l'inscription depuis l'app. Fermée par défaut : chaque
+	// compte consomme les clés du serveur.
+	AllowSignup bool
 	// Prénom utilisé quand l'utilisateur n'en a pas encore enregistré depuis
 	// l'app. Pratique pour un déploiement mono-utilisateur.
 	DefaultUserName string
@@ -63,6 +70,8 @@ func Load() (Config, error) {
 		OpenAIAPIKey:       env("OPENAI_API_KEY", ""),
 		OpenAIModel:        env("OPENAI_MODEL", "gpt-5.4-mini"),
 		OpenAIEffort:       env("OPENAI_EFFORT", "low"),
+		OpenAIDeepModel:    env("OPENAI_DEEP_MODEL", ""),
+		OpenAIDeepEffort:   env("OPENAI_DEEP_EFFORT", ""),
 		STTBaseURL:         strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
 		STTAPIKey:          env("STT_API_KEY", ""),
 		STTModel:           env("STT_MODEL", "whisper-1"),
@@ -76,6 +85,7 @@ func Load() (Config, error) {
 		PublicBaseURL:      strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
 		DefaultTimezone:    env("DEFAULT_TIMEZONE", "Europe/Paris"),
 		DefaultUserName:    env("DEFAULT_USER_NAME", ""),
+		AllowSignup:        env("ALLOW_SIGNUP", "") == "true",
 	}
 
 	var missing []string

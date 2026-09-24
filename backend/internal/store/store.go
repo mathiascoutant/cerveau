@@ -43,6 +43,7 @@ func (s *Store) Close(ctx context.Context) error { return s.client.Disconnect(ct
 
 func (s *Store) users() *mongo.Collection       { return s.db.Collection("users") }
 func (s *Store) connections() *mongo.Collection { return s.db.Collection("connections") }
+func (s *Store) sessions() *mongo.Collection    { return s.db.Collection("sessions") }
 func (s *Store) events() *mongo.Collection      { return s.db.Collection("calendar_events") }
 func (s *Store) whatsapp() *mongo.Collection    { return s.db.Collection("whatsapp_messages") }
 func (s *Store) whatsappChats() *mongo.Collection {
@@ -69,13 +70,32 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	// donc partager la même instance ferait porter le nom du premier index à
 	// tous les suivants (et échouer avec IndexKeySpecsConflict).
 	unique := func() *options.IndexOptionsBuilder { return options.Index().SetUnique(true) }
+	partialUnique := func(field string) *options.IndexOptionsBuilder {
+		return options.Index().
+			SetName(field + "_partial").
+			SetUnique(true).
+			SetPartialFilterExpression(bson.M{field: bson.M{"$type": "string"}})
+	}
+
+	// Les index uniques d'origine sur device_id et token ne toléraient pas
+	// l'absence du champ. On les retire avant de poser leurs versions
+	// partielles ; sur une base neuve ils n'existent pas, d'où l'erreur ignorée.
+	for _, name := range []string{"device_id_1", "token_1"} {
+		_ = s.users().Indexes().DropOne(ctx, name)
+	}
 
 	specs := []struct {
 		col   *mongo.Collection
 		model mongo.IndexModel
 	}{
-		{s.users(), mongo.IndexModel{Keys: bson.D{{Key: "device_id", Value: 1}}, Options: unique()}},
-		{s.users(), mongo.IndexModel{Keys: bson.D{{Key: "token", Value: 1}}, Options: unique()}},
+		// Partiels plutôt qu'uniques tout court : un compte créé par adresse
+		// mail n'a ni device_id ni token hérité, et deux absences entreraient
+		// en collision sur un index unique ordinaire.
+		{s.users(), mongo.IndexModel{Keys: bson.D{{Key: "device_id", Value: 1}}, Options: partialUnique("device_id")}},
+		{s.users(), mongo.IndexModel{Keys: bson.D{{Key: "token", Value: 1}}, Options: partialUnique("token")}},
+		{s.users(), mongo.IndexModel{Keys: bson.D{{Key: "email", Value: 1}}, Options: partialUnique("email")}},
+		{s.sessions(), mongo.IndexModel{Keys: bson.D{{Key: "token", Value: 1}}, Options: unique()}},
+		{s.sessions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}}},
 		{s.connections(), mongo.IndexModel{
 			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "provider", Value: 1}},
 			Options: unique(),

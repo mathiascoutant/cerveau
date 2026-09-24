@@ -23,16 +23,19 @@ var ErrDisabled = errors.New("synthèse vocale non configurée (ELEVENLABS_API_K
 const (
 	defaultBaseURL = "https://api.elevenlabs.io/v1"
 
-	// DefaultVoiceID : « Eric », posé et sans aspérité. Les voix françaises de
-	// la Voice Library sonneraient mieux, mais l'API les refuse tant que le
-	// compte est en gratuit. N'importe quel identifiant peut le remplacer via
-	// ELEVENLABS_VOICE_ID.
-	DefaultVoiceID = "cjVigY5qzO86Huf0OWal"
+	// DefaultVoiceID : « Daniel », la voix britannique posée qu'on prête à
+	// JARVIS. Le projet Jarvis (github.com/sosoj92/jarvis-assistant-vocal) ne
+	// fige aucune voix — il prend celle qu'on lui donne, sinon la première du
+	// compte ElevenLabs — mais son timbre de référence est celui-là. Les voix
+	// françaises de la Voice Library sonneraient plus justes, mais l'API les
+	// refuse (402) tant que le compte est en gratuit. ELEVENLABS_VOICE_ID la
+	// remplace.
+	DefaultVoiceID = "onwK4e9ZLuTAKqWW03F9"
 
-	// DefaultModel : turbo répond en ~250 ms là où multilingual_v2 demande
-	// plus d'une seconde, pour une qualité très proche. Sur un assistant qu'on
-	// interroge à la voix, ce délai s'entend davantage que la nuance de timbre.
-	DefaultModel = "eleven_turbo_v2_5"
+	// DefaultModel : flash v2.5, comme Jarvis. Premier son en ~75 ms, le plus
+	// rapide d'ElevenLabs — sur un assistant qu'on interroge à la voix, le
+	// délai s'entend davantage que la nuance de timbre.
+	DefaultModel = "eleven_flash_v2_5"
 
 	// DefaultLanguage : la langue imposée au modèle.
 	//
@@ -109,13 +112,9 @@ func (c *Client) Speak(ctx context.Context, text string) (io.ReadCloser, error) 
 	body := map[string]any{
 		"text":     text,
 		"model_id": c.model,
-		// stability basse = intonation plus variée, donc moins récitée ;
-		// trop basse, la voix part en vrille sur les phrases courtes.
-		"voice_settings": map[string]any{
-			"stability":         0.45,
-			"similarity_boost":  0.8,
-			"use_speaker_boost": true,
-		},
+		// Pas de voice_settings, comme Jarvis : la voix garde les réglages
+		// enregistrés avec elle chez ElevenLabs, ceux qui la font sonner comme
+		// sur sa fiche. Les surcharger, c'est entendre une autre voix.
 	}
 	if c.forcesLanguage() {
 		body["language_code"] = c.language

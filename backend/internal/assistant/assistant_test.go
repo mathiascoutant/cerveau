@@ -59,6 +59,7 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"point_urgences":             nil,
 		"ouvrir_urgence":             {"laquelle"},
 		"urgence_traitee":            {"laquelle"},
+		"debriefer":                  {"source", "cible"},
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("attendu %d outils, obtenu %d", len(want), len(tools))

@@ -209,6 +209,17 @@ func (s *session) convert(ctx context.Context, e *events.Message) (Message, bool
 	if !e.Info.IsFromMe {
 		sender = s.contactName(ctx, e.Info.Sender, e.Info.PushName)
 	}
+	if info != nil && info.GetQuotedMessage() != nil {
+		who := ""
+		if p := info.GetParticipant(); p != "" {
+			if jid, err := types.ParseJID(p); err == nil {
+				who = s.quotedAuthor(ctx, jid)
+			}
+		}
+		if q := quotedContext(info, who); q != "" {
+			body = q + "\n" + body
+		}
+	}
 	return Message{
 		ID:        e.Info.ID,
 		ChatJID:   e.Info.Chat.String(),
@@ -388,6 +399,17 @@ func (s *session) groupName(ctx context.Context, jid types.JID) string {
 // puis le nom que la personne s'est donné, et en dernier recours le numéro. Un
 // identifiant brut ne doit jamais ressortir — « 33612345678 t'a écrit » ne
 // s'écoute pas.
+// quotedAuthor nomme l'auteur d'un message cité — « toi » quand c'est
+// l'utilisateur, puisque c'est ainsi que l'archive le désigne partout ailleurs.
+func (s *session) quotedAuthor(ctx context.Context, jid types.JID) string {
+	for _, me := range s.identities() {
+		if jid.User == me.User {
+			return "toi"
+		}
+	}
+	return s.contactName(ctx, jid, "")
+}
+
 func (s *session) contactName(ctx context.Context, jid types.JID, pushName string) string {
 	if s.client.Store != nil && s.client.Store.Contacts != nil {
 		if c, err := s.client.Store.Contacts.GetContact(ctx, jid.ToNonAD()); err == nil && c.Found {

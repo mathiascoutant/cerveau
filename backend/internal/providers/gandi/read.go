@@ -18,20 +18,23 @@ import (
 	_ "github.com/emersion/go-message/charset"
 )
 
-// Longueur maximale du corps rendu à l'assistant. Un mail se lit à voix haute :
-// au-delà ce n'est plus une lecture, c'est une punition — le modèle résumera.
-const maxBodyRunes = 4000
+// Longueur maximale du corps rendu à l'assistant. Large à dessein : ce n'est pas
+// ce qui sera lu à voix haute — le modèle résume — mais ce qu'il doit avoir
+// compris pour résumer juste. Un mail coupé au tiers fait débriefer une
+// demande sans ses conditions.
+const maxBodyRunes = 12000
 
 // Nombre de mails récents inspectés quand on cherche par expéditeur ou objet.
 const searchDepth = 40
 
-// Messages antérieurs du fil rapatriés en plus du mail demandé. Trois suffisent
-// à savoir de quoi on parle et comment les gens s'appellent ; au-delà on paie
-// des allers-retours IMAP pour du contexte que personne ne relira.
-const maxThreadMessages = 3
+// Messages antérieurs du fil rapatriés en plus du mail demandé. Un débrief doit
+// pouvoir dire qui a demandé quoi et ce qui a déjà été répondu : avec trois
+// messages, le fil commençait souvent au milieu de la négociation.
+const maxThreadMessages = 8
 
-// Longueur d'un message antérieur. Il situe la conversation, il ne se lit pas.
-const maxThreadRunes = 600
+// Longueur d'un message antérieur : assez pour qu'une réponse argumentée
+// arrive entière, sans laisser un seul vieux mail dévorer le contexte.
+const maxThreadRunes = 2500
 
 // Read renvoie un mail avec son contenu.
 //

@@ -61,8 +61,9 @@ func TestSpeakRequest(t *testing.T) {
 	if body["model_id"] != DefaultModel {
 		t.Errorf("modèle transmis : %v", body["model_id"])
 	}
-	if _, ok := body["voice_settings"].(map[string]any); !ok {
-		t.Errorf("voice_settings absent du corps : %v", body)
+	// Comme Jarvis : la voix garde ses propres réglages.
+	if _, ok := body["voice_settings"]; ok {
+		t.Errorf("voice_settings ne doit pas surcharger la voix : %v", body)
 	}
 	// Le champ qui empêche « Slack » ou « airwing » de faire basculer toute la
 	// phrase en diction anglaise.

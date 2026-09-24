@@ -30,7 +30,25 @@ type Message struct {
 	Auteur string    `json:"auteur"`
 	Texte  string    `json:"texte"`
 	Quand  time.Time `json:"quand"`
+	// Fichiers : les pièces jointes, par leur nom. « Il a envoyé le devis »
+	// ne se comprend pas si le devis n'apparaît nulle part.
+	Fichiers []string `json:"fichiers,omitempty"`
+	// Fil : les réponses données dans le fil de ce message. Sur Slack, la
+	// discussion se tient souvent là, et l'historique du canal n'en montre que
+	// la question — lire le canal sans ses fils, c'est lire la moitié des
+	// échanges et en tirer des conclusions sur l'autre moitié.
+	Fil []Message `json:"fil,omitempty"`
 }
+
+// Longueurs retenues à la lecture. Assez pour qu'un message argumenté arrive
+// entier : couper au milieu d'une explication, c'est garder la question et
+// perdre la réponse.
+const (
+	maxReadText     = 3000
+	maxThreadsRead  = 10
+	maxRepliesRead  = 30
+	maxReplyTextLen = 1500
+)
 
 // ListConversations énumère ce à quoi l'utilisateur a accès.
 func (c *Client) ListConversations(ctx context.Context) ([]Conversation, error) {
@@ -107,12 +125,7 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 
 	var hist struct {
 		apiResponse
-		Messages []struct {
-			User    string `json:"user"`
-			Text    string `json:"text"`
-			Subtype string `json:"subtype"`
-			TS      string `json:"ts"`
-		} `json:"messages"`
+		Messages []rawMessage `json:"messages"`
 	}
 	err = c.call(ctx, "conversations.history", url.Values{
 		"channel": {target.ID},
@@ -123,21 +136,93 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 	}
 
 	out := make([]Message, 0, len(hist.Messages))
+	threads := 0
 	for _, m := range hist.Messages {
-		if m.Subtype != "" || strings.TrimSpace(m.Text) == "" {
+		msg, ok := c.toMessage(ctx, m, maxReadText)
+		if !ok {
 			continue
 		}
-		author := "un bot"
-		if m.User != "" {
-			author = c.userName(ctx, m.User)
+		// Les fils les plus récents d'abord : l'historique arrive du plus
+		// récent au plus ancien, et c'est là que se joue ce qu'on demande.
+		if m.ReplyCount > 0 && threads < maxThreadsRead {
+			threads++
+			msg.Fil = c.threadReplies(ctx, target.ID, m.TS)
 		}
-		out = append(out, Message{
-			Auteur: author,
-			Texte:  truncate(c.renderText(ctx, m.Text), 400),
-			Quand:  parseSlackTS(m.TS),
-		})
+		out = append(out, msg)
 	}
 	return label, out, nil
+}
+
+type rawMessage struct {
+	User       string `json:"user"`
+	Text       string `json:"text"`
+	Subtype    string `json:"subtype"`
+	TS         string `json:"ts"`
+	ThreadTS   string `json:"thread_ts"`
+	ReplyCount int    `json:"reply_count"`
+	Files      []struct {
+		Name  string `json:"name"`
+		Title string `json:"title"`
+	} `json:"files"`
+}
+
+func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int) (Message, bool) {
+	// file_share et thread_broadcast portent un vrai message ; les autres
+	// sous-types (arrivées, départs, changements de sujet) ne sont que du bruit.
+	if m.Subtype != "" && m.Subtype != "file_share" && m.Subtype != "thread_broadcast" {
+		return Message{}, false
+	}
+	var files []string
+	for _, f := range m.Files {
+		name := f.Title
+		if name == "" {
+			name = f.Name
+		}
+		if name != "" {
+			files = append(files, name)
+		}
+	}
+	if strings.TrimSpace(m.Text) == "" && len(files) == 0 {
+		return Message{}, false
+	}
+	author := "un bot"
+	if m.User != "" {
+		author = c.userName(ctx, m.User)
+	}
+	return Message{
+		Auteur:   author,
+		Texte:    truncate(c.renderText(ctx, m.Text), maxLen),
+		Quand:    parseSlackTS(m.TS),
+		Fichiers: files,
+	}, true
+}
+
+// threadReplies lit les réponses d'un fil, sans le message d'origine (déjà
+// présent dans l'historique). Un fil illisible n'empêche pas de rendre le
+// canal : on le laisse vide plutôt que d'échouer.
+func (c *Client) threadReplies(ctx context.Context, channel, ts string) []Message {
+	var resp struct {
+		apiResponse
+		Messages []rawMessage `json:"messages"`
+	}
+	err := c.call(ctx, "conversations.replies", url.Values{
+		"channel": {channel},
+		"ts":      {ts},
+		"limit":   {fmt.Sprintf("%d", maxRepliesRead+1)},
+	}, &resp)
+	if err != nil {
+		return nil
+	}
+	out := make([]Message, 0, len(resp.Messages))
+	for _, m := range resp.Messages {
+		if m.TS == ts {
+			continue
+		}
+		if msg, ok := c.toMessage(ctx, m, maxReplyTextLen); ok {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 func (c *Client) rawConversations(ctx context.Context) ([]conversation, error) {

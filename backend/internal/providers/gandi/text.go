@@ -109,8 +109,8 @@ var (
 // Bornes du fil cité : au-delà on garde du texte que personne ne relira, et le
 // contexte utile est toujours dans les messages les plus récents.
 const (
-	maxQuotedMessages = 6
-	maxQuotedBody     = 900
+	maxQuotedMessages = 10
+	maxQuotedBody     = 2500
 )
 
 // isForwardHeader dit si la ligne i ouvre un bloc d'en-têtes recopié.

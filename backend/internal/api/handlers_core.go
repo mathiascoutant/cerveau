@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -23,8 +24,10 @@ type sessionResponse struct {
 	New      bool   `json:"new"`
 }
 
-// handleSession remplace le couple login/register : l'app envoie l'identifiant
-// unique généré à l'installation, le serveur crée le compte s'il n'existe pas.
+// handleSession est l'ancienne ouverture de session par identifiant d'appareil.
+// Elle ne sert plus qu'à l'app d'avant les comptes, et ne crée plus personne :
+// un appareil inconnu doit se connecter avec une adresse et un mot de passe —
+// sinon n'importe qui connaissant l'URL se fabriquerait un compte anonyme.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	var req sessionRequest
 	if err := httpx.Decode(r, &req); err != nil {
@@ -40,6 +43,10 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		req.Timezone = s.cfg.DefaultTimezone
 	}
 
+	if _, err := s.store.UserByDevice(r.Context(), req.DeviceID); errors.Is(err, store.ErrNotFound) {
+		httpx.Error(w, http.StatusUnauthorized, "connecte-toi avec ton compte")
+		return
+	}
 	user, err := s.store.EnsureUser(r.Context(), req.DeviceID, req.Timezone)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "impossible d'initialiser l'appareil")
@@ -71,6 +78,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]any{
+		"email":    user.Email,
 		"name":     user.Name,
 		"timezone": user.Timezone,
 		"since":    user.CreatedAt,

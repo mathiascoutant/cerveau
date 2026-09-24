@@ -14,15 +14,36 @@ const (
 	ProviderCalendar = "calendar"
 )
 
-// User : pas de login, pas de mot de passe. L'identité c'est l'appareil.
+// User : un compte. L'identité, c'est l'adresse mail et le mot de passe — pas
+// l'appareil : tout ce qui est branché (Gandi, Slack, WhatsApp) est rattaché au
+// compte, et se retrouve tel quel en se connectant depuis un autre téléphone.
+//
+// DeviceID et Token sont l'héritage des premières versions, où l'appareil
+// tenait lieu d'identité. Ils restent lus pour que l'app déjà installée ne
+// perde pas sa session avant d'avoir été mise à jour ; les nouvelles sessions
+// vivent dans la collection sessions, une par appareil connecté.
 type User struct {
-	ID        bson.ObjectID `bson:"_id,omitempty" json:"id"`
-	DeviceID  string        `bson:"device_id" json:"device_id"`
-	Token     string        `bson:"token" json:"-"`
-	Name      string        `bson:"name,omitempty" json:"name,omitempty"`
-	Timezone  string        `bson:"timezone" json:"timezone"`
-	CreatedAt time.Time     `bson:"created_at" json:"created_at"`
-	LastSeen  time.Time     `bson:"last_seen" json:"last_seen"`
+	ID       bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	DeviceID string        `bson:"device_id,omitempty" json:"-"`
+	Token    string        `bson:"token,omitempty" json:"-"`
+	// Email est toujours stocké en minuscules : c'est la clé de connexion.
+	Email        string    `bson:"email,omitempty" json:"email,omitempty"`
+	PasswordHash []byte    `bson:"password_hash,omitempty" json:"-"`
+	Name         string    `bson:"name,omitempty" json:"name,omitempty"`
+	Timezone     string    `bson:"timezone" json:"timezone"`
+	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
+	LastSeen     time.Time `bson:"last_seen" json:"last_seen"`
+}
+
+// Session : un appareil connecté à un compte. Une par téléphone, pour qu'une
+// déconnexion sur l'un ne déconnecte pas les autres.
+type Session struct {
+	ID        bson.ObjectID `bson:"_id,omitempty"`
+	UserID    bson.ObjectID `bson:"user_id"`
+	Token     string        `bson:"token"`
+	Device    string        `bson:"device,omitempty"`
+	CreatedAt time.Time     `bson:"created_at"`
+	LastSeen  time.Time     `bson:"last_seen"`
 }
 
 // Connection : un compte externe branché par l'utilisateur. Secret est chiffré.
