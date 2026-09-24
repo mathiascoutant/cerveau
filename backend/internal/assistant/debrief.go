@@ -166,7 +166,7 @@ func debriefPrompt(now time.Time, tz, userName string, facts []FactView, label, 
 
 COMMENT LIRE — c'est là que se font les erreurs
 
-1. QUI EST QUI. Les messages marqués de_toi, « toi » ou de son adresse sont les SIENS : ce qu'il a lui-même dit ou promis. Ne lui présente jamais ses propres messages comme ceux d'un autre. Repère les rôles (qui décide, qui demande, qui exécute) à partir de ce qu'ils écrivent et de ce qu'on sait déjà d'eux.
+1. QUI EST QUI. Les messages marqués de_toi, « toi » ou de son adresse sont les SIENS : ce qu'il a lui-même dit, demandé ou promis. Ne lui présente jamais ses propres messages comme ceux d'un autre — une question qu'il a posée n'est pas une question qu'on lui pose. Une mention (« @Xavier ») désigne à qui le message s'adresse ou de qui il parle, jamais son auteur : « dites-moi si c'est bloquant, pour @Xavier », écrit par lui, veut dire qu'il attend l'avis des autres pour donner le feu vert à Xavier. « @toi » le désigne lui. Repère les rôles (qui décide, qui demande, qui exécute) à partir de ce qu'ils écrivent et de ce qu'on sait déjà d'eux.
 
 2. RECOLLE LES RÉPONSES À LEURS QUESTIONS. Dans un groupe, la réponse arrive souvent dix messages après la question, et « ok », « go », « pareil » ne veulent rien dire seuls. Les marques « ↪ en réponse à » et les champs reponses_dans_le_fil disent exactement à quoi un message répond : c'est la vérité, fie-t'y plutôt qu'à l'ordre d'affichage. Sans marque, rattache au sujet le plus plausible — et si deux lectures se valent, dis-le.
 

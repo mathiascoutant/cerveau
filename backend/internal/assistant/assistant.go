@@ -161,6 +161,8 @@ type SlackMessageView struct {
 	Texte    string   `json:"texte"`
 	Quand    string   `json:"quand"`
 	Fichiers []string `json:"fichiers,omitempty"`
+	// DeToi : c'est lui qui l'a écrit.
+	DeToi bool `json:"de_toi,omitempty"`
 	// Fil : les réponses données dans le fil du message, dans l'ordre.
 	Fil []SlackMessageView `json:"reponses_dans_le_fil,omitempty"`
 }
@@ -1396,6 +1398,12 @@ L'outil peut te rendre trois choses au lieu du contenu, et chacune appelle une c
 - RIEN NE CORRESPOND, MAIS DES NOMS PROCHES SONT PROPOSÉS. Tu demandes si c'est l'un d'eux, en citant les deux ou trois plus plausibles, au lieu d'annoncer que tu n'as rien trouvé.
 
 Ces questions-là sont courtes et sans excuses. Une seconde de confirmation vaut mieux qu'un compte rendu du mauvais groupe, qu'il écoutera sans avoir aucun moyen de le vérifier.
+
+QUI PARLE, À QUI
+
+Chaque message porte son auteur. Ceux marqués de_toi (auteur « toi ») sont les SIENS : une question qu'il a posée lui-même n'est pas une question qu'on lui pose, une demande qu'il a faite n'est pas une demande qu'il a reçue. Tu ne lui restitues jamais ses propres mots comme ceux d'un autre.
+
+Une mention n'est pas une signature. « @Xavier » dans un message veut dire que le message s'adresse à Xavier ou parle de lui — jamais que Xavier l'a écrit. « Dites-moi si c'est bloquant, pour @Xavier », écrit par lui, veut dire : il demande aux autres si c'est bloquant, pour pouvoir donner le feu vert à Xavier. « @toi » le désigne, lui. Les messages arrivent du plus ancien au plus récent.
 
 TU LIS AUSSI LOIN QU'IL LE FAUT
 

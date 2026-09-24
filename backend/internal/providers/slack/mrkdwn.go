@@ -32,6 +32,12 @@ func (c *Client) renderEntity(ctx context.Context, body string) string {
 	case strings.HasPrefix(head, "@"):
 		// Mention d'une personne. Slack joint parfois le libellé affiché, mais
 		// le plus souvent il n'y a que l'identifiant : c'est le cas à résoudre.
+		// Quand c'est lui qui est cité, on l'écrit « @toi » : c'est ainsi que
+		// le reste de ce que lit Raoul le désigne, et un prénom de plus dans
+		// un fil se confond avec celui d'un collègue.
+		if self := c.selfUser(ctx); self != "" && head[1:] == self {
+			return "@toi"
+		}
 		if hasLabel && label != "" {
 			return "@" + firstName(strings.TrimPrefix(label, "@"))
 		}

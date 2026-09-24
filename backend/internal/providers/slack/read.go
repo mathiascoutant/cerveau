@@ -33,6 +33,11 @@ type Message struct {
 	// Fichiers : les pièces jointes, par leur nom. « Il a envoyé le devis »
 	// ne se comprend pas si le devis n'apparaît nulle part.
 	Fichiers []string `json:"fichiers,omitempty"`
+	// DeToi : c'est lui qui l'a écrit. Sans cette marque, son propre message
+	// arrive signé de son prénom comme celui de n'importe qui, et « dites-moi
+	// si c'est bloquant, pour @Xavier » devient une question que Xavier lui
+	// pose — c'est l'erreur exacte qui a motivé le champ.
+	DeToi bool `json:"de_toi,omitempty"`
 	// Fil : les réponses données dans le fil de ce message. Sur Slack, la
 	// discussion se tient souvent là, et l'historique du canal n'en montre que
 	// la question — lire le canal sans ses fils, c'est lire la moitié des
@@ -135,17 +140,27 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 		return "", nil, err
 	}
 
+	// Slack rend l'historique du plus récent au plus ancien. On le remet dans
+	// l'ordre où il s'est écrit : lu à l'envers, une réponse précède sa
+	// question, et le modèle rattache chaque message au mauvais voisin.
+	//
+	// Les fils à ouvrir se choisissent avant : les plus récents, puisque c'est
+	// là que se joue ce qu'on demande.
+	withThread := make(map[string]bool, maxThreadsRead)
+	for _, m := range hist.Messages {
+		if m.ReplyCount > 0 && len(withThread) < maxThreadsRead {
+			withThread[m.TS] = true
+		}
+	}
+	slices.Reverse(hist.Messages)
+
 	out := make([]Message, 0, len(hist.Messages))
-	threads := 0
 	for _, m := range hist.Messages {
 		msg, ok := c.toMessage(ctx, m, maxReadText)
 		if !ok {
 			continue
 		}
-		// Les fils les plus récents d'abord : l'historique arrive du plus
-		// récent au plus ancien, et c'est là que se joue ce qu'on demande.
-		if m.ReplyCount > 0 && threads < maxThreadsRead {
-			threads++
+		if withThread[m.TS] {
 			msg.Fil = c.threadReplies(ctx, target.ID, m.TS)
 		}
 		out = append(out, msg)
@@ -186,10 +201,15 @@ func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int) (Messa
 		return Message{}, false
 	}
 	author := "un bot"
-	if m.User != "" {
+	mine := m.User != "" && m.User == c.selfUser(ctx)
+	switch {
+	case mine:
+		author = "toi"
+	case m.User != "":
 		author = c.userName(ctx, m.User)
 	}
 	return Message{
+		DeToi:    mine,
 		Auteur:   author,
 		Texte:    truncate(c.renderText(ctx, m.Text), maxLen),
 		Quand:    parseSlackTS(m.TS),

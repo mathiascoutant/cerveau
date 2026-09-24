@@ -397,6 +397,16 @@ func (c *Client) selfHandle(ctx context.Context) string {
 // pas interpeller quelqu'un, et les compter reviendrait à remonter comme
 // urgents tous les « bonjour à tous » du matin.
 func (c *Client) mentionTag(ctx context.Context) string {
+	id := c.selfUser(ctx)
+	if id == "" {
+		return ""
+	}
+	return "<@" + id + ">"
+}
+
+// selfUser rend l'identifiant Slack de l'utilisateur lui-même, résolu une fois
+// par auth.test. Vide si Slack ne répond pas.
+func (c *Client) selfUser(ctx context.Context) string {
 	c.mu.Lock()
 	id, resolved := c.selfID, c.selfResolved
 	c.mu.Unlock()
@@ -408,10 +418,7 @@ func (c *Client) mentionTag(ctx context.Context) string {
 		id = c.selfID
 		c.mu.Unlock()
 	}
-	if id == "" {
-		return ""
-	}
-	return "<@" + id + ">"
+	return id
 }
 
 func (c *Client) userName(ctx context.Context, id string) string {

@@ -250,7 +250,7 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 
 func (t *userToolbox) slackMessage(m slack.Message) assistant.SlackMessageView {
 	v := assistant.SlackMessageView{
-		Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers,
+		Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers, DeToi: m.DeToi,
 	}
 	for _, r := range m.Fil {
 		v.Fil = append(v.Fil, t.slackMessage(r))
