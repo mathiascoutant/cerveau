@@ -14,7 +14,7 @@ import { Button, Notice, T } from './src/design/ui';
 import { tokens } from './src/design/tokens';
 import { loadTodos } from './src/lib/todos';
 import { isStale } from './src/lib/cache';
-import { CSPTicket, openSession } from './src/api';
+import { CSPTicket, getApiUrl, openSession } from './src/api';
 import { syncCalendar } from './src/lib/calendar';
 
 type Tab = 'raoul' | 'jobs' | 'suivi' | 'acces';
@@ -45,6 +45,10 @@ export default function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [listenRequest, setListenRequest] = useState(0);
   const [jobsStack, setJobsStack] = useState<JobsRoute[]>([{ name: 'jobs' }]);
+  // L'adresse essayée, affichée sur l'écran d'attente après quelques
+  // secondes : quand ça tourne, il faut savoir vers quoi.
+  const [apiUrl, setApiUrl] = useState('');
+  const [slow, setSlow] = useState(false);
 
   const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold });
 
@@ -67,6 +71,13 @@ export default function App() {
   }, []);
 
   useEffect(boot, [boot]);
+
+  useEffect(() => {
+    void getApiUrl().then(setApiUrl).catch(() => undefined);
+    if (ready) return;
+    const timer = setTimeout(() => setSlow(true), 3000);
+    return () => clearTimeout(timer);
+  }, [ready]);
 
   useEffect(() => {
     if (!ready || fatal) return;
@@ -96,6 +107,26 @@ export default function App() {
     return (
       <View style={styles.splash}>
         <ActivityIndicator color={tokens.colors.accent} size="large" />
+        {slow && fontsLoaded ? (
+          <View style={styles.splashHint}>
+            <T v="mono" tone="faint" style={styles.splashText}>
+              connexion à {apiUrl || '…'}
+            </T>
+            <T v="small" tone="muted" style={styles.splashText}>
+              Le serveur ne répond pas encore. S’il ne tourne pas à cette adresse, change-la dans Accès.
+            </T>
+            <Button
+              label="Ouvrir Accès"
+              variant="secondary"
+              icon="sliders"
+              compact
+              onPress={() => {
+                setReady(true);
+                setTab('acces');
+              }}
+            />
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -171,7 +202,9 @@ function Bottom({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: tokens.colors.bg },
   flex: { flex: 1 },
-  splash: { flex: 1, backgroundColor: tokens.colors.bg, alignItems: 'center', justifyContent: 'center' },
+  splash: { flex: 1, backgroundColor: tokens.colors.bg, alignItems: 'center', justifyContent: 'center', gap: tokens.space.xl, padding: tokens.space.xl },
+  splashHint: { alignItems: 'center', gap: tokens.space.md },
+  splashText: { textAlign: 'center' },
   fatal: { flex: 1, justifyContent: 'center', padding: tokens.space.xl },
   fatalActions: { flexDirection: 'row', gap: tokens.space.sm, marginTop: tokens.space.sm },
 });

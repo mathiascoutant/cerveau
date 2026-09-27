@@ -338,16 +338,46 @@ async function deviceId(): Promise<string> {
   return fresh;
 }
 
+/**
+ * Délai d'ouverture de session. Un serveur qui ne répond pas en douze secondes
+ * ne répondra pas : mieux vaut un écran qui dit quelle adresse a été essayée
+ * qu'une roue qui tourne sans fin.
+ */
+const SESSION_TIMEOUT_MS = 12000;
+/** Délai des appels ordinaires. Large : une question à Raoul peut prendre
+ *  une minute quand plusieurs sources sont consultées. */
+const REQUEST_TIMEOUT_MS = 120000;
+
+/** fetch avec un délai d'expiration, sans lequel un hôte muet bloque tout. */
+async function fetchWithTimeout(input: string, init: RequestInit, ms: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Pas de réponse de ${input.replace(/\/api\/v1.*$/, '')} en ${Math.round(ms / 1000)} s.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function openSession(): Promise<{ token: string; name?: string }> {
   const url = await getApiUrl();
   const id = await deviceId();
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  const res = await fetch(`${url}/api/v1/session`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device_id: id, timezone }),
-  });
+  const res = await fetchWithTimeout(
+    `${url}/api/v1/session`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: id, timezone }),
+    },
+    SESSION_TIMEOUT_MS,
+  );
   if (!res.ok) throw new Error(await errorMessage(res));
 
   const data = await res.json();
@@ -391,27 +421,35 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const url = await getApiUrl();
   const bearer = await token();
 
-  const res = await fetch(`${url}/api/v1${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${bearer}`,
-      ...(init.headers ?? {}),
+  const res = await fetchWithTimeout(
+    `${url}/api/v1${path}`,
+    {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bearer}`,
+        ...(init.headers ?? {}),
+      },
     },
-  });
+    REQUEST_TIMEOUT_MS,
+  );
 
   // Token périmé (base réinitialisée par exemple) : on rouvre une session.
   if (res.status === 401) {
     await resetSession();
     const fresh = await openSession();
-    const retry = await fetch(`${url}/api/v1${path}`, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${fresh.token}`,
-        ...(init.headers ?? {}),
+    const retry = await fetchWithTimeout(
+      `${url}/api/v1${path}`,
+      {
+        ...init,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${fresh.token}`,
+          ...(init.headers ?? {}),
+        },
       },
-    });
+      REQUEST_TIMEOUT_MS,
+    );
     if (!retry.ok) throw new ApiError(retry.status, await errorMessage(retry));
     return retry.json() as Promise<T>;
   }
