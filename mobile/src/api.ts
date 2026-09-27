@@ -24,7 +24,7 @@ const SIRI_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
 };
 
-export type Provider = 'gandi' | 'slack' | 'whatsapp' | 'calendar';
+export type Provider = 'gandi' | 'slack' | 'whatsapp' | 'calendar' | 'tuleap';
 
 export type Connection = {
   provider: Provider;
@@ -177,6 +177,50 @@ export type Todo = {
   updated_at: string;
 };
 
+export type JobCard = {
+  key: 'csp' | 'flight_schedule' | string;
+  title: string;
+  description: string;
+  enabled: boolean;
+  reason?: string;
+  configured: boolean;
+  connected: boolean;
+};
+
+/** Un ticket CSP, mis à plat par le serveur depuis l'artefact Tuleap. */
+export type CSPTicket = {
+  id: number;
+  ref: string;
+  titre: string;
+  statut: string;
+  priorite?: string;
+  responsable?: string;
+  auteur?: string;
+  cree: string;
+  modifie: string;
+  url: string;
+  tracker?: string;
+  description?: string;
+  champs?: Record<string, string>;
+  ferme?: boolean;
+};
+
+export type CSPComment = { auteur: string; quand: string; texte: string };
+
+export type CSPList = {
+  tickets: CSPTicket[];
+  generated_at: string;
+  cached: boolean;
+  scope: {
+    base_url: string;
+    tracker_id: number;
+    query?: string;
+    expert_query?: string;
+    assigned_to_me: boolean;
+    user?: string;
+  };
+};
+
 export type Interaction = {
   transcript: string;
   reply: string;
@@ -184,11 +228,27 @@ export type Interaction = {
   created_at: string;
 };
 
+/** Ce qu'une réponse a coûté, tel que le serveur l'a mesuré. */
+export type AssistantMetrics = {
+  tier: 'fast' | 'tools' | 'deep';
+  model: string;
+  reason?: string;
+  model_calls: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  first_token_ms: number;
+  first_event_ms: number;
+  total_ms: number;
+  tools?: { name: string; ms: number; err?: boolean }[];
+};
+
 export type AssistantAnswer = {
   transcript: string;
   reply: string;
   actions: AssistantAction[];
   steps?: string[];
+  metrics?: AssistantMetrics;
   /**
    * Adresse du son de cette réponse, dont le serveur a déjà lancé la synthèse.
    * Absente quand le serveur n'a pas de voix distante — l'app lit alors avec
@@ -319,6 +379,14 @@ export async function resetSession(): Promise<void> {
   await SecureStore.deleteItemAsync(SIRI_KEY, SIRI_OPTIONS);
 }
 
+/**
+ * En-têtes d'une requête authentifiée, pour les appels qui ne passent pas par
+ * `request` — le flux de conversation, qui lit la réponse au fil de l'eau.
+ */
+export async function authHeaders(): Promise<Record<string, string>> {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` };
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const url = await getApiUrl();
   const bearer = await token();
@@ -405,6 +473,23 @@ export const api = {
   /** Démarre le flux OAuth : renvoie l'URL de consentement à ouvrir. */
   startSlackOAuth: () =>
     request<{ url: string }>('/connections/slack/oauth', { method: 'POST' }),
+
+  /** Clé d'accès personnelle Tuleap, validée par le serveur avant stockage. */
+  connectTuleap: (accessKey: string) =>
+    request<Connection>('/connections/tuleap', {
+      method: 'PUT',
+      body: JSON.stringify({ access_key: accessKey }),
+    }),
+
+  /** Les cartes de l'onglet Jobs, et si elles s'ouvrent. */
+  jobs: () => request<{ jobs: JobCard[] }>('/jobs'),
+
+  /** Les tickets CSP du tracker Tuleap. `refresh` ignore le cache serveur. */
+  cspTickets: (refresh = false) =>
+    request<CSPList>(`/jobs/csp/tickets${refresh ? '?refresh=1' : ''}`),
+
+  cspTicket: (id: number) =>
+    request<{ ticket: CSPTicket; comments: CSPComment[] }>(`/jobs/csp/tickets/${id}`),
 
   connectSlack: (userToken: string) =>
     request<Connection>('/connections/slack', {

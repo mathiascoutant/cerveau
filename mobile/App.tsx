@@ -1,35 +1,28 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, AppState, Easing, Linking, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import {
-  useFonts,
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-} from '@expo-google-fonts/inter';
+import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 
-import { AssistantScreen } from './src/screens/AssistantScreen';
-import { DIGEST_KEY, JournalScreen, loadJournal } from './src/screens/JournalScreen';
-import { DraftsScreen } from './src/screens/DraftsScreen';
-import { ConnectionsScreen } from './src/screens/ConnectionsScreen';
-import { Banner, Txt } from './src/components/ui';
-import { Backdrop } from './src/components/glass';
-import { TabBar, TabItem } from './src/components/TabBar';
-import { loadUrgent, URGENT_KEY } from './src/components/Urgences';
-import { loadTodos, TODOS_KEY } from './src/lib/todos';
+import { RaoulScreen } from './src/screens/RaoulScreen';
+import { JobsScreen } from './src/screens/JobsScreen';
+import { CSPScreen, CSPTicketScreen } from './src/screens/CSPScreen';
+import { DIGEST_KEY, loadDigest, loadUrgent, SuiviScreen, URGENT_KEY } from './src/screens/SuiviScreen';
+import { AccesScreen } from './src/screens/AccesScreen';
+import { NavBar, NavItem } from './src/design/NavBar';
+import { Button, Notice, T } from './src/design/ui';
+import { tokens } from './src/design/tokens';
+import { loadTodos } from './src/lib/todos';
 import { isStale } from './src/lib/cache';
-import { openSession } from './src/api';
+import { CSPTicket, openSession } from './src/api';
 import { syncCalendar } from './src/lib/calendar';
-import { theme } from './src/theme';
 
-type Tab = 'raoul' | 'journal' | 'reponses' | 'acces';
+type Tab = 'raoul' | 'jobs' | 'suivi' | 'acces';
 
-const TABS: readonly TabItem<Tab>[] = [
-  { key: 'raoul', label: 'Raoul', icon: 'mic' },
-  { key: 'journal', label: 'Journal', icon: 'layout' },
-  { key: 'reponses', label: 'Réponses', icon: 'edit-3' },
+const TABS: readonly NavItem<Tab>[] = [
+  { key: 'raoul', label: 'Raoul', icon: 'message-square' },
+  { key: 'jobs', label: 'Jobs', icon: 'briefcase' },
+  { key: 'suivi', label: 'Suivi', icon: 'check-square' },
   { key: 'acces', label: 'Accès', icon: 'sliders' },
 ];
 
@@ -43,33 +36,27 @@ const LISTEN_LINK = /^raoul:\/\/listen\/?$/i;
 /** Au-delà, une liste rapportée du dernier passage n'est plus une information. */
 const STALE_AFTER = 10 * 60 * 1000;
 
+/** La pile de l'onglet Jobs : les cartes, puis la vue CSP, puis un ticket. */
+type JobsRoute = { name: 'jobs' } | { name: 'csp' } | { name: 'ticket'; ticket: CSPTicket };
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('raoul');
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
-  // Compteur plutôt que booléen : deux appuis successifs sur le widget doivent
-  // relancer l'écoute deux fois, or un booléen déjà vrai ne rejoue pas d'effet.
   const [listenRequest, setListenRequest] = useState(0);
+  const [jobsStack, setJobsStack] = useState<JobsRoute[]>([{ name: 'jobs' }]);
 
-  const [fontsLoaded] = useFonts({
-    Inter_400Regular,
-    Inter_500Medium,
-    Inter_600SemiBold,
-    Inter_700Bold,
-  });
+  const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold });
 
-  // Aucun écran de connexion : on ouvre la session avec l'identifiant
-  // d'appareil dès le lancement, et on entre directement dans l'app.
-  //
-  // Dès que la session est ouverte, on lance en fond ce que les autres onglets
-  // afficheront. La synthèse du Journal et la liste à traiter demandent toutes
-  // deux le modèle : les attendre à l'ouverture de leur onglet, c'est faire
-  // patienter pour un travail qui aurait pu commencer trente secondes plus tôt.
-  useEffect(() => {
+  const boot = useCallback(() => {
+    setFatal(null);
     openSession()
       .then(() => {
         setReady(true);
-        void loadJournal().catch(() => undefined);
+        // Ce que les autres onglets afficheront part tout de suite : attendre
+        // l'ouverture de l'onglet, c'est faire patienter pour un travail qui
+        // aurait pu commencer trente secondes plus tôt.
+        void loadDigest().catch(() => undefined);
         void loadUrgent().catch(() => undefined);
         void loadTodos().catch(() => undefined);
       })
@@ -79,34 +66,27 @@ export default function App() {
       });
   }, []);
 
-  // Le miroir d'agenda doit rester frais : on resynchronise à chaque retour
-  // au premier plan. Les listes suivent, mais seulement si elles ont vieilli —
-  // rouvrir l'app trente secondes après l'avoir fermée ne justifie pas de
-  // redemander une synthèse au modèle.
+  useEffect(boot, [boot]);
+
   useEffect(() => {
     if (!ready || fatal) return;
     void syncCalendar().catch(() => undefined);
     const sub = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return;
       void syncCalendar().catch(() => undefined);
-      if (isStale(DIGEST_KEY, STALE_AFTER)) void loadJournal(true).catch(() => undefined);
+      if (isStale(DIGEST_KEY, STALE_AFTER)) void loadDigest(true).catch(() => undefined);
       if (isStale(URGENT_KEY, STALE_AFTER)) void loadUrgent(true).catch(() => undefined);
-      // La liste à faire ne coûte pas d'appel au modèle, et elle peut avoir
-      // bougé depuis un autre appareil : on la relit à chaque retour.
       void loadTodos(true).catch(() => undefined);
     });
     return () => sub.remove();
   }, [ready, fatal]);
 
-  // Le widget ouvre « raoul://listen ». Deux chemins à couvrir : l'app était
-  // fermée (getInitialURL) ou déjà en fond (événement « url »).
   useEffect(() => {
     const handle = (url: string | null | undefined) => {
       if (!url || !LISTEN_LINK.test(url.trim())) return;
       setTab('raoul');
       setListenRequest((n) => n + 1);
     };
-
     void Linking.getInitialURL().then(handle).catch(() => undefined);
     const sub = Linking.addEventListener('url', (event) => handle(event.url));
     return () => sub.remove();
@@ -115,101 +95,83 @@ export default function App() {
   if (!ready || !fontsLoaded) {
     return (
       <View style={styles.splash}>
-        <Backdrop />
-        <ActivityIndicator color={theme.colors.primary} size="large" />
+        <ActivityIndicator color={tokens.colors.accent} size="large" />
       </View>
     );
   }
+
+  const route = jobsStack[jobsStack.length - 1];
+  const push = (r: JobsRoute) => setJobsStack((s) => [...s, r]);
+  const pop = () => setJobsStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
       <View style={styles.root}>
-        {/* Le fond est peint une fois pour toute l'app. Les écrans qui
-            défilent ne le repeignent pas, sinon le flou n'a plus rien à
-            flouter et les cartes redeviennent des rectangles gris. */}
-        <Backdrop />
-
         <SafeAreaView style={styles.flex} edges={['top']}>
           {fatal && tab === 'raoul' ? (
             <View style={styles.fatal}>
-              <Banner tone="danger" icon="wifi-off">
-                <Txt variant="bodyStrong" tone="danger">
-                  Serveur injoignable
-                </Txt>
-                <Txt variant="small" tone="muted">
+              <Notice tone="danger" icon="wifi-off" title="Serveur injoignable">
+                <T v="small" tone="muted">
                   {fatal}
-                </Txt>
-                <Txt variant="small" tone="muted">
-                  Renseigne l’adresse de ton serveur dans l’onglet Accès.
-                </Txt>
-              </Banner>
+                </T>
+                <T v="small" tone="muted">
+                  Renseigne l’adresse de ton serveur dans Accès, ou réessaie.
+                </T>
+                <View style={styles.fatalActions}>
+                  <Button label="Réessayer" variant="secondary" icon="refresh-cw" compact onPress={boot} />
+                  <Button label="Accès" variant="ghost" icon="sliders" compact onPress={() => setTab('acces')} />
+                </View>
+              </Notice>
             </View>
           ) : (
-            <Screen tab={tab} listenRequest={listenRequest} />
+            <Screen key={tab === 'jobs' ? `jobs-${route.name}` : tab}>
+              {tab === 'raoul' ? (
+                <RaoulScreen listenRequest={listenRequest} />
+              ) : tab === 'jobs' ? (
+                route.name === 'ticket' ? (
+                  <CSPTicketScreen ticket={route.ticket} onBack={pop} />
+                ) : route.name === 'csp' ? (
+                  <CSPScreen onBack={pop} onOpen={(ticket) => push({ name: 'ticket', ticket })} onAccess={() => setTab('acces')} />
+                ) : (
+                  <JobsScreen onOpen={(key) => key === 'csp' && push({ name: 'csp' })} />
+                )
+              ) : tab === 'suivi' ? (
+                <SuiviScreen />
+              ) : (
+                <AccesScreen />
+              )}
+            </Screen>
           )}
         </SafeAreaView>
-
-        <FloatingTabs tab={tab} onChange={setTab} />
+        <Bottom tab={tab} onChange={setTab} />
       </View>
     </SafeAreaProvider>
   );
 }
 
-/**
- * L'écran courant, fondu à chaque changement d'onglet.
- *
- * Le fondu est court et léger — 240 ms, dix pixels de montée. Il ne cherche pas
- * à impressionner : il évite la coupure sèche entre deux écrans qui n'ont ni le
- * même contenu ni la même hauteur.
- */
-function Screen({ tab, listenRequest }: { tab: Tab; listenRequest: number }) {
-  const fade = useRef(new Animated.Value(1)).current;
-
+/** L'écran courant, fondu à chaque changement — court, pour ne pas se voir. */
+function Screen({ children }: { children: React.ReactNode }) {
+  const fade = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    fade.setValue(0);
-    Animated.timing(fade, {
-      toValue: 1,
-      duration: theme.motion.base,
-      easing: Easing.bezier(...theme.motion.easing),
-      useNativeDriver: true,
-    }).start();
-  }, [tab, fade]);
-
+    Animated.timing(fade, { toValue: 1, duration: tokens.motion.base, easing: Easing.bezier(...tokens.motion.easing), useNativeDriver: true }).start();
+  }, [fade]);
   return (
-    <Animated.View
-      style={[
-        styles.flex,
-        { opacity: fade, transform: [{ translateY: fade.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] },
-      ]}
-    >
-      {tab === 'raoul' ? (
-        <AssistantScreen listenRequest={listenRequest} />
-      ) : tab === 'journal' ? (
-        <JournalScreen />
-      ) : tab === 'reponses' ? (
-        <DraftsScreen />
-      ) : (
-        <ConnectionsScreen />
-      )}
+    <Animated.View style={[styles.flex, { opacity: fade, transform: [{ translateY: fade.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] }]}>
+      {children}
     </Animated.View>
   );
 }
 
-/** La barre a besoin de la zone sûre, qui n'est lisible que sous le provider. */
-function FloatingTabs({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
+function Bottom({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const insets = useSafeAreaInsets();
-  return <TabBar tabs={TABS} active={tab} onChange={onChange} inset={insets.bottom} />;
+  return <NavBar items={TABS} active={tab} onChange={onChange} inset={insets.bottom} />;
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: theme.colors.background },
+  root: { flex: 1, backgroundColor: tokens.colors.bg },
   flex: { flex: 1 },
-  splash: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fatal: { flex: 1, justifyContent: 'center', padding: theme.space.xl },
+  splash: { flex: 1, backgroundColor: tokens.colors.bg, alignItems: 'center', justifyContent: 'center' },
+  fatal: { flex: 1, justifyContent: 'center', padding: tokens.space.xl },
+  fatalActions: { flexDirection: 'row', gap: tokens.space.sm, marginTop: tokens.space.sm },
 });

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { speak, speakOnDevice, stopSpeaking } from '../lib/speech';
 
-import { api, AssistantAnswer } from '../api';
+import { AssistantAction, AssistantMetrics } from '../api';
 import { applyActions } from '../lib/calendar';
+import { AbortedError, askStream } from '../lib/stream';
 import { cleanCommand, findFarewell, findWake } from '../lib/wakeword';
 import {
   RecognitionOptions,
@@ -19,12 +20,27 @@ export type RaoulState =
   | 'thinking' // le backend consulte agenda/mails/Slack/WhatsApp
   | 'speaking'; // Raoul répond à voix haute
 
-export type Exchange = {
+/** Une étape visible pendant que Raoul travaille : un outil, sa durée, son sort. */
+export type ToolStep = {
+  tool: string;
+  label: string;
+  ms?: number;
+  err?: string;
+};
+
+/**
+ * Un élément du fil de conversation. Un message de Raoul se construit au fil
+ * du flux : `streaming` tant que le texte arrive, puis les mesures à la fin.
+ */
+export type ChatItem = {
   id: string;
-  question: string;
-  answer: string;
-  steps?: string[];
+  role: 'user' | 'raoul';
+  text: string;
+  steps?: ToolStep[];
   effects?: string[];
+  metrics?: AssistantMetrics;
+  streaming?: boolean;
+  error?: string;
   at: Date;
 };
 
@@ -72,8 +88,11 @@ export function useRaoul() {
   const [state, setState] = useState<RaoulState>('off');
   const [partial, setPartial] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<Exchange[]>([]);
+  const [thread, setThread] = useState<ChatItem[]>([]);
   const [inConversation, setInConversation] = useState(false);
+  // La demande en cours, pour pouvoir l'interrompre : couper le flux côté
+  // client annule aussi le modèle et les outils côté serveur.
+  const inflight = useRef<AbortController | null>(null);
 
   const mode = useRef<Mode>('off');
   // running : une session de reconnaissance est ouverte côté natif. iOS ne la
@@ -194,7 +213,7 @@ export function useRaoul() {
     }, ECHO_GUARD_MS);
   }, [clearTimers, startRecognition]);
 
-  /** Envoie la demande au backend, lit la réponse, applique les actions. */
+  /** Envoie la demande au backend en flux, lit la réponse, applique les actions. */
   const submit = useCallback(
     async (question: string) => {
       clearTimers();
@@ -202,14 +221,85 @@ export function useRaoul() {
       SpeechRecognition?.abort();
       setPartial('');
       setState('thinking');
+      setError(null);
 
-      let answer: AssistantAnswer;
+      inflight.current?.abort();
+      const controller = new AbortController();
+      inflight.current = controller;
+
+      const userId = `u${Date.now()}`;
+      const raoulId = `r${Date.now()}`;
+      setThread((prev) => [
+        ...prev,
+        { id: userId, role: 'user', text: question, at: new Date() },
+        { id: raoulId, role: 'raoul', text: '', steps: [], streaming: true, at: new Date() },
+      ]);
+      const patch = (edit: (item: ChatItem) => ChatItem) =>
+        setThread((prev) => prev.map((item) => (item.id === raoulId ? edit(item) : item)));
+
+      let reply = '';
+      let actions: AssistantAction[] = [];
+      let metrics: AssistantMetrics | undefined;
+      let speechUrl: string | undefined;
+
       try {
-        answer = await api.ask(question);
+        await askStream(
+          question,
+          (ev) => {
+            switch (ev.type) {
+              case 'status':
+                patch((item) => {
+                  const steps = [...(item.steps ?? [])];
+                  // Le second événement d'un même outil porte sa durée : on
+                  // complète la ligne au lieu d'en ouvrir une deuxième.
+                  const open = steps.findIndex((st) => st.tool === ev.tool && st.ms === undefined);
+                  if (ev.ms !== undefined && open >= 0) {
+                    steps[open] = { ...steps[open], ms: ev.ms, err: ev.err };
+                  } else if (ev.ms === undefined) {
+                    steps.push({ tool: ev.tool, label: ev.label });
+                  }
+                  return { ...item, steps };
+                });
+                break;
+              case 'delta':
+                reply += ev.text;
+                patch((item) => ({ ...item, text: item.text + ev.text }));
+                break;
+              case 'reset':
+                reply = '';
+                patch((item) => ({ ...item, text: '' }));
+                break;
+              case 'done':
+                reply = ev.result.reply || reply;
+                actions = ev.result.actions ?? [];
+                metrics = ev.metrics ?? ev.result.metrics;
+                speechUrl = ev.speech_url;
+                patch((item) => ({ ...item, text: reply, metrics, streaming: false }));
+                break;
+              case 'error':
+                throw new Error(ev.message);
+              default:
+                break;
+            }
+          },
+          controller.signal,
+        );
       } catch (err) {
+        if (inflight.current === controller) inflight.current = null;
+        if (err instanceof AbortedError) {
+          patch((item) => ({ ...item, streaming: false, text: item.text || 'Interrompu.', error: undefined }));
+          resume();
+          return;
+        }
         const message = (err as Error).message;
         setError(message);
+        patch((item) => ({ ...item, streaming: false, error: message, text: item.text || "Je n'ai pas réussi à joindre le serveur." }));
         await speakOnDevice("Je n'ai pas réussi à joindre le serveur.");
+        resume();
+        return;
+      }
+      if (inflight.current === controller) inflight.current = null;
+      if (controller.signal.aborted) {
         resume();
         return;
       }
@@ -220,30 +310,26 @@ export function useRaoul() {
       // audio en fond), mais rien ne garantit qu'on puisse en démarrer un une
       // fois passé en arrière-plan.
       setState('speaking');
-      const spoken = speak(answer.reply, undefined, answer.speech_url);
+      const spoken = speak(reply, undefined, speechUrl);
 
       let effects: string[] = [];
-      if (answer.actions?.length) {
-        effects = await applyActions(answer.actions);
+      if (actions.length) {
+        effects = await applyActions(actions);
       }
-
-      setHistory((prev) => [
-        {
-          id: `${Date.now()}`,
-          question: answer.transcript || question,
-          answer: answer.reply,
-          steps: answer.steps,
-          effects,
-          at: new Date(),
-        },
-        ...prev,
-      ]);
+      if (effects.length) patch((item) => ({ ...item, effects }));
 
       await spoken;
       resume();
     },
     [clearTimers, resume],
   );
+
+  /** Interrompt la demande en cours et la voix, sans couper l'écoute. */
+  const cancel = useCallback(() => {
+    inflight.current?.abort();
+    inflight.current = null;
+    stopSpeaking();
+  }, []);
 
   const armSilence = useCallback(
     (delay = SILENCE_MS) => {
@@ -453,20 +539,25 @@ export function useRaoul() {
     return () => {
       clearTimers();
       SpeechRecognition?.abort();
+      inflight.current?.abort();
       stopSpeaking();
     };
   }, [clearTimers]);
+
+  const clearThread = useCallback(() => setThread([]), []);
 
   return {
     state,
     partial,
     error,
-    history,
+    thread,
     start,
     startConversation,
     stop,
+    cancel,
     pushToTalk,
     askText,
+    clearThread,
     voiceAvailable,
     inConversation,
     isEnabled: enabled,

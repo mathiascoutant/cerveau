@@ -110,11 +110,15 @@ loop:
 		case ev := <-events:
 			if ev.Type == "done" {
 				// La fin porte la voix : elle se fabrique dès maintenant, avant
-				// même que le texte ait fini de traverser le réseau.
+				// même que le texte ait fini de traverser le réseau. Le texte
+				// vient de l'événement lui-même — `result` n'est écrit qu'au
+				// retour du moteur, plus tard.
+				var speech string
 				if ev.Result != nil {
 					ev.Result.Actions = nonNilActions(ev.Result.Actions)
+					speech = s.prepareSpeech(user.ID, ev.Result.Reply)
 				}
-				if !write(doneEvent{Event: ev, SpeechURL: s.prepareSpeech(user.ID, result.Reply)}) {
+				if !write(doneEvent{Event: ev, SpeechURL: speech}) {
 					alive = false
 				}
 				continue
@@ -138,7 +142,12 @@ loop:
 		select {
 		case ev := <-events:
 			if alive && ev.Type == "done" {
-				write(doneEvent{Event: ev, SpeechURL: s.prepareSpeech(user.ID, result.Reply)})
+				var speech string
+				if ev.Result != nil {
+					ev.Result.Actions = nonNilActions(ev.Result.Actions)
+					speech = s.prepareSpeech(user.ID, ev.Result.Reply)
+				}
+				write(doneEvent{Event: ev, SpeechURL: speech})
 			}
 			continue
 		default:

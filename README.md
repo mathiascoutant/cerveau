@@ -1,11 +1,16 @@
 # Cerveau — Raoul
 
-Assistant vocal personnel qui croise **agenda + mails Gandi + Slack + WhatsApp Business**
-pour répondre à des questions du type :
+Assistant personnel, vocal et écrit, qui croise **agenda + mails Gandi + Slack +
+WhatsApp + tickets CSP (Tuleap)** pour répondre à des questions du type :
 
 > « OK Raoul, je peux aller faire du sport à 10h demain ? »
+> « C'est quoi le dernier mail que j'ai envoyé ? »
+> « Qui a demandé à Xavier de regarder le problème CSP ? »
 
-Il consulte les quatre sources, tranche, et pose l'événement dans le calendrier si c'est jouable.
+Il consulte les bonnes sources — et seulement elles —, tranche, cite d'où vient
+ce qu'il dit, et pose l'événement dans le calendrier si c'est jouable. Les
+réponses arrivent en flux : on voit les outils travailler et le texte tomber
+mot à mot au lieu d'attendre devant un cercle.
 
 - `backend/` — API Go, MongoDB, orchestration OpenAI (à héberger sur le VPS OVH)
 - `mobile/` — app React Native / Expo (iOS, dev build puis TestFlight)
@@ -32,10 +37,28 @@ abonnement ChatGPT Plus : ce sont deux produits et deux facturations distinctes.
 Un abonnement Plus ne donne aucun accès à l'API. Vérifie ton crédit dans
 **Settings › Billing**.
 
-Modèle par défaut : `gpt-5.4-mini` — rapide et économique, et il tient
-l'enchaînement d'outils. `gpt-5.4-nano` coûte moins cher mais cale sur le
-raisonnement multi-étapes que demande la vérification de créneau. Réglable via
-`OPENAI_MODEL`, et `OPENAI_EFFORT=low` privilégie la latence, ce qui compte en vocal.
+Raoul ne prend pas le même modèle pour « bonjour » et pour « croise le ticket
+101 avec ce que Xavier a dit ». Trois étages, choisis par question et sans
+appel supplémentaire au modèle (`backend/internal/assistant/router.go`) :
+
+| Étage | Variable | Défaut | Quand |
+|---|---|---|---|
+| rapide | `OPENAI_FAST_MODEL` / `OPENAI_FAST_EFFORT` | vide → modèle principal, sans outils | salutations, culture générale, résumé d'un texte fourni — aucune source consultée, consigne courte |
+| outils | `OPENAI_MODEL` / `OPENAI_EFFORT` | `gpt-5.4-mini` / `low` | tout ce qui touche à ses données. **L'étage par défaut** : dans le doute, on y va |
+| fort | `OPENAI_DEEP_MODEL` / `OPENAI_DEEP_EFFORT` | `gpt-5.4` / `medium` | plusieurs sources à croiser, « qui a demandé quoi à qui », débrief |
+
+`gpt-5.4-nano` sur l'étage rapide coûte environ quatre fois moins que mini et
+ne risque rien : cet étage n'a pas d'outils, donc rien à mal enchaîner. Le
+classement est volontairement prudent — une question inconnue va aux outils,
+jamais au rapide, parce qu'une réponse inventée coûte plus qu'un appel de trop.
+
+Ce qui réduit les tokens sans toucher à la fiabilité : la consigne système est
+ordonnée pour que son préfixe ne change jamais (le contexte horaire est à la
+fin), ce qui laisse OpenAI la garder en cache d'une question à l'autre ;
+l'historique est borné en caractères, pas seulement en tours ; et chaque
+réponse remonte ses mesures (temps avant le premier mot, appels, tokens en
+entrée, en cache, en sortie) — visibles sous chaque réponse dans l'app et dans
+les journaux du serveur (`raoul tier=… ttft_ms=… total_ms=…`).
 
 ### 2. Clé de chiffrement — `MASTER_KEY` (obligatoire)
 
@@ -116,6 +139,30 @@ users:read
 
 L'ancienne méthode reste disponible — « Coller un token à la main » dans l'app,
 si tu as déjà un `xoxp-` sous la main.
+
+### 4 bis. Tuleap — tickets CSP de l'onglet Jobs
+
+Deux valeurs dans `.env`, une clé dans l'app.
+
+1. `TULEAP_BASE_URL` : l'adresse de l'instance (`https://tuleap.pxcom.aero`).
+2. `TULEAP_CSP_TRACKER_ID` : l'identifiant numérique du tracker CSP. Il est dans
+   l'URL du tracker (`?tracker=123`) ou dans `GET /api/projects/{id}/trackers`.
+3. La sélection des tickets, pour retrouver **la même liste que PXFeed-UI** :
+   `TULEAP_CSP_QUERY` (le JSON du paramètre `query` de l'API REST, ex.
+   `{"status":"open"}`) ou `TULEAP_CSP_EXPERT_QUERY` (la syntaxe TQL, ex.
+   `status = 'Open' AND assigned_to = MYSELF()`, qui prime). Plus
+   `TULEAP_CSP_ASSIGNED_TO_ME=true` pour ne garder que tes tickets.
+4. Dans l'app : **Accès › Tuleap › Clé d'accès**. Tuleap › Mon compte › Clés
+   d'accès › Générer, avec le droit de lecture des trackers. La clé est validée
+   contre l'instance (`/api/users/self`) puis rangée chiffrée en base ; les
+   tickets vus sont exactement ceux que Tuleap te montre.
+
+> Le dépôt PXFeed-UI (`gitea.pxcom.aero`) n'était pas joignable depuis
+> l'environnement où cette intégration a été écrite : la sélection exacte des
+> tickets (tracker, filtre) est donc à recopier depuis son code dans ces
+> variables, pas à deviner. Le client Tuleap lit les artefacts avec
+> `values=all`, met à plat titre, statut, priorité, responsable, dates, lien et
+> description, et garde les autres champs par libellé pour la vue de détail.
 
 ### 5. WhatsApp Business — 4 valeurs, 3 endroits différents
 
@@ -436,17 +483,58 @@ Trois conséquences à connaître :
 
 ---
 
+## L'app
+
+Quatre onglets, et la conversation au centre.
+
+- **Raoul** — le fil. Le réacteur en haut dit son état (cyan : il écoute,
+  violet : il consulte, ambre : il parle) et sert de bouton micro. Chaque
+  réponse montre les outils consultés sur une ligne (« Recherche Slack ·
+  1,2 s »), puis le texte au fil de l'eau, puis ses mesures. Un bouton stop
+  interrompt une réponse en cours — et coupe aussi le modèle côté serveur.
+- **Jobs** — les outils métier. La carte **CSP** ouvre tes tickets Tuleap
+  (recherche, filtres ouverts / tous / assignés à moi, détail avec champs,
+  historique et lien vers Tuleap). La carte **Flight Schedule** est là,
+  désactivée, sans faux écran derrière.
+- **Suivi** — ce que Raoul tient pour toi : à faire, à traiter, le point du
+  jour, les réponses de mail préparées.
+- **Accès** — ce qu'il a le droit de voir : agenda, Gandi, Slack, Tuleap,
+  WhatsApp, et la voix.
+
+Le système de design vit dans `mobile/src/design/` : jetons (`tokens.ts`),
+primitives (`ui.tsx`), réacteur, barre de navigation. Aucune couleur ni taille
+n'est écrite dans un écran.
+
 ## Ce que fait Raoul quand tu lui demandes un créneau
 
-Le backend donne au modèle cinq outils et le laisse mener l'enquête :
+Le backend donne au modèle des outils et le laisse mener l'enquête :
 
 | Outil | Source |
 |---|---|
 | `consulter_calendrier` | miroir de l'agenda iOS |
 | `mails_non_lus` | IMAP Gandi, en direct |
+| `chercher_mails` | reçus et envoyés, par personne et objet, avec `message_id` |
+| `mails_envoyes` | la boîte d'envoi — « le dernier mail que j'ai envoyé » |
+| `lire_mail` | un mail précis, par recherche ou par `message_id` |
 | `slack_non_lus` | API Slack, en direct |
-| `whatsapp_non_lus` | messages collectés par le webhook |
+| `lire_canal_slack` | une conversation, fils compris |
+| `chercher_slack` | toutes les conversations, par auteur, personne citée, mots, période |
+| `whatsapp_non_lus` | messages collectés par l'appareil lié |
+| `tickets_csp` | le tracker Tuleap de l'onglet Jobs |
 | `creer_evenement` | renvoie une action que l'app écrit dans EventKit |
+
+**Qui a écrit, qui est cité, qui a fait.** Sur Slack, chaque message descend
+avec `auteur_id` (celui de l'API, jamais un prénom lu dans le texte), ses
+`mentions` (les vraies `@`, résolues), le parent de son fil et son permalien.
+Thomas écrit « @Xavier, peux-tu regarder le CSP ? » : auteur Thomas, mention
+Xavier — c'est Thomas qui a demandé. « J'ai vu que Paul avait corrigé » écrit
+par Marie : Marie rapporte, Paul a corrigé *d'après Marie*. Ces règles sont
+dans la consigne et testées côté serveur (`providers/slack/attribution_test.go`).
+
+**Reçu, envoyé, brouillon.** Chaque mail retrouvé dit son dossier, `de_toi`
+quand c'est lui qui l'a écrit, `brouillon` quand il n'est jamais parti, et
+porte son `Message-ID` : c'est par lui qu'on rouvre exactement ce message-là,
+pas un homonyme.
 
 Le serveur n'écrit jamais dans ton calendrier lui-même : il renvoie une action que
 l'app exécute. C'est ce qui permet de rester sur le calendrier natif sans OAuth.
@@ -513,7 +601,12 @@ Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
 | `GET` | `/api/v1/drafts` | les réponses de mail préparées |
 | `PATCH` | `/api/v1/drafts/{id}` | retouche une réponse au clavier |
 | `DELETE` | `/api/v1/drafts/{id}` | supprime une réponse |
-| `POST` | `/api/v1/assistant/ask` | pose une question à Raoul |
+| `POST` | `/api/v1/assistant/ask` | pose une question à Raoul (réponse entière) |
+| `POST` | `/api/v1/assistant/stream` | la même, en flux d'événements (outils, texte, fin avec mesures) |
+| `GET` | `/api/v1/jobs` | les cartes de l'onglet Jobs et si elles s'ouvrent |
+| `GET` | `/api/v1/jobs/csp/tickets` | les tickets CSP du tracker Tuleap (`?refresh=1` ignore le cache d'une minute) |
+| `GET` | `/api/v1/jobs/csp/tickets/{id}` | un ticket, ses champs et ses commentaires |
+| `PUT` | `/api/v1/connections/tuleap` | enregistre la clé d'accès Tuleap (validée avant stockage) |
 | `POST` | `/api/v1/assistant/voice` | secours : envoi audio + transcription serveur |
 | `POST` | `/api/v1/assistant/speech` | prépare la lecture d'un texte, renvoie une URL jetable |
 | `GET` | `/api/v1/speech/{ticket}` | diffuse l'audio ElevenLabs (ticket à usage unique) |
