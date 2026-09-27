@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -27,9 +28,29 @@ type Conversation struct {
 // locale du serveur — donc en UTC sur le VPS, et tous les horaires Slack
 // arrivaient décalés de deux heures l'été.
 type Message struct {
-	Auteur string    `json:"auteur"`
-	Texte  string    `json:"texte"`
-	Quand  time.Time `json:"quand"`
+	// ID : l'horodatage Slack du message (« 1727000000.000100 »), qui lui sert
+	// d'identifiant. C'est par lui qu'on cite un message, et par lui qu'on
+	// retrouve son fil.
+	ID     string `json:"id"`
+	Auteur string `json:"auteur"`
+	// AuteurID : l'identifiant Slack de l'auteur, tel que l'API le donne. C'est
+	// LUI qui fait foi sur qui a écrit — jamais un prénom lu dans le texte.
+	AuteurID string    `json:"auteur_id,omitempty"`
+	Canal    string    `json:"canal,omitempty"`
+	CanalID  string    `json:"-"`
+	Texte    string    `json:"texte"`
+	Quand    time.Time `json:"quand"`
+	// FilDe : identifiant du message parent quand celui-ci est une réponse
+	// dans un fil. Vide pour un message de premier niveau.
+	FilDe string `json:"fil_de,omitempty"`
+	// Mentions : les personnes citées avec une vraie mention Slack (<@U…>),
+	// résolues par leur identifiant. Un prénom simplement écrit dans le texte
+	// n'en fait pas partie — ce n'est pas une mention, c'est un mot.
+	Mentions []Mention `json:"mentions,omitempty"`
+	// TeCite : l'utilisateur lui-même figure parmi les mentions.
+	TeCite bool `json:"te_cite,omitempty"`
+	// Lien : permalien vers le message dans Slack.
+	Lien string `json:"lien,omitempty"`
 	// Fichiers : les pièces jointes, par leur nom. « Il a envoyé le devis »
 	// ne se comprend pas si le devis n'apparaît nulle part.
 	Fichiers []string `json:"fichiers,omitempty"`
@@ -43,6 +64,13 @@ type Message struct {
 	// la question — lire le canal sans ses fils, c'est lire la moitié des
 	// échanges et en tirer des conclusions sur l'autre moitié.
 	Fil []Message `json:"fil,omitempty"`
+}
+
+// Mention est une personne citée nommément dans un message, par son
+// identifiant Slack et le prénom qui lui correspond.
+type Mention struct {
+	ID  string `json:"id"`
+	Nom string `json:"nom"`
 }
 
 // Longueurs retenues à la lecture. Assez pour qu'un message argumenté arrive
@@ -156,12 +184,12 @@ func (c *Client) ReadConversation(ctx context.Context, query string, limit int) 
 
 	out := make([]Message, 0, len(hist.Messages))
 	for _, m := range hist.Messages {
-		msg, ok := c.toMessage(ctx, m, maxReadText)
+		msg, ok := c.toMessage(ctx, m, maxReadText, target.ID, label)
 		if !ok {
 			continue
 		}
 		if withThread[m.TS] {
-			msg.Fil = c.threadReplies(ctx, target.ID, m.TS)
+			msg.Fil = c.threadReplies(ctx, target.ID, label, m.TS)
 		}
 		out = append(out, msg)
 	}
@@ -181,7 +209,43 @@ type rawMessage struct {
 	} `json:"files"`
 }
 
-func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int) (Message, bool) {
+// mentionRE repère les vraies mentions du mrkdwn brut. C'est la seule forme
+// qui fasse foi : « <@U04C7HJ8P> » est une mention, « Xavier » est un mot.
+var mentionRE = regexp.MustCompile(`<@([A-Z0-9]+)(?:\|[^>]*)?>`)
+
+// mentions relève les personnes citées, sans doublon, dans l'ordre du texte.
+func (c *Client) mentions(ctx context.Context, raw string) []Mention {
+	var out []Mention
+	seen := map[string]bool{}
+	for _, m := range mentionRE.FindAllStringSubmatch(raw, -1) {
+		id := m[1]
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		name := c.userName(ctx, id)
+		if self := c.selfUser(ctx); self != "" && id == self {
+			name = "toi"
+		}
+		out = append(out, Mention{ID: id, Nom: name})
+	}
+	return out
+}
+
+// permalink fabrique le lien d'un message. Slack expose chat.getPermalink,
+// mais un appel par message pour reconstituer une adresse déterministe serait
+// payer cent requêtes pour cent concaténations.
+func (c *Client) permalink(channelID, ts string) string {
+	c.mu.Lock()
+	base := c.teamURL
+	c.mu.Unlock()
+	if base == "" || channelID == "" || ts == "" {
+		return ""
+	}
+	return base + "/archives/" + channelID + "/p" + strings.Replace(ts, ".", "", 1)
+}
+
+func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int, channelID, channelLabel string) (Message, bool) {
 	// file_share et thread_broadcast portent un vrai message ; les autres
 	// sous-types (arrivées, départs, changements de sujet) ne sont que du bruit.
 	if m.Subtype != "" && m.Subtype != "file_share" && m.Subtype != "thread_broadcast" {
@@ -208,19 +272,37 @@ func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int) (Messa
 	case m.User != "":
 		author = c.userName(ctx, m.User)
 	}
-	return Message{
+	msg := Message{
+		ID:       m.TS,
 		DeToi:    mine,
 		Auteur:   author,
+		AuteurID: m.User,
+		Canal:    channelLabel,
+		CanalID:  channelID,
 		Texte:    truncate(c.renderText(ctx, m.Text), maxLen),
 		Quand:    parseSlackTS(m.TS),
 		Fichiers: files,
-	}, true
+		Mentions: c.mentions(ctx, m.Text),
+		Lien:     c.permalink(channelID, m.TS),
+	}
+	if m.ThreadTS != "" && m.ThreadTS != m.TS {
+		msg.FilDe = m.ThreadTS
+	}
+	if self := c.selfUser(ctx); self != "" {
+		for _, mention := range msg.Mentions {
+			if mention.ID == self {
+				msg.TeCite = true
+				break
+			}
+		}
+	}
+	return msg, true
 }
 
 // threadReplies lit les réponses d'un fil, sans le message d'origine (déjà
 // présent dans l'historique). Un fil illisible n'empêche pas de rendre le
 // canal : on le laisse vide plutôt que d'échouer.
-func (c *Client) threadReplies(ctx context.Context, channel, ts string) []Message {
+func (c *Client) threadReplies(ctx context.Context, channel, label, ts string) []Message {
 	var resp struct {
 		apiResponse
 		Messages []rawMessage `json:"messages"`
@@ -238,7 +320,7 @@ func (c *Client) threadReplies(ctx context.Context, channel, ts string) []Messag
 		if m.TS == ts {
 			continue
 		}
-		if msg, ok := c.toMessage(ctx, m, maxReplyTextLen); ok {
+		if msg, ok := c.toMessage(ctx, m, maxReplyTextLen, channel, label); ok {
 			out = append(out, msg)
 		}
 	}

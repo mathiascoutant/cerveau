@@ -12,6 +12,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/tuleap"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -112,9 +113,58 @@ func (s *Server) handleConnectSlack(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"provider": store.ProviderSlack, "status": "connected", "label": team})
 }
 
+// handleConnectTuleap valide la clé d'accès contre l'instance avant de la
+// ranger chiffrée. L'utilisateur qu'elle représente est relevé au passage :
+// c'est lui qui sert au filtre « assigné à moi » et à l'étiquette de l'écran.
+func (s *Server) handleConnectTuleap(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	if !s.cfg.TuleapEnabled() {
+		httpx.Error(w, http.StatusNotImplemented, "Tuleap n'est pas configuré sur le serveur (TULEAP_BASE_URL, TULEAP_CSP_TRACKER_ID)")
+		return
+	}
+	var req struct {
+		AccessKey string `json:"access_key"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
+		return
+	}
+	req.AccessKey = strings.TrimSpace(req.AccessKey)
+	if req.AccessKey == "" {
+		httpx.Error(w, http.StatusBadRequest, "clé d'accès Tuleap requise")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	id, name, err := tuleap.New(s.cfg.TuleapBaseURL, req.AccessKey).Me(ctx)
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	secret, err := s.cipher.SealJSON(store.TuleapCredentials{AccessKey: req.AccessKey, UserID: id, Name: name})
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "chiffrement du secret impossible")
+		return
+	}
+	if err := s.store.UpsertConnection(r.Context(), store.Connection{
+		UserID: user.ID, Provider: store.ProviderTuleap,
+		Status: "connected", Label: name, Secret: secret,
+	}); err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "enregistrement impossible")
+		return
+	}
+	s.csp.drop(user.ID)
+	httpx.JSON(w, http.StatusOK, map[string]any{"provider": store.ProviderTuleap, "status": "connected", "label": name})
+}
+
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	provider := chi.URLParam(r, "provider")
+	if provider == store.ProviderTuleap {
+		s.csp.drop(user.ID)
+	}
 
 	// WhatsApp ne se débranche pas en supprimant une ligne : il faut délier
 	// l'appareil côté WhatsApp, sinon il reste listé sur le téléphone et le
@@ -157,6 +207,18 @@ func (s *Server) slackCreds(ctx context.Context, user *store.User) (store.SlackC
 	var c store.SlackCredentials
 	if err := s.cipher.OpenJSON(conn.Secret, &c); err != nil {
 		return store.SlackCredentials{}, errors.New("secret Slack illisible, reconnecte Slack")
+	}
+	return c, nil
+}
+
+func (s *Server) tuleapCreds(ctx context.Context, user *store.User) (store.TuleapCredentials, error) {
+	conn, err := s.store.Connection(ctx, user.ID, store.ProviderTuleap)
+	if err != nil {
+		return store.TuleapCredentials{}, err
+	}
+	var c store.TuleapCredentials
+	if err := s.cipher.OpenJSON(conn.Secret, &c); err != nil {
+		return store.TuleapCredentials{}, errors.New("secret Tuleap illisible, ressaisis la clé d'accès")
 	}
 	return c, nil
 }

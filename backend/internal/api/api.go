@@ -31,6 +31,8 @@ type Server struct {
 	pending *pendingOAuth
 	speech  *speechTickets
 	confirm *confirmations
+	// csp : cache court des tickets Tuleap, par utilisateur (voir handlers_jobs.go).
+	csp *cspCache
 }
 
 func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa *whatsapp.Manager) *Server {
@@ -40,7 +42,9 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		cipher: cipher,
 		wa:     wa,
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort).
+			WithFast(cfg.OpenAIFastModel, cfg.OpenAIFastEffort).
 			WithDeep(cfg.OpenAIDeepModel, cfg.OpenAIDeepEffort),
+		csp: newCSPCache(),
 		stt: stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
 		tts: tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
 
@@ -96,6 +100,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/connections", s.handleListConnections)
 			r.Put("/connections/gandi", s.handleConnectGandi)
 			r.Put("/connections/slack", s.handleConnectSlack)
+			r.Put("/connections/tuleap", s.handleConnectTuleap)
 			r.Post("/connections/slack/oauth", s.handleSlackOAuthStart)
 			r.Post("/connections/whatsapp/pair", s.handleWhatsAppPair)
 			r.Get("/connections/whatsapp/status", s.handleWhatsAppStatus)
@@ -119,7 +124,12 @@ func (s *Server) Routes() http.Handler {
 			r.Patch("/drafts/{id}", s.handleUpdateDraft)
 			r.Delete("/drafts/{id}", s.handleDeleteDraft)
 
+			r.Get("/jobs", s.handleJobs)
+			r.Get("/jobs/csp/tickets", s.handleCSPTickets)
+			r.Get("/jobs/csp/tickets/{id}", s.handleCSPTicket)
+
 			r.Post("/assistant/ask", s.handleAsk)
+			r.Post("/assistant/stream", s.handleAskStream)
 			r.Post("/assistant/voice", s.handleVoice)
 			r.Post("/assistant/speech", s.handleSpeak)
 		})

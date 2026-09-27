@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -16,14 +17,32 @@ type Config struct {
 	MasterKeyHex string
 
 	OpenAIAPIKey string
-	OpenAIModel  string
+	// OpenAIModel : l'étage des outils, celui de la plupart des questions.
+	OpenAIModel string
 	// Effort de raisonnement : none/minimal/low/medium/high. « low » est le bon
 	// compromis pour du vocal, où la latence compte autant que la finesse.
 	OpenAIEffort string
-	// Modèle et effort du débrief approfondi (voir assistant/debrief.go). Vides,
-	// gpt-5.4 en effort medium.
+	// Modèle et effort de l'étage rapide — conversation sans outils (voir
+	// assistant/router.go). Vide, l'étage tourne sur le modèle principal.
+	OpenAIFastModel  string
+	OpenAIFastEffort string
+	// Modèle et effort du débrief approfondi et de l'étage fort du routage
+	// (voir assistant/debrief.go). Vides, gpt-5.4 en effort medium.
 	OpenAIDeepModel  string
 	OpenAIDeepEffort string
+
+	// Tuleap : l'instance et le tracker des tickets CSP. La clé d'accès est
+	// personnelle, elle se saisit dans l'app et se range chiffrée en base.
+	TuleapBaseURL string
+	// TuleapCSPTrackerID : le tracker à lire.
+	TuleapCSPTrackerID int
+	// TuleapCSPQuery : sélection au format JSON de l'API Tuleap. Vide = tous
+	// les artefacts du tracker.
+	TuleapCSPQuery string
+	// TuleapCSPExpertQuery : sélection en TQL, prime sur la précédente.
+	TuleapCSPExpertQuery string
+	// TuleapCSPAssignedToMe : ne garder que les tickets assignés à l'utilisateur.
+	TuleapCSPAssignedToMe bool
 
 	// Speech-to-text (endpoint compatible OpenAI /v1/audio/transcriptions :
 	// soit api.openai.com, soit un whisper.cpp / faster-whisper auto-hébergé sur le VPS).
@@ -63,29 +82,36 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{
-		Addr:               env("ADDR", ":8080"),
-		MongoURI:           env("MONGO_URI", ""),
-		MongoDB:            env("MONGO_DB", "cerveau"),
-		MasterKeyHex:       env("MASTER_KEY", ""),
-		OpenAIAPIKey:       env("OPENAI_API_KEY", ""),
-		OpenAIModel:        env("OPENAI_MODEL", "gpt-5.4-mini"),
-		OpenAIEffort:       env("OPENAI_EFFORT", "low"),
-		OpenAIDeepModel:    env("OPENAI_DEEP_MODEL", ""),
-		OpenAIDeepEffort:   env("OPENAI_DEEP_EFFORT", ""),
-		STTBaseURL:         strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
-		STTAPIKey:          env("STT_API_KEY", ""),
-		STTModel:           env("STT_MODEL", "whisper-1"),
-		ElevenLabsAPIKey:   env("ELEVENLABS_API_KEY", ""),
-		ElevenLabsVoiceID:  env("ELEVENLABS_VOICE_ID", ""),
-		ElevenLabsModel:    env("ELEVENLABS_MODEL", ""),
-		ElevenLabsLanguage: env("ELEVENLABS_LANGUAGE", ""),
-		WhatsAppSessionDB:  env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
-		SlackClientID:      env("SLACK_CLIENT_ID", ""),
-		SlackClientSecret:  env("SLACK_CLIENT_SECRET", ""),
-		PublicBaseURL:      strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
-		DefaultTimezone:    env("DEFAULT_TIMEZONE", "Europe/Paris"),
-		DefaultUserName:    env("DEFAULT_USER_NAME", ""),
-		AllowSignup:        env("ALLOW_SIGNUP", "") == "true",
+		Addr:                  env("ADDR", ":8080"),
+		MongoURI:              env("MONGO_URI", ""),
+		MongoDB:               env("MONGO_DB", "cerveau"),
+		MasterKeyHex:          env("MASTER_KEY", ""),
+		OpenAIAPIKey:          env("OPENAI_API_KEY", ""),
+		OpenAIModel:           env("OPENAI_MODEL", "gpt-5.4-mini"),
+		OpenAIEffort:          env("OPENAI_EFFORT", "low"),
+		OpenAIFastModel:       env("OPENAI_FAST_MODEL", ""),
+		OpenAIFastEffort:      env("OPENAI_FAST_EFFORT", "none"),
+		OpenAIDeepModel:       env("OPENAI_DEEP_MODEL", ""),
+		OpenAIDeepEffort:      env("OPENAI_DEEP_EFFORT", ""),
+		TuleapBaseURL:         strings.TrimSuffix(env("TULEAP_BASE_URL", ""), "/"),
+		TuleapCSPTrackerID:    envInt("TULEAP_CSP_TRACKER_ID"),
+		TuleapCSPQuery:        env("TULEAP_CSP_QUERY", ""),
+		TuleapCSPExpertQuery:  env("TULEAP_CSP_EXPERT_QUERY", ""),
+		TuleapCSPAssignedToMe: env("TULEAP_CSP_ASSIGNED_TO_ME", "") == "true",
+		STTBaseURL:            strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
+		STTAPIKey:             env("STT_API_KEY", ""),
+		STTModel:              env("STT_MODEL", "whisper-1"),
+		ElevenLabsAPIKey:      env("ELEVENLABS_API_KEY", ""),
+		ElevenLabsVoiceID:     env("ELEVENLABS_VOICE_ID", ""),
+		ElevenLabsModel:       env("ELEVENLABS_MODEL", ""),
+		ElevenLabsLanguage:    env("ELEVENLABS_LANGUAGE", ""),
+		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
+		SlackClientID:         env("SLACK_CLIENT_ID", ""),
+		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),
+		PublicBaseURL:         strings.TrimSuffix(env("PUBLIC_BASE_URL", ""), "/"),
+		DefaultTimezone:       env("DEFAULT_TIMEZONE", "Europe/Paris"),
+		DefaultUserName:       env("DEFAULT_USER_NAME", ""),
+		AllowSignup:           env("ALLOW_SIGNUP", "") == "true",
 	}
 
 	var missing []string
@@ -113,6 +139,20 @@ func (c Config) SlackOAuthEnabled() bool {
 // « Redirect URLs » côté Slack, sinon l'échange échoue en bad_redirect_uri.
 func (c Config) SlackRedirectURI() string {
 	return c.PublicBaseURL + "/oauth/slack/callback"
+}
+
+// TuleapEnabled : l'onglet Jobs ne propose la carte CSP que si le serveur
+// sait où est Tuleap et quel tracker lire.
+func (c Config) TuleapEnabled() bool {
+	return c.TuleapBaseURL != "" && c.TuleapCSPTrackerID > 0
+}
+
+func envInt(key string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func env(key, def string) string {

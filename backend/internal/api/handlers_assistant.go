@@ -95,49 +95,12 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		now = time.Now()
 	}
 
-	// Contexte conversationnel. L'app garde désormais la conversation ouverte
-	// après le premier « OK Raoul » : les tours s'enchaînent sans réveil, et
-	// deux échanges de mémoire ne suffisaient plus à suivre un fil — ni même à
-	// se souvenir de quel Cyril on vient de parler.
-	//
-	// Ce qui déborde de cette fenêtre n'est pas perdu : l'outil
-	// chercher_historique va le rechercher en base quand il renvoie à une
-	// conversation plus ancienne.
-	var history []assistant.Turn
-	if past, err := s.store.RecentInteractions(r.Context(), user.ID, 14); err == nil {
-		for i := len(past) - 1; i >= 0; i-- {
-			history = append(history, assistant.Turn{
-				User:      past[i].Transcript,
-				Assistant: past[i].Reply,
-			})
-		}
-	}
+	history := s.history(r.Context(), user)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
 	defer cancel()
 
-	name := user.Name
-	if name == "" {
-		name = s.cfg.DefaultUserName
-	}
-
-	// Son adresse vient de la connexion Gandi : c'est elle qui lui permet de se
-	// reconnaître parmi les destinataires d'un mail, et de signer une réponse.
-	var email string
-	if creds, err := s.gandiCreds(ctx, user); err == nil {
-		email = creds.Email
-	}
-
-	result, err := s.engine.Ask(ctx, s.toolbox(user), assistant.Request{
-		Text:      transcript,
-		Now:       now,
-		Timezone:  tz,
-		UserName:  name,
-		UserEmail: email,
-		History:   history,
-		Sources:   s.sources(ctx, user),
-		Facts:     s.facts(ctx, user),
-	})
+	result, err := s.engine.Ask(ctx, s.toolbox(user), s.request(ctx, user, transcript, now, tz, history))
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, "Raoul n'a pas pu répondre : "+err.Error())
 		return
@@ -167,6 +130,50 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 	})
 }
 
+// request assemble tout ce que le moteur doit savoir pour un tour. Partagé par
+// le chemin sans flux et le chemin en flux, qui ne diffèrent que par la façon
+// de rendre la réponse.
+func (s *Server) request(ctx context.Context, user *store.User, text string, now time.Time, tz string, history []assistant.Turn) assistant.Request {
+	name := user.Name
+	if name == "" {
+		name = s.cfg.DefaultUserName
+	}
+	// Son adresse vient de la connexion Gandi : c'est elle qui lui permet de se
+	// reconnaître parmi les destinataires d'un mail, et de signer une réponse.
+	var email string
+	if creds, err := s.gandiCreds(ctx, user); err == nil {
+		email = creds.Email
+	}
+	return assistant.Request{
+		Text:      text,
+		Now:       now,
+		Timezone:  tz,
+		UserName:  name,
+		UserEmail: email,
+		History:   history,
+		Sources:   s.sources(ctx, user),
+		Facts:     s.facts(ctx, user),
+		// L'identifiant Mongo du compte : stable, opaque, sans rien de secret.
+		CacheKey: "raoul:" + user.ID.Hex(),
+	}
+}
+
+// history rend les derniers tours, du plus ancien au plus récent.
+//
+// L'app garde la conversation ouverte après le premier « OK Raoul » : les tours
+// s'enchaînent sans réveil, et deux échanges de mémoire ne suffisaient plus à
+// suivre un fil. Ce qui déborde de cette fenêtre n'est pas perdu : l'outil
+// chercher_historique va le rechercher en base.
+func (s *Server) history(ctx context.Context, user *store.User) []assistant.Turn {
+	var history []assistant.Turn
+	if past, err := s.store.RecentInteractions(ctx, user.ID, 14); err == nil {
+		for i := len(past) - 1; i >= 0; i-- {
+			history = append(history, assistant.Turn{User: past[i].Transcript, Assistant: past[i].Reply})
+		}
+	}
+	return history
+}
+
 // sources dit quels comptes sont branchés, pour que le modèle n'en reçoive ni
 // les outils ni le nom. Un compte jamais configuré ne doit pas se transformer
 // en outil qui échoue : le modèle rapporterait l'échec à voix haute, et
@@ -181,5 +188,6 @@ func (s *Server) sources(ctx context.Context, user *store.User) assistant.Source
 		Mail:     connected(store.ProviderGandi),
 		Slack:    connected(store.ProviderSlack),
 		WhatsApp: connected(store.ProviderWhatsApp),
+		CSP:      s.cfg.TuleapEnabled() && connected(store.ProviderTuleap),
 	}
 }

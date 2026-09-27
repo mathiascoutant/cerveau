@@ -12,6 +12,7 @@ const (
 	ProviderSlack    = "slack"
 	ProviderWhatsApp = "whatsapp"
 	ProviderCalendar = "calendar"
+	ProviderTuleap   = "tuleap"
 )
 
 // User : un compte. L'identité, c'est l'adresse mail et le mot de passe — pas
@@ -67,6 +68,16 @@ type GandiCredentials struct {
 
 type SlackCredentials struct {
 	UserToken string `json:"user_token"` // xoxp-...
+}
+
+// TuleapCredentials : la clé d'accès personnelle Tuleap (Mon compte › Clés
+// d'accès). Les tickets vus sont exactement ceux que l'utilisateur voit.
+type TuleapCredentials struct {
+	AccessKey string `json:"access_key"`
+	// UserID et Name : l'utilisateur que la clé représente, relevés à la
+	// connexion pour filtrer « assigné à moi » sans redemander à chaque fois.
+	UserID int    `json:"user_id,omitempty"`
+	Name   string `json:"name,omitempty"`
 }
 
 // WhatsAppCredentials : l'appareil lié, tel que whatsmeow le nomme

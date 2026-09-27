@@ -55,6 +55,14 @@ type Client struct {
 	self         string
 	selfID       string
 	selfResolved bool
+	// teamURL : l'adresse de l'espace de travail (« https://acme.slack.com/ »),
+	// rendue par auth.test. C'est ce qui permet de fabriquer le lien d'un
+	// message sans appel supplémentaire ni scope de plus.
+	teamURL string
+	// directory : l'annuaire des membres, chargé une fois par client quand une
+	// recherche par personne le demande.
+	directory       []directoryUser
+	directoryLoaded bool
 }
 
 func New(token string) *Client {
@@ -89,12 +97,14 @@ func (c *Client) TestConnection(ctx context.Context) (team string, user string, 
 		Team   string `json:"team"`
 		User   string `json:"user"`
 		UserID string `json:"user_id"`
+		URL    string `json:"url"`
 	}
 	if err := c.call(ctx, "auth.test", nil, &res); err != nil {
 		return "", "", err
 	}
 	c.mu.Lock()
 	c.self, c.selfID, c.selfResolved = res.User, res.UserID, true
+	c.teamURL = strings.TrimSuffix(res.URL, "/")
 	c.mu.Unlock()
 	return res.Team, res.User, nil
 }

@@ -7,9 +7,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -49,6 +47,101 @@ type Toolbox interface {
 	DropTodo(ctx context.Context, query string) (TodoView, store.Action, error)
 	Remember(ctx context.Context, fact FactView) (FactView, error)
 	Forget(ctx context.Context, query string) ([]FactView, error)
+
+	// Mails : au-delà des non-lus. Voir MailHitView pour ce que chaque
+	// résultat porte — et pourquoi il le porte.
+	SentEmails(ctx context.Context, query string, limit int, withBody bool) ([]MailHitView, error)
+	SearchEmails(ctx context.Context, q MailSearch) ([]MailHitView, error)
+	ReadEmailByID(ctx context.Context, messageID string) (EmailContentView, error)
+	// Slack : la recherche transversale, par personne et par période.
+	SearchSlack(ctx context.Context, q SlackSearch) (SlackSearchView, error)
+	// Tickets CSP du tracker Tuleap.
+	CSPTickets(ctx context.Context, query string, includeClosed bool, limit int) ([]TicketView, error)
+}
+
+// MailSearch cadre une recherche dans la boîte.
+type MailSearch struct {
+	// Person : expéditeur cherché (boîte de réception) ou destinataire (boîte
+	// d'envoi), tel qu'il a été dit.
+	Person  string
+	Subject string
+	Since   time.Time
+	// Folder : « recu », « envoye » ou « tous ».
+	Folder string
+	Limit  int
+}
+
+// MailHitView est un mail retrouvé par une recherche, sans son corps.
+//
+// Chaque champ répond à une confusion précise que la question peut porter :
+// dossier sépare reçu et envoyé, de_toi dit qui l'a écrit, brouillon écarte ce
+// qui n'est jamais parti, message_id permet de rouvrir exactement celui-là.
+type MailHitView struct {
+	MessageID string `json:"message_id"`
+	// Dossier : « reçu » ou « envoyé ».
+	Dossier string `json:"dossier"`
+	De      string `json:"de"`
+	Adresse string `json:"adresse,omitempty"`
+	// DeToi : c'est l'utilisateur qui l'a écrit (boîte d'envoi).
+	DeToi bool     `json:"de_toi,omitempty"`
+	Pour  []string `json:"pour,omitempty"`
+	Copie []string `json:"copie,omitempty"`
+	Objet string   `json:"objet"`
+	// Quand : déjà mis en mots par rapport à maintenant.
+	Quand string `json:"quand"`
+	Lu    bool   `json:"lu"`
+	// Brouillon : porte le drapeau brouillon — il n'a pas été envoyé.
+	Brouillon bool `json:"brouillon,omitempty"`
+	// PourToi : sa place parmi les destinataires, pour un mail reçu.
+	PourToi         string `json:"pour_toi,omitempty"`
+	ReponseATonMail bool   `json:"reponse_a_ton_mail,omitempty"`
+	// Contenu : le corps, seulement quand il a été demandé.
+	Contenu string `json:"contenu,omitempty"`
+}
+
+// SlackSearch cadre une recherche Slack.
+type SlackSearch struct {
+	Author   string
+	Mentions string
+	Text     string
+	Channel  string
+	Since    time.Time
+	Limit    int
+}
+
+// SlackSearchView est le résultat d'une recherche, avec ce qui a été parcouru.
+type SlackSearchView struct {
+	// Auteur : la personne résolue quand on cherchait par auteur — à
+	// annoncer telle quelle, c'est elle qui a été cherchée.
+	Auteur   string `json:"auteur_recherche,omitempty"`
+	AuteurID string `json:"auteur_id,omitempty"`
+	// Mentionne : idem pour la personne citée.
+	Mentionne      string             `json:"personne_citee,omitempty"`
+	Canaux         int                `json:"conversations_parcourues"`
+	Depuis         string             `json:"depuis"`
+	Messages       []SlackMessageView `json:"messages"`
+	Avertissements []string           `json:"avertissements,omitempty"`
+}
+
+// MentionView est une personne citée par une vraie mention Slack.
+type MentionView struct {
+	ID  string `json:"id"`
+	Nom string `json:"nom"`
+}
+
+// TicketView est un ticket CSP tel que le modèle le reçoit.
+type TicketView struct {
+	ID          int    `json:"id"`
+	Ref         string `json:"ref"`
+	Titre       string `json:"titre"`
+	Statut      string `json:"statut"`
+	Priorite    string `json:"priorite,omitempty"`
+	Responsable string `json:"responsable,omitempty"`
+	Auteur      string `json:"auteur,omitempty"`
+	Modifie     string `json:"modifie"`
+	URL         string `json:"lien"`
+	Ferme       bool   `json:"ferme,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type EventView struct {
@@ -157,12 +250,28 @@ type SlackChannelView struct {
 }
 
 type SlackMessageView struct {
-	Auteur   string   `json:"auteur"`
+	// ID : l'identifiant Slack du message. Sert à le citer et à retrouver
+	// son fil.
+	ID     string `json:"id,omitempty"`
+	Canal  string `json:"canal,omitempty"`
+	Auteur string `json:"auteur"`
+	// AuteurID : l'identifiant de l'auteur d'après l'API. C'est LUI qui fait
+	// foi : un prénom dans le texte n'est jamais une signature.
+	AuteurID string   `json:"auteur_id,omitempty"`
 	Texte    string   `json:"texte"`
 	Quand    string   `json:"quand"`
 	Fichiers []string `json:"fichiers,omitempty"`
 	// DeToi : c'est lui qui l'a écrit.
 	DeToi bool `json:"de_toi,omitempty"`
+	// Mentions : les personnes citées par une vraie mention (@), résolues.
+	// Quelqu'un qui y figure est interpellé ou évoqué — pas l'auteur.
+	Mentions []MentionView `json:"mentions,omitempty"`
+	// TeCite : il est lui-même parmi les mentions.
+	TeCite bool `json:"te_cite,omitempty"`
+	// FilDe : identifiant du message auquel celui-ci répond dans un fil.
+	FilDe string `json:"repond_dans_le_fil_de,omitempty"`
+	// Lien : permalien vers le message.
+	Lien string `json:"lien,omitempty"`
 	// Fil : les réponses données dans le fil du message, dans l'ordre.
 	Fil []SlackMessageView `json:"reponses_dans_le_fil,omitempty"`
 }
@@ -352,6 +461,9 @@ type Request struct {
 	// Ce n'est pas une source de plus mais le fond sur lequel les autres se
 	// lisent — voir memoire.go.
 	Facts []FactView
+	// CacheKey : identifie l'utilisateur auprès du cache de prompts d'OpenAI.
+	// Une valeur stable par compte suffit — jamais un secret.
+	CacheKey string
 }
 
 // Sources dit quels comptes externes sont connectés. Le calendrier n'y figure
@@ -360,6 +472,8 @@ type Sources struct {
 	Mail     bool
 	Slack    bool
 	WhatsApp bool
+	// CSP : le tracker Tuleap des tickets est joignable.
+	CSP bool
 }
 
 type Turn struct {
@@ -372,15 +486,42 @@ type Result struct {
 	Reply   string         `json:"reply"`
 	Actions []store.Action `json:"actions,omitempty"`
 	Steps   []string       `json:"steps,omitempty"`
+	// Metrics : ce que la réponse a coûté. Voir stream.go.
+	Metrics *Metrics `json:"metrics,omitempty"`
 }
 
 type Engine struct {
 	client openai.Client
+	// model et effort : l'étage des outils, celui de la plupart des questions.
 	model  shared.ResponsesModel
 	effort shared.ReasoningEffort
-	// deepModel et deepEffort servent au débrief — voir debrief.go.
+	// fastModel et fastEffort : l'étage rapide, sans outils — voir router.go.
+	fastModel  shared.ResponsesModel
+	fastEffort shared.ReasoningEffort
+	// deepModel et deepEffort : le débrief (debrief.go) et l'étage fort du
+	// routage.
 	deepModel  shared.ResponsesModel
 	deepEffort shared.ReasoningEffort
+}
+
+// WithFast règle le modèle de l'étage rapide. Vide, l'étage rapide tourne sur
+// le modèle principal, sans outils : on garde l'économie de contexte, pas celle
+// du modèle.
+func (e *Engine) WithFast(model, effort string) *Engine {
+	e.fastModel = shared.ResponsesModel(model)
+	if effort == "" {
+		effort = string(shared.ReasoningEffortNone)
+	}
+	e.fastEffort = shared.ReasoningEffort(effort)
+	return e
+}
+
+func (e *Engine) models() Models {
+	return Models{
+		Fast: e.fastModel, FastEffort: e.fastEffort,
+		Tools: e.model, ToolsEffort: e.effort,
+		Deep: e.deepModel, Deep2: e.deepEffort,
+	}
 }
 
 // New construit le moteur. `effort` pilote le budget de raisonnement :
@@ -400,107 +541,11 @@ func New(apiKey, model, effort string) *Engine {
 	}
 }
 
+// Ask répond sans flux : la même mécanique que AskStream, événements ignorés.
+// C'est le chemin de /assistant/ask et de Siri, qui attendent une réponse
+// entière.
 func (e *Engine) Ask(ctx context.Context, tb Toolbox, req Request) (Result, error) {
-	loc := time.UTC
-	if req.Timezone != "" {
-		if l, err := time.LoadLocation(req.Timezone); err == nil {
-			loc = l
-		}
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-	now = now.In(loc)
-
-	var result Result
-
-	// API Responses et non Chat Completions : sur les modèles à raisonnement,
-	// OpenAI refuse la combinaison outils + reasoning_effort sur /v1/chat/completions.
-	items := make([]responses.ResponseInputItemUnionParam, 0, len(req.History)*2+2)
-	for _, t := range req.History {
-		if t.User == "" {
-			continue
-		}
-		items = append(items, responses.ResponseInputItemParamOfMessage(t.User, responses.EasyInputMessageRoleUser))
-		if t.Assistant != "" {
-			items = append(items, responses.ResponseInputItemParamOfMessage(t.Assistant, responses.EasyInputMessageRoleAssistant))
-		}
-	}
-	items = append(items, responses.ResponseInputItemParamOfMessage(req.Text, responses.EasyInputMessageRoleUser))
-
-	params := responses.ResponseNewParams{
-		Model:        e.model,
-		Instructions: openai.String(systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts)),
-		Tools:        toolDefinitions(req.Sources),
-		Reasoning:    shared.ReasoningParam{Effort: e.effort},
-		// Rien ne doit être conservé côté OpenAI : les objets de mails, les
-		// extraits Slack et l'agenda ne sortent que le temps de la requête.
-		Store: openai.Bool(false),
-	}
-
-	for range maxIterations {
-		params.Input = responses.ResponseNewParamsInputUnion{OfInputItemList: items}
-
-		resp, err := e.client.Responses.New(ctx, params)
-		if err != nil {
-			return result, fmt.Errorf("appel du modèle : %w", err)
-		}
-
-		if txt := strings.TrimSpace(resp.OutputText()); txt != "" {
-			result.Reply = txt
-		}
-
-		calls := make([]responses.ResponseFunctionToolCall, 0, 4)
-		for _, item := range resp.Output {
-			if call, ok := item.AsAny().(responses.ResponseFunctionToolCall); ok {
-				calls = append(calls, call)
-			}
-		}
-		if len(calls) == 0 {
-			return result, nil
-		}
-
-		for _, call := range calls {
-			var (
-				payload string
-				action  *store.Action
-				err     error
-			)
-			if call.Name == "debriefer" {
-				payload, err = e.debrief(ctx, tb, req, now, loc, call.Arguments)
-			} else {
-				payload, action, err = e.runTool(ctx, tb, loc, call.Name, call.Arguments)
-			}
-			if action != nil {
-				result.Actions = append(result.Actions, *action)
-			}
-			result.Steps = append(result.Steps, call.Name)
-			if err != nil {
-				// Ce n'est pas toujours une panne : certains outils font leur
-				// travail et rendent la main pour qu'on lève un doute. Ils
-				// portent alors la question à poser, pas un message d'erreur.
-				var ask interface{ instruction() string }
-				if errors.As(err, &ask) {
-					payload = ask.instruction()
-				} else {
-					slog.Warn("outil en échec", "outil", call.Name, "err", err)
-					payload = "Erreur : " + err.Error()
-				}
-			}
-			// L'appel doit être rejoué dans l'entrée avant son résultat, sinon
-			// le modèle ne sait pas à quoi le rattacher.
-			items = append(items,
-				responses.ResponseInputItemParamOfFunctionCall(call.Arguments, call.CallID, call.Name),
-				responses.ResponseInputItemParamOfFunctionCallOutput(call.CallID, payload),
-			)
-		}
-	}
-
-	if result.Reply == "" {
-		result.Reply = "Je n'ai pas réussi à conclure, désolé. Tu peux reformuler ?"
-	}
-	return result, nil
+	return e.AskStream(ctx, tb, req, nil)
 }
 
 // DigestInput regroupe ce qui a été collecté pour la synthèse du jour.
@@ -605,15 +650,130 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		var in struct {
 			Recherche string `json:"recherche"`
 			NonLu     bool   `json:"non_lu"`
+			MessageID string `json:"message_id"`
 		}
 		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
 			return "", nil, err
+		}
+		if strings.TrimSpace(in.MessageID) != "" {
+			mail, err := tb.ReadEmailByID(ctx, in.MessageID)
+			if err != nil {
+				return "", nil, err
+			}
+			return encode(mail), nil, nil
 		}
 		mail, err := tb.ReadEmail(ctx, in.Recherche, in.NonLu)
 		if err != nil {
 			return "", nil, err
 		}
 		return encode(mail), nil, nil
+
+	case "mails_envoyes":
+		var in struct {
+			Recherche string `json:"recherche"`
+			Limite    int    `json:"limite"`
+			Contenu   *bool  `json:"contenu"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		withBody := in.Contenu == nil || *in.Contenu
+		hits, err := tb.SentEmails(ctx, in.Recherche, in.Limite, withBody)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(hits) == 0 {
+			if strings.TrimSpace(in.Recherche) == "" {
+				return "Aucun mail dans la boîte d'envoi.", nil, nil
+			}
+			return "Aucun mail envoyé ne correspond à « " + in.Recherche + " ».", nil, nil
+		}
+		return encode(hits), nil, nil
+
+	case "chercher_mails":
+		var in struct {
+			Personne string `json:"personne"`
+			Objet    string `json:"objet"`
+			Depuis   string `json:"depuis"`
+			Dossier  string `json:"dossier"`
+			Limite   int    `json:"limite"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(in.Personne) == "" && strings.TrimSpace(in.Objet) == "" {
+			return "", nil, fmt.Errorf("donne au moins une personne ou un objet à chercher")
+		}
+		var since time.Time
+		if strings.TrimSpace(in.Depuis) != "" {
+			t, err := parseTime(in.Depuis, loc)
+			if err != nil {
+				return "", nil, fmt.Errorf("date de début invalide : %w", err)
+			}
+			since = t
+		}
+		hits, err := tb.SearchEmails(ctx, MailSearch{
+			Person: in.Personne, Subject: in.Objet, Since: since, Folder: in.Dossier, Limit: in.Limite,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		if len(hits) == 0 {
+			return "Aucun mail ne correspond dans les messages récents de la boîte. Dis-le tel quel : rien trouvé, pas « il n'a rien écrit ».", nil, nil
+		}
+		return encode(hits), nil, nil
+
+	case "chercher_slack":
+		var in struct {
+			Auteur    string `json:"auteur"`
+			Mentionne string `json:"mentionne"`
+			Mots      string `json:"mots"`
+			Canal     string `json:"canal"`
+			Depuis    string `json:"depuis"`
+			Limite    int    `json:"limite"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		if strings.TrimSpace(in.Auteur) == "" && strings.TrimSpace(in.Mentionne) == "" && strings.TrimSpace(in.Mots) == "" {
+			return "", nil, fmt.Errorf("donne au moins un auteur, une personne citée ou des mots à chercher")
+		}
+		var since time.Time
+		if strings.TrimSpace(in.Depuis) != "" {
+			t, err := parseTime(in.Depuis, loc)
+			if err != nil {
+				return "", nil, fmt.Errorf("date de début invalide : %w", err)
+			}
+			since = t
+		}
+		view, err := tb.SearchSlack(ctx, SlackSearch{
+			Author: in.Auteur, Mentions: in.Mentionne, Text: in.Mots, Channel: in.Canal, Since: since, Limit: in.Limite,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		if len(view.Messages) == 0 {
+			return encode(view) + "\nAucun message ne correspond sur cette période dans les conversations parcourues. Dis-le tel quel, et propose d'élargir la période si ça a un sens.", nil, nil
+		}
+		return encode(view), nil, nil
+
+	case "tickets_csp":
+		var in struct {
+			Recherche string `json:"recherche"`
+			Statut    string `json:"statut"`
+			Limite    int    `json:"limite"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		tickets, err := tb.CSPTickets(ctx, in.Recherche, strings.EqualFold(in.Statut, "tous"), in.Limite)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(tickets) == 0 {
+			return "Aucun ticket CSP ne correspond.", nil, nil
+		}
+		return encode(tickets), nil, nil
 
 	case "retenir":
 		var in struct {
@@ -1148,8 +1308,33 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 				"lire_mail",
 				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, destinataires) et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 				object(map[string]any{
-					"recherche": str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
-					"non_lu":    map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
+					"recherche":  str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
+					"non_lu":     map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
+					"message_id": str("Identifiant exact d'un mail rendu par chercher_mails ou mails_envoyes. Quand tu l'as, passe-le : c'est LE moyen d'ouvrir précisément ce message-là, reçu ou envoyé, et non un homonyme."),
+				}),
+			),
+			tool(
+				"mails_envoyes",
+				"Lit la boîte d'ENVOI : les mails que l'utilisateur a lui-même envoyés, du plus récent au plus ancien, avec le corps du plus récent. C'est l'outil de « c'est quoi le dernier mail que j'ai envoyé », « qu'est-ce que j'ai écrit à Hebat », « j'ai répondu quoi à Cyril ». Un mail de cette boîte est un mail qu'IL a écrit : tu ne le présentes jamais comme reçu. Le champ brouillon écarte ce qui n'est jamais parti.",
+				object(map[string]any{
+					"recherche": str("Destinataire (nom ou adresse) ou fragment d'objet, facultatif. Vide = ses derniers envois, quels qu'ils soient."),
+					"limite":    map[string]any{"type": "integer", "description": "Nombre de mails (défaut 5)"},
+					"contenu":   map[string]any{"type": "boolean", "description": "Rapatrier le corps du plus récent (défaut vrai). Mets faux pour une simple liste."},
+				}),
+			),
+			tool(
+				"chercher_mails",
+				"Cherche des mails par personne et par objet, lus ou non, reçus ou envoyés. C'est l'outil de « qu'est-ce que Hebat m'a dit par mail », « les mails d'Olivier sur le devis », « on s'est dit quoi avec Cyril » (dossier « tous »). Il rend les enveloppes avec leur message_id : pour le contenu d'un mail précis, rappelle lire_mail avec ce message_id. Chaque résultat dit son dossier (reçu ou envoyé) et de_toi quand c'est lui qui l'a écrit : un mail envoyé n'est pas quelque chose qu'on lui a dit.",
+				object(map[string]any{
+					"personne": str("La personne, telle qu'il l'a dite (« Hebat », « olivier@x.fr »). Expéditeur pour les mails reçus, destinataire pour les envoyés."),
+					"objet":    str("Fragment d'objet, facultatif (« planning », « devis »)."),
+					"depuis":   str("Ne remonter que depuis cette date, ISO 8601. Facultatif."),
+					"dossier": map[string]any{
+						"type":        "string",
+						"enum":        []string{"recu", "envoye", "tous"},
+						"description": "Où chercher (défaut « recu »). « tous » pour reconstituer un échange dans les deux sens.",
+					},
+					"limite": map[string]any{"type": "integer", "description": "Nombre de résultats (défaut 10)"},
 				}),
 			),
 			tool(
@@ -1183,7 +1368,34 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 					"limite": map[string]any{"type": "integer", "description": "Nombre de messages à lire (défaut 15, maximum 100). Monte franchement quand il faut reconstituer le contexte d'un échange."},
 				}, "canal"),
 			),
+			tool(
+				"chercher_slack",
+				"Cherche des messages dans TOUTES les conversations Slack, par auteur, par personne citée, par mots, sur une période (défaut : sept jours). C'est l'outil de « qu'est-ce que Xavier a demandé aujourd'hui », « qui a demandé à Xavier de… » (mentionne = Xavier), « est-ce que Thomas a répondu à Marie », « on a parlé du CSP où ». L'auteur est résolu par son identifiant Slack : un message rendu pour auteur=Xavier est ÉCRIT par Xavier, jamais un message qui parle de lui. Chaque message porte auteur, auteur_id, mentions (les personnes réellement @citées), te_cite, repond_dans_le_fil_de et lien : c'est avec ces champs que tu dis qui a demandé quoi à qui, pas avec les prénoms du texte. Si le prénom désigne plusieurs membres, l'outil le dit : demande lequel.",
+				object(map[string]any{
+					"auteur":    str("La personne dont on veut LES messages, telle qu'il l'a dite (« Xavier », « moi »). Vide si la question ne porte pas sur un auteur."),
+					"mentionne": str("Ne garder que les messages qui CITENT cette personne (@). C'est ce qu'il faut pour « qui a demandé quelque chose à Xavier »."),
+					"mots":      str("Mots à retrouver dans le texte (« CSP », « mise à jour »), facultatif."),
+					"canal":     str("Limiter à une conversation, nom tel qu'il l'a dit. Vide = toutes."),
+					"depuis":    str("Ne remonter que depuis cette date, ISO 8601. « aujourd'hui » = ce matin à minuit. Facultatif : sept jours par défaut."),
+					"limite":    map[string]any{"type": "integer", "description": "Nombre de messages (défaut 25, maximum 60)"},
+				}),
+			),
 		)
+	}
+	if src.CSP {
+		tools = append(tools, tool(
+			"tickets_csp",
+			"Liste ses tickets CSP du tracker Tuleap — les mêmes que l'onglet Jobs de l'app. Chaque ticket porte sa référence, son titre, son statut, sa priorité, son responsable, sa dernière modification et son lien. À appeler dès qu'il parle de ses tickets, d'un CSP, d'un incident Tuleap, ou qu'il veut savoir où en est un ticket. Pour rapprocher un ticket d'un échange Slack ou d'un mail, appelle aussi les outils de ces sources : tu croises, tu n'inventes pas le lien.",
+			object(map[string]any{
+				"recherche": str("Mots du titre, référence ou numéro (« 101 », « firmware »). Vide = tous les tickets du périmètre."),
+				"statut": map[string]any{
+					"type":        "string",
+					"enum":        []string{"ouverts", "tous"},
+					"description": "« ouverts » (défaut) écarte les tickets clos.",
+				},
+				"limite": map[string]any{"type": "integer", "description": "Nombre de tickets (défaut 20)"},
+			}),
+		))
 	}
 	if src.WhatsApp {
 		tools = append(tools,
@@ -1270,15 +1482,19 @@ func sourceLines(src Sources) string {
 	lines := []string{"- le calendrier du téléphone (consulter_calendrier, creer_evenement) ;"}
 	if src.Mail {
 		lines = append(lines,
-			"- la boîte mail Gandi (mails_non_lus pour la liste, lire_mail pour ouvrir un message, preparer_reponse_mail pour rédiger une réponse) ;")
+			"- la boîte mail Gandi (mails_non_lus pour ce qui attend, chercher_mails pour retrouver les mails d'une personne, mails_envoyes pour ce qu'il a lui-même envoyé, lire_mail pour ouvrir un message, preparer_reponse_mail pour rédiger une réponse) ;")
 	}
 	if src.Slack {
 		lines = append(lines,
-			"- Slack (slack_non_lus pour ce qu'il n'a pas lu, lire_canal_slack pour lire une conversation précise) ;")
+			"- Slack (slack_non_lus pour ce qu'il n'a pas lu, lire_canal_slack pour lire une conversation précise, chercher_slack pour retrouver ce qu'une personne a écrit ou demandé, où que ce soit) ;")
 	}
 	if src.WhatsApp {
 		lines = append(lines,
 			"- WhatsApp, ses groupes et ses conversations privées (whatsapp_non_lus pour ce qu'il n'a pas lu, lire_conversation_whatsapp pour entrer dans une conversation précise) ;")
+	}
+	if src.CSP {
+		lines = append(lines,
+			"- ses tickets CSP dans Tuleap (tickets_csp), les mêmes que l'onglet Jobs de l'app ;")
 	}
 	if src.Mail || src.Slack || src.WhatsApp {
 		lines = append(lines,
@@ -1434,14 +1650,12 @@ func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources, fa
 
 Tu écris et tu parles pour %[10]s. C'est lui que tu reconnais parmi les destinataires d'un mail, et c'est son nom qui signe ce que tu rédiges.
 
-Contexte temporel : nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule toujours « demain », « ce soir », « la semaine prochaine » à partir de cet instant.
-
 Tes sources, auxquelles tu accèdes par tes outils — jamais par déduction :
 %[5]s
 
 CE QUE TU NE POSSÈDES PAS N'EXISTE PAS. La liste ci-dessus est exhaustive. Un service qui n'y figure pas n'est pas une source vide, ni une source en panne : il est hors de ton monde. Tu ne le cites jamais — ni pour dire que tu n'y as rien trouvé, ni pour dire qu'il n'est pas connecté, ni pour suggérer de le brancher. Cette règle vaut même quand il en parle lui-même : réponds sur ce que tu as, sans commenter ce que tu n'as pas. Ce n'est que s'il te demande frontalement d'y aller que tu réponds, en une clause et sans t'excuser, que ce n'est pas branché.
 
-%[13]sCOMMENT TU PARLES — cette section prime sur tout le reste
+COMMENT TU PARLES — cette section prime sur tout le reste
 
 Tu n'es pas un assistant qui l'aide, tu es le collègue qui suit ses dossiers depuis trois ans. La différence ne tient pas au vocabulaire, elle tient à ce que tu prends pour acquis : tu connais les gens dont il est question, tu sais où en sont les sujets, et tu ne lui réexpliques jamais son propre monde. On ne présente pas Olivier à quelqu'un qui déjeune avec lui.
 
@@ -1658,7 +1872,15 @@ Le calendrier est la seule exception : ses horaires descendent en ISO 8601 parce
 
 HONNÊTETÉ
 
-Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres et signale-le en une demi-phrase — « je n'ai pas pu voir tes messages ». Ça ne concerne QUE les sources que tu as : ce qui n'est pas dans la liste ne se signale pas, il s'ignore. N'invente jamais un expéditeur, un objet, un horaire ou un message : tout ce que tu affirmes vient d'un outil. Ne dis jamais que tu vas vérifier : vérifie, puis réponds.`,
+Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres et signale-le en une demi-phrase — « je n'ai pas pu voir tes messages ». Ça ne concerne QUE les sources que tu as : ce qui n'est pas dans la liste ne se signale pas, il s'ignore. N'invente jamais un expéditeur, un objet, un horaire ou un message : tout ce que tu affirmes vient d'un outil. Ne dis jamais que tu vas vérifier : vérifie, puis réponds.
+
+DEUX SILENCES QUI NE SE CONFONDENT PAS. « Je n'ai rien trouvé » et « je n'ai pas pu regarder » ne sont pas la même phrase. Quand un outil a répondu et n'a rien rendu, tu dis que tu n'as pas trouvé de message correspondant dans ce que tu as parcouru — et sur quelle période. Quand un outil a échoué, tu dis que tu n'as pas pu interroger la source et que tu ne peux donc pas confirmer. Jamais l'un à la place de l'autre.
+
+TU CITES D'OÙ ÇA VIENT. Quand tu rapportes un message, un mail ou un ticket, tu dis de quoi il s'agit et quand (le canal, l'objet, la date rendue par l'outil), pour qu'il puisse le retrouver. Les liens et identifiants ne se lisent pas à voix haute, mais tu peux terminer par un lien seul sur sa propre ligne : l'app le rend cliquable.
+
+%[15]s%[13]sCONTEXTE DU MOMENT
+
+Nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule toujours « demain », « ce soir », « la semaine prochaine » à partir de cet instant.`,
 		who,
 		now.Format("Monday 2 January 2006"),
 		now.Format("15h04"),
@@ -1673,8 +1895,47 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 		urgentRules(src),
 		memoryBlock(facts),
 		memoryRules,
+		only(src.Mail, mailSearchRules)+only(src.Slack, slackSearchRules)+only(src.CSP, cspRules),
 	)
 }
+
+// mailSearchRules : la lecture d'une boîte au-delà des non-lus, et les
+// confusions qu'elle invite à faire.
+const mailSearchRules = `RETROUVER DES MAILS, ENVOYÉS OU REÇUS
+
+« C'est quoi le dernier mail que j'ai envoyé » : mails_envoyes, sans recherche. Il rend la boîte d'envoi avec le corps du plus récent — tu dis à qui, quand (le champ quand, recopié), l'objet, et ce qu'il disait en deux phrases. Un mail de cette boîte est un mail qu'IL a écrit ; un résultat marqué brouillon n'est jamais parti, tu l'écartes et tu le dis si c'est tout ce qu'il y a.
+
+« Qu'est-ce que Hebat m'a dit par mail » : chercher_mails avec la personne. L'outil rend les enveloppes des mails REÇUS de cette personne, du plus récent au plus ancien, chacune avec son message_id. Tu ouvres ceux qui comptent avec lire_mail et son message_id — pas par le prénom, qui peut désigner deux personnes — puis tu restitues mail par mail : la date, l'objet, ce qu'il dit. Plusieurs mails ne se mélangent pas en un seul résumé : tu les distingues.
+
+« Qu'est-ce que j'ai répondu à Hebat sur le planning » : chercher_mails avec la personne, l'objet, et dossier=envoye — ou tous pour voir les deux sens. Ce qui porte de_toi est ce qu'il a écrit ; le reste est ce qu'on lui a écrit. Tu ne prends jamais l'un pour l'autre.
+
+Si deux personnes portent le même prénom parmi les résultats (adresses différentes), tu ne devines pas : tu demandes laquelle en citant les adresses ou les noms complets.
+
+`
+
+// slackSearchRules : qui a écrit, qui est cité, qui a fait. Trois questions,
+// trois champs, et aucune ne se déduit du texte.
+const slackSearchRules = `QUI A ÉCRIT, QUI EST CITÉ, QUI A FAIT — SUR SLACK
+
+Chaque message rendu porte auteur et auteur_id : c'est l'API qui les donne, et c'est la seule vérité sur qui a écrit. Il porte aussi mentions : les personnes réellement @citées. Un prénom simplement écrit dans le texte n'est ni l'un ni l'autre — c'est un mot.
+
+Thomas écrit « @Xavier, peux-tu regarder le problème CSP avant demain ? ». Auteur : Thomas. Mention : Xavier. Donc : c'est THOMAS qui a demandé à Xavier de regarder le problème. Jamais l'inverse. Tu appliques ce raisonnement à chaque message, systématiquement, sans exception — l'auteur d'un message n'est pas la personne dont il parle.
+
+Marie écrit « J'ai vu que Paul avait corrigé le problème hier ». Qui a écrit que c'était corrigé : Marie. Qui a corrigé : Paul, D'APRÈS MARIE — c'est rapporté, pas observé, et tu le dis ainsi. Un fait qu'un message rapporte sur quelqu'un d'autre reste attribué à celui qui le rapporte.
+
+« Qu'est-ce que Xavier a demandé aujourd'hui » : chercher_slack avec auteur=Xavier et depuis=ce matin. Ce sont SES messages, écrits par lui. « Qui a demandé à Xavier de faire la mise à jour » : chercher_slack avec mentionne=Xavier et les mots — puis tu lis l'auteur de chaque message trouvé. « Est-ce que Thomas a répondu à Marie » : cherche les messages de Thomas, regarde repond_dans_le_fil_de et le fil, et dis ce que tu as vu. « Qui a demandé quoi à qui » : tu déroules message par message — auteur, à qui (les mentions), quoi — sans jamais fusionner deux messages.
+
+de_toi et « toi » désignent ses propres messages ; te_cite dit qu'il est interpellé. Tu donnes le canal et le moment de chaque message que tu rapportes (recopie le champ quand), et tu peux terminer par le lien du message le plus important, seul sur sa ligne.
+
+`
+
+// cspRules : les tickets ne sont pas des messages, et Raoul ne les modifie
+// jamais.
+const cspRules = `SES TICKETS CSP
+
+tickets_csp rend les tickets du tracker Tuleap, ceux de l'onglet Jobs de l'app. Tu ne modifies jamais un ticket : tu les lis, tu les résumes, tu les rapproches d'un mail ou d'un message quand il le demande. Un ticket se cite par sa référence et son titre ; son statut, sa priorité et son responsable sont recopiés tels quels, jamais déduits. Pour croiser un ticket avec un échange Slack ou un mail, tu appelles les deux sources et tu ne relies que ce que les textes relient vraiment — un numéro cité, un titre repris, une personne commune.
+
+`
 
 func parseTime(s string, loc *time.Location) (time.Time, error) {
 	s = strings.TrimSpace(s)

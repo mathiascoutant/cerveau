@@ -11,7 +11,7 @@ import (
 // ne prouve donc rien sur la validité du payload. Ce test sérialise réellement
 // les définitions d'outils et vérifie leur forme.
 func TestToolDefinitionsSerialization(t *testing.T) {
-	raw, err := json.Marshal(toolDefinitions(Sources{Mail: true, Slack: true, WhatsApp: true}))
+	raw, err := json.Marshal(toolDefinitions(Sources{Mail: true, Slack: true, WhatsApp: true, CSP: true}))
 	if err != nil {
 		t.Fatalf("sérialisation des outils : %v", err)
 	}
@@ -60,6 +60,10 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"ouvrir_urgence":             {"laquelle"},
 		"urgence_traitee":            {"laquelle"},
 		"debriefer":                  {"source", "cible"},
+		"mails_envoyes":              nil,
+		"chercher_mails":             nil,
+		"chercher_slack":             nil,
+		"tickets_csp":                nil,
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("attendu %d outils, obtenu %d", len(want), len(tools))

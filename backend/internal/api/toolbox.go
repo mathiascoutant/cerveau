@@ -250,7 +250,14 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 
 func (t *userToolbox) slackMessage(m slack.Message) assistant.SlackMessageView {
 	v := assistant.SlackMessageView{
-		Auteur: m.Auteur, Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers, DeToi: m.DeToi,
+		ID: m.ID, Canal: m.Canal, Auteur: m.Auteur, AuteurID: m.AuteurID,
+		Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers, DeToi: m.DeToi,
+		TeCite: m.TeCite, FilDe: m.FilDe, Lien: m.Lien,
+	}
+	// Les mentions descendent résolues : c'est avec elles, et pas avec les
+	// prénoms du texte, que le modèle dit qui est interpellé.
+	for _, mention := range m.Mentions {
+		v.Mentions = append(v.Mentions, assistant.MentionView{ID: mention.ID, Nom: mention.Nom})
 	}
 	for _, r := range m.Fil {
 		v.Fil = append(v.Fil, t.slackMessage(r))
