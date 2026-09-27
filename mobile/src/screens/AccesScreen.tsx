@@ -29,6 +29,7 @@ export function AccesScreen() {
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarUsable, setCalendarUsable] = useState(true);
   const [tuleapConfigured, setTuleapConfigured] = useState<boolean | null>(null);
+  const [tuleapServerKey, setTuleapServerKey] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -42,7 +43,9 @@ export function AccesScreen() {
     }
     try {
       const { jobs } = await api.jobs();
-      setTuleapConfigured(jobs.find((j) => j.key === 'csp')?.configured ?? false);
+      const csp = jobs.find((j) => j.key === 'csp');
+      setTuleapConfigured(csp?.configured ?? false);
+      setTuleapServerKey(Boolean(csp?.server_key));
     } catch {
       setTuleapConfigured(null);
     }
@@ -155,7 +158,7 @@ export function AccesScreen() {
           onDisconnect={() => disconnect('slack')}
         />
 
-        <TuleapSource connection={connections.tuleap} configured={tuleapConfigured} busy={busy === 'tuleap'} onConnect={(key) => run('tuleap', async () => void (await api.connectTuleap(key)))} onDisconnect={() => disconnect('tuleap')} />
+        <TuleapSource connection={connections.tuleap} configured={tuleapConfigured} serverKey={tuleapServerKey} busy={busy === 'tuleap'} onConnect={(key) => run('tuleap', async () => void (await api.connectTuleap(key)))} onDisconnect={() => disconnect('tuleap')} />
 
         <WhatsAppSource connection={connections.whatsapp} busy={busy === 'disconnect-whatsapp'} onPaired={() => void refresh()} onDisconnect={() => disconnect('whatsapp')} />
       </Section>
@@ -275,11 +278,18 @@ function SlackSource({ connection, busy, onAuthorize, onConnect, onDisconnect }:
   );
 }
 
-function TuleapSource({ connection, configured, busy, onConnect, onDisconnect }: { connection?: Connection; configured: boolean | null; busy: boolean; onConnect: (key: string) => void; onDisconnect: () => void }) {
+function TuleapSource({ connection, configured, serverKey, busy, onConnect, onDisconnect }: { connection?: Connection; configured: boolean | null; serverKey: boolean; busy: boolean; onConnect: (key: string) => void; onDisconnect: () => void }) {
   const [key, setKey] = useState('');
   const connected = connection?.status === 'connected';
   return (
-    <Source icon="tag" title="Tuleap · CSP" connected={connected} label={connection?.label} error={connection?.last_error} hint="Ta clé d’accès personnelle : les tickets que tu vois sont exactement ceux que Tuleap te montre. Raoul ne modifie jamais un ticket.">
+    <Source
+      icon="tag"
+      title="Tuleap · CSP"
+      connected={connected || serverKey}
+      label={connected ? connection?.label : serverKey ? 'clé du serveur' : undefined}
+      error={connection?.last_error}
+      hint={serverKey && !connected ? 'Le serveur lit Tuleap avec sa propre clé, comme PXFeed-UI. Saisis la tienne pour voir les tickets avec tes droits à toi.' : 'Ta clé d’accès personnelle : les tickets que tu vois sont exactement ceux que Tuleap te montre. Raoul ne modifie jamais un ticket.'}
+    >
       {configured === false ? (
         <Notice tone="warn" icon="server">
           <T v="small" tone="muted">

@@ -211,8 +211,14 @@ func (s *Server) slackCreds(ctx context.Context, user *store.User) (store.SlackC
 	return c, nil
 }
 
+// tuleapCreds rend la clé personnelle de l'utilisateur, ou à défaut celle du
+// serveur (TULEAP_ACCESS_KEY / TULEAP_KEY), comme PXFeed-UI. Sans l'une ni
+// l'autre : ErrNotFound, et l'app dit de saisir une clé.
 func (s *Server) tuleapCreds(ctx context.Context, user *store.User) (store.TuleapCredentials, error) {
 	conn, err := s.store.Connection(ctx, user.ID, store.ProviderTuleap)
+	if errors.Is(err, store.ErrNotFound) && s.cfg.TuleapAccessKey != "" {
+		return store.TuleapCredentials{AccessKey: s.cfg.TuleapAccessKey, Name: serverKeyLabel}, nil
+	}
 	if err != nil {
 		return store.TuleapCredentials{}, err
 	}
@@ -222,6 +228,9 @@ func (s *Server) tuleapCreds(ctx context.Context, user *store.User) (store.Tulea
 	}
 	return c, nil
 }
+
+// serverKeyLabel : le nom rendu quand c'est la clé du serveur qui sert.
+const serverKeyLabel = "clé du serveur"
 
 func (s *Server) whatsappCreds(ctx context.Context, user *store.User) (store.WhatsAppCredentials, error) {
 	conn, err := s.store.Connection(ctx, user.ID, store.ProviderWhatsApp)

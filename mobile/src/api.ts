@@ -185,6 +185,8 @@ export type JobCard = {
   reason?: string;
   configured: boolean;
   connected: boolean;
+  /** La clé posée sur le serveur sert, faute de clé personnelle. */
+  server_key?: boolean;
 };
 
 /** Un ticket CSP, mis à plat par le serveur depuis l'artefact Tuleap. */

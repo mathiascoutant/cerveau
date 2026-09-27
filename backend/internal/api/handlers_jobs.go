@@ -39,8 +39,10 @@ type jobCard struct {
 	// Configured : le serveur connaît la source (Tuleap configuré) ; il peut
 	// manquer la clé de l'utilisateur.
 	Configured bool `json:"configured"`
-	// Connected : l'utilisateur a saisi sa clé.
+	// Connected : une clé est utilisable — la sienne, ou celle du serveur.
 	Connected bool `json:"connected"`
+	// ServerKey : c'est la clé posée sur le serveur qui sert, pas la sienne.
+	ServerKey bool `json:"server_key,omitempty"`
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +53,9 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 		Description: "Accès à mes tickets CSP Tuleap",
 		Configured:  s.cfg.TuleapEnabled(),
 	}
-	if _, err := s.tuleapCreds(r.Context(), user); err == nil {
+	if creds, err := s.tuleapCreds(r.Context(), user); err == nil {
 		csp.Connected = true
+		csp.ServerKey = creds.Name == serverKeyLabel
 	}
 	switch {
 	case !csp.Configured:

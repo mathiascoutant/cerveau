@@ -43,6 +43,10 @@ type Config struct {
 	TuleapCSPExpertQuery string
 	// TuleapCSPAssignedToMe : ne garder que les tickets assignés à l'utilisateur.
 	TuleapCSPAssignedToMe bool
+	// TuleapAccessKey : une clé d'accès posée sur le serveur, comme le fait
+	// PXFeed-UI (TULEAP_KEY). Elle sert à qui n'a pas saisi la sienne dans
+	// l'app ; une clé personnelle, quand elle existe, l'emporte.
+	TuleapAccessKey string
 
 	// Speech-to-text (endpoint compatible OpenAI /v1/audio/transcriptions :
 	// soit api.openai.com, soit un whisper.cpp / faster-whisper auto-hébergé sur le VPS).
@@ -93,11 +97,12 @@ func Load() (Config, error) {
 		OpenAIFastEffort:      env("OPENAI_FAST_EFFORT", "none"),
 		OpenAIDeepModel:       env("OPENAI_DEEP_MODEL", ""),
 		OpenAIDeepEffort:      env("OPENAI_DEEP_EFFORT", ""),
-		TuleapBaseURL:         strings.TrimSuffix(env("TULEAP_BASE_URL", ""), "/"),
+		TuleapBaseURL:         strings.TrimSuffix(env("TULEAP_BASE_URL", env("TULEAP_URL", "")), "/"),
 		TuleapCSPTrackerID:    envInt("TULEAP_CSP_TRACKER_ID"),
 		TuleapCSPQuery:        env("TULEAP_CSP_QUERY", ""),
 		TuleapCSPExpertQuery:  env("TULEAP_CSP_EXPERT_QUERY", ""),
 		TuleapCSPAssignedToMe: env("TULEAP_CSP_ASSIGNED_TO_ME", "") == "true",
+		TuleapAccessKey:       env("TULEAP_ACCESS_KEY", env("TULEAP_KEY", "")),
 		STTBaseURL:            strings.TrimSuffix(env("STT_BASE_URL", "https://api.openai.com/v1"), "/"),
 		STTAPIKey:             env("STT_API_KEY", ""),
 		STTModel:              env("STT_MODEL", "whisper-1"),
