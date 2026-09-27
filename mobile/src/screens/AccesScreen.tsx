@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Divider, Dot, Field, IconName, Notice, Panel, ScreenHeader, Section, T } from '../design/ui';
 import { navBarSpace } from '../design/NavBar';
 import { alpha, tokens } from '../design/tokens';
-import { api, Connection, detectedApiUrl, getApiUrl, Provider, setApiUrl, VoiceInfo, WhatsAppStatus } from '../api';
+import { api, ApiError, claimAccount, Connection, detectedApiUrl, getApiUrl, logout, Provider, setApiUrl, VoiceInfo, WhatsAppStatus } from '../api';
 import { calendarSupported, hasCalendarAccess, requestCalendarAccess, syncCalendar } from '../lib/calendar';
 import { clearCache } from '../lib/cache';
 import { frenchVoices } from '../lib/speech';
@@ -19,11 +19,12 @@ import { loadDigest, loadUrgent } from './SuiviScreen';
  * Tout ce qui est saisi ici part chiffré côté serveur et n'en ressort jamais
  * vers l'app : on affiche « connecté », jamais le secret.
  */
-export function AccesScreen() {
+export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
   const insets = useSafeAreaInsets();
   const [connections, setConnections] = useState<Record<string, Connection>>({});
   const [serverUrl, setServerUrl] = useState('');
   const [name, setName] = useState('');
+  const [email, setEmail] = useState<string | null>(null);
   const [voices, setVoices] = useState<{ label: string; best: boolean }[] | null>(null);
   const [voice, setVoice] = useState<VoiceInfo | null>(null);
   const [calendarReady, setCalendarReady] = useState(false);
@@ -59,6 +60,7 @@ export function AccesScreen() {
       .me()
       .then((me) => {
         setName(me.name ?? '');
+        setEmail(me.email ?? '');
         if (me.voice) setVoice(me.voice);
       })
       .catch(() => undefined);
@@ -88,6 +90,10 @@ export function AccesScreen() {
   return (
     <ScrollView style={styles.flex} contentContainerStyle={[styles.content, { paddingBottom: navBarSpace(insets.bottom) }]} keyboardShouldPersistTaps="handled">
       <ScreenHeader title="Accès" subtitle="Raoul ne voit que ce que tu lui ouvres" />
+
+      <Section title="Compte">
+        <Account email={email} name={name} busy={busy === 'account'} onClaimed={(e) => setEmail(e)} onLogout={() => run('logout', async () => { await logout(); onLoggedOut(); })} />
+      </Section>
 
       <Section title="Toi">
         <Panel>
@@ -203,6 +209,109 @@ export function AccesScreen() {
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Le compte : ce qui fait que les connexions suivent d'un téléphone à l'autre.
+ *
+ * Un utilisateur des premières versions n'a pas d'adresse : il est connu par
+ * son appareil, et tout ce qu'il a branché est rattaché à cet utilisateur-là.
+ * Lui poser une adresse et un mot de passe ne change rien à ce qui est branché
+ * — c'est le même identifiant — et permet de se connecter ailleurs.
+ */
+function Account({ email, name, busy, onClaimed, onLogout }: { email: string | null; name: string; busy: boolean; onClaimed: (email: string) => void; onLogout: () => void }) {
+  const [address, setAddress] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  if (email === null) {
+    return (
+      <Panel>
+        <T v="small" tone="faint">
+          Lecture du compte…
+        </T>
+      </Panel>
+    );
+  }
+
+  if (email) {
+    return (
+      <Panel>
+        <View style={styles.sourceHead}>
+          <View style={[styles.sourceIcon, styles.sourceIconOn]}>
+            <Feather name="user" size={16} color={tokens.colors.accent} />
+          </View>
+          <View style={styles.flex}>
+            <T v="h">{name || email}</T>
+            <T v="mono" tone="ok">
+              {email}
+            </T>
+          </View>
+        </View>
+        <T v="small" tone="muted">
+          Tes mails, Slack, WhatsApp, Tuleap et ton agenda sont rattachés à ce compte. Sur un autre téléphone, connecte-toi avec cette adresse : tout est déjà là.
+        </T>
+        <Divider />
+        <Button label="Se déconnecter de cet appareil" variant="danger" icon="log-out" loading={busy} onPress={onLogout} />
+      </Panel>
+    );
+  }
+
+  const ready = address.trim().includes('@') && password.length >= 8 && password === confirm;
+  const claim = async () => {
+    setClaiming(true);
+    setError(null);
+    try {
+      const session = await claimAccount(address.trim(), password, name || undefined);
+      setDone(true);
+      onClaimed(session.email ?? address.trim().toLowerCase());
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 409 ? err.message : (err as Error).message);
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  return (
+    <Panel tone="warn">
+      <View style={styles.sourceHead}>
+        <View style={styles.sourceIcon}>
+          <Feather name="user" size={16} color={tokens.colors.warn} />
+        </View>
+        <View style={styles.flex}>
+          <T v="h">Compte lié à ce téléphone</T>
+          <T v="mono" tone="warn">
+            sans adresse ni mot de passe
+          </T>
+        </View>
+      </View>
+      <T v="small" tone="muted">
+        Tout ce que tu as branché est rattaché à cet appareil. Pose une adresse et un mot de passe : rien ne bouge, et tu retrouveras tout en te connectant depuis un autre téléphone.
+      </T>
+      <Divider />
+      <Field label="Adresse" placeholder="moi@mondomaine.fr" value={address} onChangeText={setAddress} keyboardType="email-address" textContentType="username" />
+      <Field label="Mot de passe" placeholder="8 caractères minimum" value={password} onChangeText={setPassword} secureTextEntry textContentType="newPassword" />
+      <Field label="Confirmer" placeholder="le même" value={confirm} onChangeText={setConfirm} secureTextEntry error={confirm && confirm !== password ? 'Les deux mots de passe diffèrent.' : undefined} />
+      {error ? (
+        <Notice tone="danger" icon="alert-triangle">
+          <T v="small" tone="muted">
+            {error}
+          </T>
+        </Notice>
+      ) : null}
+      {done ? (
+        <Notice tone="ok" icon="check-circle">
+          <T v="small" tone="muted">
+            Compte protégé. Tes connexions sont inchangées.
+          </T>
+        </Notice>
+      ) : null}
+      <Button label="Protéger mon compte" icon="lock" loading={claiming} disabled={!ready} onPress={() => void claim()} />
+    </Panel>
+  );
+}
 
 function Source({ icon, title, connected, label, hint, error, children }: { icon: IconName; title: string; connected: boolean; label?: string; hint: string; error?: string; children: React.ReactNode }) {
   return (

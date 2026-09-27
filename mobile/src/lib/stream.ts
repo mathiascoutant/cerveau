@@ -1,6 +1,6 @@
 import { fetch as expoFetch } from 'expo/fetch';
 
-import { api, AssistantAnswer, AssistantMetrics, authHeaders, getApiUrl, openSession, resetSession } from '../api';
+import { api, AssistantAnswer, AssistantMetrics, authHeaders, AuthRequiredError, getApiUrl, openSession, resetSession } from '../api';
 
 /**
  * La conversation en flux.
@@ -58,6 +58,7 @@ export async function askStream(text: string, onEvent: (ev: StreamEvent) => void
     }
   } catch (err) {
     if (signal.aborted) throw new AbortedError();
+    if (err instanceof AuthRequiredError) throw new Error('Connecte-toi avec ton compte pour continuer.');
     throw err;
   }
 

@@ -15,9 +15,14 @@ mot à mot au lieu d'attendre devant un cercle.
 - `backend/` — API Go, MongoDB, orchestration OpenAI (à héberger sur le VPS OVH)
 - `mobile/` — app React Native / Expo (iOS, dev build puis TestFlight)
 
-Pas de login, pas de mot de passe, pas d'inscription : l'app génère un identifiant
-d'appareil au premier lancement, le garde dans le Keychain, et le serveur émet un
-token permanent. On arrive directement sur l'assistant.
+Un compte : une adresse et un mot de passe. Tout ce qui est branché — mails,
+Slack, WhatsApp, Tuleap, agenda, mémoire — est rattaché au compte, pas au
+téléphone : se connecter sur un autre appareil retrouve tout. Un appareil des
+premières versions, connu par son identifiant, reste connecté sans rien faire ;
+**Accès › Compte › Protéger mon compte** lui pose une adresse et un mot de passe
+sans toucher aux connexions. Les inscriptions depuis l'app sont fermées par
+défaut (`ALLOW_SIGNUP=true` pour les ouvrir) : un compte neuf se crée avec
+`go run ./cmd/account -email …`.
 
 ---
 
@@ -610,7 +615,11 @@ Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
 
 | Méthode | Route | Rôle |
 |---|---|---|
-| `POST` | `/api/v1/session` | ouvre la session depuis l'identifiant d'appareil |
+| `POST` | `/api/v1/auth/login` | adresse + mot de passe → session pour cet appareil |
+| `POST` | `/api/v1/auth/signup` | crée un compte (si `ALLOW_SIGNUP=true`) |
+| `POST` | `/api/v1/auth/claim` | pose une adresse et un mot de passe sur le compte courant, connexions inchangées |
+| `POST` | `/api/v1/auth/logout` | ferme la session de cet appareil |
+| `POST` | `/api/v1/session` | héritage : session par identifiant d'appareil, pour les appareils déjà connus |
 | `GET` | `/api/v1/status` | bilan des quatre sources |
 | `PUT` | `/api/v1/connections/{gandi,slack,whatsapp}` | branche une source (identifiants validés avant stockage) |
 | `POST` | `/api/v1/calendar/sync` | l'app pousse le miroir de l'agenda |

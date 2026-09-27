@@ -102,6 +102,56 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, user *stor
 	})
 }
 
+// handleClaim pose une adresse et un mot de passe sur l'utilisateur courant.
+//
+// C'est le geste qui transforme l'utilisateur « appareil » des premières
+// versions en compte, depuis l'app et sans rien refaire : Gandi, Slack,
+// WhatsApp, Tuleap, la mémoire et l'agenda pointent sur son identifiant, qui
+// ne change pas. Ensuite, se connecter sur un autre téléphone retrouve tout.
+// Sur un compte qui a déjà une adresse, c'est un changement de mot de passe —
+// il faut donc être connecté, et c'est tout ce qu'on exige.
+func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	var req credentialsRequest
+	if err := httpx.Decode(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
+		return
+	}
+	email := store.NormalizeEmail(req.Email)
+	if !strings.Contains(email, "@") || !strings.Contains(email, ".") {
+		httpx.Error(w, http.StatusBadRequest, "adresse mail invalide")
+		return
+	}
+	if len(req.Password) < minPasswordLen {
+		httpx.Error(w, http.StatusBadRequest, "mot de passe trop court (8 caractères minimum)")
+		return
+	}
+	if user.Email != "" && user.Email != email {
+		httpx.Error(w, http.StatusConflict, "ce compte a déjà l'adresse "+user.Email)
+		return
+	}
+	err := s.store.SetCredentials(r.Context(), user.ID, email, req.Password)
+	if errors.Is(err, store.ErrEmailTaken) {
+		httpx.Error(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "enregistrement impossible")
+		return
+	}
+	if name := strings.TrimSpace(req.Name); name != "" && user.Name == "" {
+		_ = s.store.SetUserName(r.Context(), user.ID, name)
+	}
+	// Une vraie session pour cet appareil : le token hérité de l'appareil
+	// continue de marcher, mais celui-ci est celui d'un compte.
+	token, err := s.store.OpenSession(r.Context(), user.ID, strings.TrimSpace(req.Device))
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "ouverture de session impossible")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, accountResponse{Token: token, Email: email, Name: user.Name, Timezone: user.Timezone})
+}
+
 // handleLogout ferme la session de cet appareil seulement.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CloseSession(r.Context(), bearer(r)); err != nil {

@@ -376,11 +376,65 @@ async function fetchWithTimeout(input: string, init: RequestInit, ms: number): P
   }
 }
 
-export async function openSession(): Promise<{ token: string; name?: string }> {
+/**
+ * Le serveur veut un compte : aucune session valable sur cet appareil, et
+ * l'appareil n'est pas connu des premières versions. L'app affiche l'écran
+ * de connexion — ce n'est pas une panne.
+ */
+export class AuthRequiredError extends Error {
+  constructor(message = 'Connecte-toi avec ton compte.') {
+    super(message);
+    this.name = 'AuthRequiredError';
+  }
+}
+
+type AuthListener = () => void;
+let authListener: AuthListener | null = null;
+
+/** L'app s'abonne : dès qu'une session est refusée pour de bon, elle bascule
+ *  sur l'écran de connexion au lieu d'empiler des erreurs. */
+export function onAuthRequired(listener: AuthListener | null): void {
+  authListener = listener;
+}
+
+export type Session = { token: string; name?: string; email?: string };
+
+function deviceLabel(): string {
+  return (Constants.deviceName as string | undefined) ?? 'iPhone';
+}
+
+/**
+ * Ouvre la session de cet appareil.
+ *
+ * Trois cas, dans l'ordre : un token déjà rangé dans le Keychain — on le
+ * vérifie ; sinon l'appareil des premières versions, connu du serveur par
+ * son identifiant ; sinon il faut un compte, et l'app le demande. Les
+ * connexions (mails, Slack, WhatsApp, Tuleap, agenda) sont rattachées au
+ * compte, pas au téléphone : se connecter ailleurs retrouve tout.
+ */
+export async function openSession(): Promise<Session> {
   const url = await getApiUrl();
+
+  const stored = await SecureStore.getItemAsync(TOKEN_KEY);
+  if (stored) {
+    const res = await fetchWithTimeout(
+      `${url}/api/v1/me`,
+      { headers: { Authorization: `Bearer ${stored}` } },
+      SESSION_TIMEOUT_MS,
+    );
+    if (res.ok) {
+      const me = (await res.json()) as { name?: string; email?: string };
+      cachedToken = stored;
+      await publishToSiri();
+      return { token: stored, name: me.name, email: me.email };
+    }
+    if (res.status !== 401) throw new Error(await errorMessage(res));
+    // Session révoquée : on l'oublie et on continue comme un appareil neuf.
+    await resetSession();
+  }
+
   const id = await deviceId();
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
   const res = await fetchWithTimeout(
     `${url}/api/v1/session`,
     {
@@ -390,13 +444,76 @@ export async function openSession(): Promise<{ token: string; name?: string }> {
     },
     SESSION_TIMEOUT_MS,
   );
+  if (res.status === 401) throw new AuthRequiredError(await errorMessage(res));
   if (!res.ok) throw new Error(await errorMessage(res));
 
   const data = await res.json();
-  cachedToken = data.token;
-  await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-  await publishToSiri();
+  await storeSession(data.token);
   return { token: data.token, name: data.name };
+}
+
+async function storeSession(token: string): Promise<void> {
+  cachedToken = token;
+  await SecureStore.setItemAsync(TOKEN_KEY, token);
+  await publishToSiri();
+}
+
+async function account(path: string, body: Record<string, unknown>, bearer?: string): Promise<Session> {
+  const url = await getApiUrl();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  const res = await fetchWithTimeout(
+    `${url}/api/v1${path}`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...body,
+        device: deviceLabel(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }),
+    },
+    SESSION_TIMEOUT_MS,
+  );
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+  const data = (await res.json()) as { token: string; name?: string; email?: string };
+  await storeSession(data.token);
+  return { token: data.token, name: data.name, email: data.email };
+}
+
+/** Connexion par adresse et mot de passe : une session pour cet appareil. */
+export function login(email: string, password: string): Promise<Session> {
+  return account('/auth/login', { email, password });
+}
+
+/** Création de compte — refusée (403) si le serveur n'ouvre pas l'inscription. */
+export function signup(email: string, password: string, name?: string): Promise<Session> {
+  return account('/auth/signup', { email, password, name });
+}
+
+/**
+ * Pose une adresse et un mot de passe sur le compte courant, celui de cet
+ * appareil : rien de ce qui est branché ne bouge, et le compte devient
+ * joignable depuis un autre téléphone.
+ */
+export async function claimAccount(email: string, password: string, name?: string): Promise<Session> {
+  return account('/auth/claim', { email, password, name }, await token());
+}
+
+/** Ferme la session de cet appareil, et lui seul. */
+export async function logout(): Promise<void> {
+  try {
+    const url = await getApiUrl();
+    const bearer = await token();
+    await fetchWithTimeout(
+      `${url}/api/v1/auth/logout`,
+      { method: 'POST', headers: { Authorization: `Bearer ${bearer}` } },
+      SESSION_TIMEOUT_MS,
+    );
+  } catch {
+    // Déjà fermée côté serveur, ou serveur injoignable : on part quand même.
+  }
+  await resetSession();
 }
 
 async function token(): Promise<string> {
@@ -447,9 +564,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   );
 
   // Token périmé (base réinitialisée par exemple) : on rouvre une session.
+  // Si le serveur exige un compte, l'app passe à l'écran de connexion.
   if (res.status === 401) {
     await resetSession();
-    const fresh = await openSession();
+    let fresh: Session;
+    try {
+      fresh = await openSession();
+    } catch (err) {
+      if (err instanceof AuthRequiredError) authListener?.();
+      throw err;
+    }
     const retry = await fetchWithTimeout(
       `${url}/api/v1${path}`,
       {
@@ -496,7 +620,7 @@ async function errorMessage(res: Response): Promise<string> {
 // --- Endpoints ---------------------------------------------------------------
 
 export const api = {
-  me: () => request<{ name?: string; timezone: string; voice?: VoiceInfo }>('/me'),
+  me: () => request<{ email?: string; name?: string; timezone: string; voice?: VoiceInfo }>('/me'),
 
   setName: (name: string) =>
     request<{ name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) }),

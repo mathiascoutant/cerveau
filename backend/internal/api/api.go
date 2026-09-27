@@ -89,6 +89,7 @@ func (s *Server) Routes() http.Handler {
 			r.Use(s.requireUser)
 
 			r.Post("/auth/logout", s.handleLogout)
+			r.Post("/auth/claim", s.handleClaim)
 			r.Get("/me", s.handleMe)
 			r.Patch("/me", s.handleUpdateMe)
 			r.Get("/status", s.handleStatus)

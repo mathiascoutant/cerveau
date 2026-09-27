@@ -9,12 +9,14 @@ import { JobsScreen } from './src/screens/JobsScreen';
 import { CSPScreen, CSPTicketScreen } from './src/screens/CSPScreen';
 import { DIGEST_KEY, loadDigest, loadUrgent, SuiviScreen, URGENT_KEY } from './src/screens/SuiviScreen';
 import { AccesScreen } from './src/screens/AccesScreen';
+import { LoginScreen } from './src/screens/LoginScreen';
 import { NavBar, NavItem } from './src/design/NavBar';
 import { Button, Notice, T } from './src/design/ui';
 import { tokens } from './src/design/tokens';
 import { loadTodos } from './src/lib/todos';
 import { isStale } from './src/lib/cache';
-import { CSPTicket, getApiUrl, openSession } from './src/api';
+import { AuthRequiredError, CSPTicket, getApiUrl, onAuthRequired, openSession } from './src/api';
+import { clearCache } from './src/lib/cache';
 import { syncCalendar } from './src/lib/calendar';
 
 type Tab = 'raoul' | 'jobs' | 'suivi' | 'acces';
@@ -49,11 +51,14 @@ export default function App() {
   // secondes : quand ça tourne, il faut savoir vers quoi.
   const [apiUrl, setApiUrl] = useState('');
   const [slow, setSlow] = useState(false);
+  // login : le serveur exige un compte et cet appareil n'en a pas de session.
+  const [login, setLogin] = useState<string | null>(null);
 
   const [fontsLoaded] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold });
 
   const boot = useCallback(() => {
     setFatal(null);
+    setLogin(null);
     openSession()
       .then(() => {
         setReady(true);
@@ -65,12 +70,22 @@ export default function App() {
         void loadTodos().catch(() => undefined);
       })
       .catch((err: Error) => {
-        setFatal(err.message);
+        if (err instanceof AuthRequiredError) setLogin(err.message);
+        else setFatal(err.message);
         setReady(true);
       });
   }, []);
 
   useEffect(boot, [boot]);
+
+  // Une session refusée en cours d'usage renvoie à l'écran de connexion.
+  useEffect(() => {
+    onAuthRequired(() => {
+      clearCache();
+      setLogin('Ta session a expiré, reconnecte-toi.');
+    });
+    return () => onAuthRequired(null);
+  }, []);
 
   useEffect(() => {
     void getApiUrl().then(setApiUrl).catch(() => undefined);
@@ -131,6 +146,19 @@ export default function App() {
     );
   }
 
+  if (login !== null) {
+    return (
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <View style={styles.root}>
+          <SafeAreaView style={styles.flex} edges={['top', 'bottom']}>
+            <LoginScreen reason={login} onDone={() => { clearCache(); boot(); }} />
+          </SafeAreaView>
+        </View>
+      </SafeAreaProvider>
+    );
+  }
+
   const route = jobsStack[jobsStack.length - 1];
   const push = (r: JobsRoute) => setJobsStack((s) => [...s, r]);
   const pop = () => setJobsStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
@@ -170,7 +198,13 @@ export default function App() {
               ) : tab === 'suivi' ? (
                 <SuiviScreen />
               ) : (
-                <AccesScreen />
+                <AccesScreen
+                  onLoggedOut={() => {
+                    clearCache();
+                    setTab('raoul');
+                    setLogin('Déconnecté de cet appareil.');
+                  }}
+                />
               )}
             </Screen>
           )}
