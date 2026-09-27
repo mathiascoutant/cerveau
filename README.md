@@ -140,29 +140,45 @@ users:read
 L'ancienne méthode reste disponible — « Coller un token à la main » dans l'app,
 si tu as déjà un `xoxp-` sous la main.
 
-### 4 bis. Tuleap — tickets CSP de l'onglet Jobs
+### 4 bis. Tuleap — les cycles CSP de l'onglet Jobs
 
-Deux valeurs dans `.env`, une clé dans l'app.
+Les mêmes variables que le serveur PXFeed, à reprendre telles quelles :
 
-1. `TULEAP_BASE_URL` : l'adresse de l'instance (`https://tuleap.pxcom.aero`).
-2. `TULEAP_CSP_TRACKER_ID` : l'identifiant numérique du tracker CSP. Il est dans
-   l'URL du tracker (`?tracker=123`) ou dans `GET /api/projects/{id}/trackers`.
-3. La sélection des tickets, pour retrouver **la même liste que PXFeed-UI** :
-   `TULEAP_CSP_QUERY` (le JSON du paramètre `query` de l'API REST, ex.
-   `{"status":"open"}`) ou `TULEAP_CSP_EXPERT_QUERY` (la syntaxe TQL, ex.
-   `status = 'Open' AND assigned_to = MYSELF()`, qui prime). Plus
-   `TULEAP_CSP_ASSIGNED_TO_ME=true` pour ne garder que tes tickets.
-4. Dans l'app : **Accès › Tuleap › Clé d'accès**. Tuleap › Mon compte › Clés
-   d'accès › Générer, avec le droit de lecture des trackers. La clé est validée
-   contre l'instance (`/api/users/self`) puis rangée chiffrée en base ; les
-   tickets vus sont exactement ceux que Tuleap te montre.
+```
+TULEAP_URL=https://tuleap.pxcom.aero
+TULEAP_KEY=tlp-k1-…
+```
 
-> Le dépôt PXFeed-UI (`gitea.pxcom.aero`) n'était pas joignable depuis
-> l'environnement où cette intégration a été écrite : la sélection exacte des
-> tickets (tracker, filtre) est donc à recopier depuis son code dans ces
-> variables, pas à deviner. Le client Tuleap lit les artefacts avec
-> `values=all`, met à plat titre, statut, priorité, responsable, dates, lien et
-> description, et garde les autres champs par libellé pour la vue de détail.
+La clé posée sur le serveur sert à tout le monde ; une clé personnelle saisie
+dans l'app (**Accès › Tuleap**) l'emporte pour cet utilisateur. Dans les deux
+cas elle est validée contre l'instance (`/api/users/self`) et, pour la
+personnelle, rangée chiffrée en base.
+
+**La sélection est celle de PXFeed, transposée règle pour règle** depuis
+`csp/lib/tuleap-csp-cycles.js` et `csp/lib/csp-ticket-parse.js` vers
+`backend/internal/providers/tuleap/csp.go` :
+
+1. les artefacts viennent du contenu de la release **12051** du planning
+   (tracker **427**, projet 138, planning 69), avec repli sur le tracker entier ;
+2. un artefact est un cycle si son titre se lit comme tel : `[Azul] CSP cycle
+   November follow-up (2026-11)`, `[RAM] Process November 2026`, ou `Process
+   Mai 2026` quand le champ Projet donne la compagnie. Un titre illisible fait
+   relire la fiche complète avant de renoncer ;
+3. un statut clos (done, closed, terminé, archivé) ou de déploiement
+   (« deploy ») écarte le cycle ;
+4. tri par chemin de cycle décroissant, puis compagnie.
+
+Les identifiants ont pour défaut ceux de PXFeed (`TULEAP_CSP_TRACKER_ID`,
+`TULEAP_CSP_RELEASE_ID`, `TULEAP_CSP_PLANNING_ID`, `TULEAP_CSP_PROJECT_ID`).
+Un seul écart : PXFeed ne garde que les compagnies qui ont un feed servi par un
+serveur avec l'UI activée ; Raoul n'a pas cette configuration, et
+`TULEAP_CSP_AIRLINES` (liste séparée par des virgules, vide = toutes) en tient
+lieu. La vue CSP affiche le relevé du tri (lus, cycles, clos, gardés) pour
+vérifier que la liste est bien la même que dans PXFeed-UI.
+
+Pour lire le tracker avec une requête à soi plutôt qu'avec cette sélection,
+renseigner `TULEAP_CSP_QUERY` (JSON de l'API REST) ou `TULEAP_CSP_EXPERT_QUERY`
+(TQL) : l'une des deux bascule dans le mode générique.
 
 ### 5. WhatsApp Business — 4 valeurs, 3 endroits différents
 

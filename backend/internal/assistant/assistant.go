@@ -131,8 +131,12 @@ type MentionView struct {
 
 // TicketView est un ticket CSP tel que le modèle le reçoit.
 type TicketView struct {
-	ID          int    `json:"id"`
-	Ref         string `json:"ref"`
+	ID  int    `json:"id"`
+	Ref string `json:"ref"`
+	// Compagnie et Cycle : la lecture « cycle CSP » du titre, comme PXFeed-UI
+	// (« Azul », « 2026-11 »).
+	Compagnie   string `json:"compagnie,omitempty"`
+	Cycle       string `json:"cycle,omitempty"`
 	Titre       string `json:"titre"`
 	Statut      string `json:"statut"`
 	Priorite    string `json:"priorite,omitempty"`

@@ -205,6 +205,10 @@ export type CSPTicket = {
   description?: string;
   champs?: Record<string, string>;
   ferme?: boolean;
+  /** Lecture « cycle CSP » du titre, comme PXFeed-UI : « Azul », « 2026-11 », « Azul 2026-11 ». */
+  compagnie?: string;
+  cycle?: string;
+  label?: string;
 };
 
 export type CSPComment = { auteur: string; quand: string; texte: string };
@@ -216,6 +220,12 @@ export type CSPList = {
   scope: {
     base_url: string;
     tracker_id: number;
+    /** « pxfeed » : les cycles CSP sélectionnés comme PXFeed-UI ; « query » : requête explicite. */
+    mode: 'pxfeed' | 'query';
+    release_id?: number;
+    source?: string;
+    airlines?: string[];
+    stats?: { total: number; titre_reconnu: number; statut_exclu: number; compagnie_exclue: number; retenus: number };
     query?: string;
     expert_query?: string;
     assigned_to_me: boolean;

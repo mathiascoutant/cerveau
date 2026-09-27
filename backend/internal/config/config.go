@@ -34,12 +34,18 @@ type Config struct {
 	// Tuleap : l'instance et le tracker des tickets CSP. La clé d'accès est
 	// personnelle, elle se saisit dans l'app et se range chiffrée en base.
 	TuleapBaseURL string
-	// TuleapCSPTrackerID : le tracker à lire.
-	TuleapCSPTrackerID int
-	// TuleapCSPQuery : sélection au format JSON de l'API Tuleap. Vide = tous
-	// les artefacts du tracker.
-	TuleapCSPQuery string
-	// TuleapCSPExpertQuery : sélection en TQL, prime sur la précédente.
+	// Sélection « cycles CSP », celle de PXFeed (providers/tuleap/csp.go) :
+	// le tracker, la release du planning, et les compagnies gardées. Les
+	// identifiants ont pour défaut ceux de PXFeed ; vides, ils s'appliquent.
+	TuleapCSPTrackerID  int
+	TuleapCSPReleaseID  int
+	TuleapCSPPlanningID int
+	TuleapCSPProjectID  int
+	TuleapCSPAirlines   []string
+	// Sélection générique, quand on ne veut PAS la lecture façon PXFeed :
+	// une requête JSON (« query ») ou TQL (« expert_query ») sur le tracker.
+	// Renseigner l'une des deux bascule dans ce mode.
+	TuleapCSPQuery       string
 	TuleapCSPExpertQuery string
 	// TuleapCSPAssignedToMe : ne garder que les tickets assignés à l'utilisateur.
 	TuleapCSPAssignedToMe bool
@@ -99,6 +105,10 @@ func Load() (Config, error) {
 		OpenAIDeepEffort:      env("OPENAI_DEEP_EFFORT", ""),
 		TuleapBaseURL:         strings.TrimSuffix(env("TULEAP_BASE_URL", env("TULEAP_URL", "")), "/"),
 		TuleapCSPTrackerID:    envInt("TULEAP_CSP_TRACKER_ID"),
+		TuleapCSPReleaseID:    envInt("TULEAP_CSP_RELEASE_ID"),
+		TuleapCSPPlanningID:   envInt("TULEAP_CSP_PLANNING_ID"),
+		TuleapCSPProjectID:    envInt("TULEAP_CSP_PROJECT_ID"),
+		TuleapCSPAirlines:     envList("TULEAP_CSP_AIRLINES"),
 		TuleapCSPQuery:        env("TULEAP_CSP_QUERY", ""),
 		TuleapCSPExpertQuery:  env("TULEAP_CSP_EXPERT_QUERY", ""),
 		TuleapCSPAssignedToMe: env("TULEAP_CSP_ASSIGNED_TO_ME", "") == "true",
@@ -147,9 +157,25 @@ func (c Config) SlackRedirectURI() string {
 }
 
 // TuleapEnabled : l'onglet Jobs ne propose la carte CSP que si le serveur
-// sait où est Tuleap et quel tracker lire.
+// sait où est Tuleap. Le tracker a un défaut, celui de PXFeed.
 func (c Config) TuleapEnabled() bool {
-	return c.TuleapBaseURL != "" && c.TuleapCSPTrackerID > 0
+	return c.TuleapBaseURL != ""
+}
+
+// TuleapGenericQuery : une requête explicite a été donnée, on lit le tracker
+// avec elle au lieu de la sélection « cycles CSP » de PXFeed.
+func (c Config) TuleapGenericQuery() bool {
+	return c.TuleapCSPQuery != "" || c.TuleapCSPExpertQuery != ""
+}
+
+func envList(key string) []string {
+	var out []string
+	for _, item := range strings.Split(os.Getenv(key), ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func envInt(key string) int {

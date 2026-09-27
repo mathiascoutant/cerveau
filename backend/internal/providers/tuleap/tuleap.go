@@ -76,6 +76,12 @@ type Ticket struct {
 	// Ferme : le statut appartient au groupe des statuts clos, tel que Tuleap
 	// le sait par la sémantique du tracker.
 	Ferme bool `json:"ferme,omitempty"`
+
+	// Lecture « cycle CSP » (voir csp.go) : la compagnie et le chemin de cycle
+	// tirés du titre, et le libellé que PXFeed-UI affiche (« Azul 2026-11 »).
+	Compagnie string `json:"compagnie,omitempty"`
+	Cycle     string `json:"cycle,omitempty"`
+	Label     string `json:"label,omitempty"`
 }
 
 // Commentaire est une entrée de l'historique d'un ticket qui porte un texte.

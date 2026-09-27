@@ -293,7 +293,7 @@ function TuleapSource({ connection, configured, serverKey, busy, onConnect, onDi
       {configured === false ? (
         <Notice tone="warn" icon="server">
           <T v="small" tone="muted">
-            Tuleap n’est pas configuré sur le serveur (TULEAP_BASE_URL, TULEAP_CSP_TRACKER_ID).
+            Tuleap n’est pas configuré sur le serveur (TULEAP_URL).
           </T>
         </Notice>
       ) : connected ? (

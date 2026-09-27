@@ -59,7 +59,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case !csp.Configured:
-		csp.Reason = "Tuleap n'est pas configuré sur le serveur (TULEAP_BASE_URL, TULEAP_CSP_TRACKER_ID)."
+		csp.Reason = "Tuleap n'est pas configuré sur le serveur (TULEAP_URL)."
 	case !csp.Connected:
 		csp.Reason = "Saisis ta clé d'accès Tuleap dans l'onglet Accès."
 	default:
@@ -85,12 +85,19 @@ type cspListResponse struct {
 }
 
 type cspScope struct {
-	BaseURL      string `json:"base_url"`
-	TrackerID    int    `json:"tracker_id"`
-	Query        string `json:"query,omitempty"`
-	ExpertQuery  string `json:"expert_query,omitempty"`
-	AssignedToMe bool   `json:"assigned_to_me"`
-	User         string `json:"user,omitempty"`
+	BaseURL   string `json:"base_url"`
+	TrackerID int    `json:"tracker_id"`
+	// Mode : « pxfeed » (les cycles CSP, comme PXFeed-UI) ou « query ».
+	Mode      string `json:"mode"`
+	ReleaseID int    `json:"release_id,omitempty"`
+	// Source : l'adresse Tuleap qui a rendu les artefacts, en mode pxfeed.
+	Source       string           `json:"source,omitempty"`
+	Airlines     []string         `json:"airlines,omitempty"`
+	Stats        *tuleap.CSPStats `json:"stats,omitempty"`
+	Query        string           `json:"query,omitempty"`
+	ExpertQuery  string           `json:"expert_query,omitempty"`
+	AssignedToMe bool             `json:"assigned_to_me"`
+	User         string           `json:"user,omitempty"`
 }
 
 func (s *Server) handleCSPTickets(w http.ResponseWriter, r *http.Request) {
@@ -103,21 +110,45 @@ func (s *Server) handleCSPTickets(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	refresh := r.URL.Query().Get("refresh") != ""
-	tickets, creds, cached, err := s.cspTickets(ctx, user, refresh)
+	list, creds, cached, err := s.cspList(ctx, user, refresh)
 	if err != nil {
 		httpx.Error(w, statusFor(err), err.Error())
 		return
 	}
+	scope := cspScope{
+		BaseURL: s.cfg.TuleapBaseURL, TrackerID: s.trackerID(),
+		AssignedToMe: s.cfg.TuleapCSPAssignedToMe, User: creds.Name,
+	}
+	if s.cfg.TuleapGenericQuery() {
+		scope.Mode = "query"
+		scope.Query, scope.ExpertQuery = s.cfg.TuleapCSPQuery, s.cfg.TuleapCSPExpertQuery
+	} else {
+		scope.Mode = "pxfeed"
+		scope.ReleaseID = s.releaseID()
+		scope.Source = list.source
+		scope.Airlines = s.cfg.TuleapCSPAirlines
+		scope.Stats = list.stats
+	}
 	httpx.JSON(w, http.StatusOK, cspListResponse{
-		Tickets:     tickets,
+		Tickets:     list.tickets,
 		GeneratedAt: time.Now(),
 		Cached:      cached,
-		Scope: cspScope{
-			BaseURL: s.cfg.TuleapBaseURL, TrackerID: s.cfg.TuleapCSPTrackerID,
-			Query: s.cfg.TuleapCSPQuery, ExpertQuery: s.cfg.TuleapCSPExpertQuery,
-			AssignedToMe: s.cfg.TuleapCSPAssignedToMe, User: creds.Name,
-		},
+		Scope:       scope,
 	})
+}
+
+func (s *Server) trackerID() int {
+	if s.cfg.TuleapCSPTrackerID > 0 {
+		return s.cfg.TuleapCSPTrackerID
+	}
+	return tuleap.DefaultCSPTrackerID
+}
+
+func (s *Server) releaseID() int {
+	if s.cfg.TuleapCSPReleaseID > 0 {
+		return s.cfg.TuleapCSPReleaseID
+	}
+	return tuleap.DefaultCSPReleaseID
 }
 
 func (s *Server) handleCSPTicket(w http.ResponseWriter, r *http.Request) {
@@ -145,37 +176,93 @@ func (s *Server) handleCSPTicket(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"ticket": ticket, "comments": comments})
 }
 
+// cspList est ce que le cache garde : la liste, et d'où elle vient.
+type cspList struct {
+	tickets []tuleap.Ticket
+	source  string
+	stats   *tuleap.CSPStats
+}
+
 // cspTickets rend les tickets du périmètre, depuis le cache quand il est frais.
 func (s *Server) cspTickets(ctx context.Context, user *store.User, refresh bool) ([]tuleap.Ticket, store.TuleapCredentials, bool, error) {
+	list, creds, cached, err := s.cspList(ctx, user, refresh)
+	return list.tickets, creds, cached, err
+}
+
+// cspList lit Tuleap selon le mode configuré : la sélection « cycles CSP »
+// de PXFeed par défaut, une requête explicite sinon.
+func (s *Server) cspList(ctx context.Context, user *store.User, refresh bool) (cspList, store.TuleapCredentials, bool, error) {
 	creds, err := s.tuleapCreds(ctx, user)
 	if err != nil {
-		return nil, creds, false, err
+		return cspList{}, creds, false, err
 	}
 	if !refresh {
-		if tickets, ok := s.csp.get(user.ID); ok {
-			return tickets, creds, true, nil
+		if list, ok := s.csp.get(user.ID); ok {
+			return list, creds, true, nil
 		}
 	}
 	client := tuleap.New(s.cfg.TuleapBaseURL, creds.AccessKey)
-	tickets, err := client.Tickets(ctx, tuleap.Scope{
-		TrackerID:    s.cfg.TuleapCSPTrackerID,
-		Query:        s.cfg.TuleapCSPQuery,
-		ExpertQuery:  s.cfg.TuleapCSPExpertQuery,
-		AssignedToMe: s.cfg.TuleapCSPAssignedToMe,
-		Limit:        200,
-	})
-	if err != nil {
-		var apiErr *tuleap.APIError
-		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
-			s.store.MarkConnectionError(ctx, user.ID, store.ProviderTuleap, err.Error())
+	var list cspList
+	if s.cfg.TuleapGenericQuery() {
+		tickets, err := client.Tickets(ctx, tuleap.Scope{
+			TrackerID:    s.trackerID(),
+			Query:        s.cfg.TuleapCSPQuery,
+			ExpertQuery:  s.cfg.TuleapCSPExpertQuery,
+			AssignedToMe: s.cfg.TuleapCSPAssignedToMe,
+			Limit:        200,
+		})
+		if err != nil {
+			s.noteTuleapFailure(ctx, user, err)
+			return cspList{}, creds, false, err
 		}
-		return nil, creds, false, err
+		list.tickets = tickets
+	} else {
+		res, err := client.Cycles(ctx, tuleap.CSPScope{
+			TrackerID:  s.trackerID(),
+			ReleaseID:  s.releaseID(),
+			PlanningID: s.cfg.TuleapCSPPlanningID,
+			ProjectID:  s.cfg.TuleapCSPProjectID,
+			Airlines:   s.cfg.TuleapCSPAirlines,
+		})
+		if err != nil {
+			s.noteTuleapFailure(ctx, user, err)
+			return cspList{}, creds, false, err
+		}
+		list.tickets, list.source = res.Tickets, res.Source
+		stats := res.Stats
+		list.stats = &stats
+		if s.cfg.TuleapCSPAssignedToMe {
+			list.tickets = assignedTo(list.tickets, creds)
+		}
 	}
-	if tickets == nil {
-		tickets = []tuleap.Ticket{}
+	if list.tickets == nil {
+		list.tickets = []tuleap.Ticket{}
 	}
-	s.csp.put(user.ID, tickets)
-	return tickets, creds, false, nil
+	s.csp.put(user.ID, list)
+	return list, creds, false, nil
+}
+
+// assignedTo ne garde que les tickets dont le responsable est l'utilisateur de
+// la clé — par son nom, la liste des cycles ne portant pas les identifiants.
+func assignedTo(tickets []tuleap.Ticket, creds store.TuleapCredentials) []tuleap.Ticket {
+	name := strings.ToLower(strings.TrimSpace(creds.Name))
+	if name == "" || name == serverKeyLabel {
+		return tickets
+	}
+	out := tickets[:0:0]
+	for _, t := range tickets {
+		if strings.Contains(strings.ToLower(t.Responsable), name) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (s *Server) noteTuleapFailure(ctx context.Context, user *store.User, err error) {
+	var apiErr *tuleap.APIError
+	if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
+		s.store.MarkConnectionError(ctx, user.ID, store.ProviderTuleap, err.Error())
+	}
 }
 
 func statusFor(err error) int {
@@ -202,28 +289,28 @@ type cspCache struct {
 }
 
 type cspEntry struct {
-	tickets []tuleap.Ticket
-	at      time.Time
+	list cspList
+	at   time.Time
 }
 
 func newCSPCache() *cspCache {
 	return &cspCache{items: map[string]cspEntry{}}
 }
 
-func (c *cspCache) get(userID bson.ObjectID) ([]tuleap.Ticket, bool) {
+func (c *cspCache) get(userID bson.ObjectID) (cspList, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.items[userID.Hex()]
 	if !ok || time.Since(e.at) > cspCacheTTL {
-		return nil, false
+		return cspList{}, false
 	}
-	return e.tickets, true
+	return e.list, true
 }
 
-func (c *cspCache) put(userID bson.ObjectID, tickets []tuleap.Ticket) {
+func (c *cspCache) put(userID bson.ObjectID, list cspList) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items[userID.Hex()] = cspEntry{tickets: tickets, at: time.Now()}
+	c.items[userID.Hex()] = cspEntry{list: list, at: time.Now()}
 }
 
 func (c *cspCache) drop(userID bson.ObjectID) {

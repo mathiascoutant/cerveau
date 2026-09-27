@@ -53,7 +53,7 @@ export function CSPScreen({ onBack, onOpen, onAccess }: { onBack: () => void; on
       if (filter === 'ouverts' && t.ferme) return false;
       if (filter === 'moi' && (!me || !(t.responsable ?? '').toLowerCase().includes(firstWord(me)))) return false;
       if (!q) return true;
-      return [t.ref, t.titre, t.statut, t.priorite, t.responsable, t.auteur, String(t.id)]
+      return [t.ref, t.titre, t.statut, t.priorite, t.responsable, t.auteur, t.compagnie, t.cycle, t.label, String(t.id)]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q));
     });
@@ -85,8 +85,18 @@ export function CSPScreen({ onBack, onOpen, onAccess }: { onBack: () => void; on
 
       {data ? (
         <Panel corners style={styles.scope}>
-          <Readout k="tracker" v={`#${data.scope.tracker_id}${data.scope.user ? ` · ${data.scope.user}` : ''}`} />
-          <Readout k="sélection" v={data.scope.expert_query || data.scope.query || (data.scope.assigned_to_me ? 'assignés à moi' : 'tous les tickets')} />
+          <Readout k="tracker" v={`#${data.scope.tracker_id}${data.scope.release_id ? ` · release ${data.scope.release_id}` : ''}${data.scope.user ? ` · ${data.scope.user}` : ''}`} />
+          <Readout
+            k="sélection"
+            v={
+              data.scope.mode === 'pxfeed'
+                ? `cycles CSP, comme PXFeed-UI${data.scope.airlines?.length ? ` · ${data.scope.airlines.join(', ')}` : ''}${data.scope.assigned_to_me ? ' · assignés à moi' : ''}`
+                : data.scope.expert_query || data.scope.query || (data.scope.assigned_to_me ? 'assignés à moi' : 'tous les tickets')
+            }
+          />
+          {data.scope.stats ? (
+            <Readout k="tri" v={`${data.scope.stats.total} lus · ${data.scope.stats.titre_reconnu} cycles · ${data.scope.stats.statut_exclu} clos${data.scope.stats.compagnie_exclue ? ` · ${data.scope.stats.compagnie_exclue} hors compagnies` : ''} · ${data.scope.stats.retenus} gardés`} />
+          ) : null}
           <Readout k="relevé" v={`${formatWhen(data.generated_at)}${data.cached ? ' · cache' : ''}`} />
         </Panel>
       ) : null}
@@ -114,8 +124,14 @@ export function CSPScreen({ onBack, onOpen, onAccess }: { onBack: () => void; on
         <Panel>
           <Empty
             icon="inbox"
-            title={data.tickets.length === 0 ? 'Aucun ticket dans ce périmètre' : 'Rien ne correspond'}
-            message={data.tickets.length === 0 ? 'Le tracker configuré ne rend aucun artefact pour cette sélection.' : 'Change de filtre ou de mots.'}
+            title={data.tickets.length === 0 ? 'Aucun cycle CSP ouvert' : 'Rien ne correspond'}
+            message={
+              data.tickets.length === 0
+                ? data.scope.mode === 'pxfeed'
+                  ? 'Aucun ticket de la release ne se lit comme un cycle CSP ouvert. Le relevé ci-dessus dit ce qui a été écarté.'
+                  : 'Le tracker configuré ne rend aucun artefact pour cette sélection.'
+                : 'Change de filtre ou de mots.'
+            }
           />
         </Panel>
       ) : (
@@ -176,13 +192,19 @@ function Row({ ticket, onPress }: { ticket: CSPTicket; onPress: () => void }) {
         <T v="mono" tone="accent">
           {ticket.ref}
         </T>
+        {ticket.cycle ? <Badge label={ticket.cycle} tone="accent" /> : null}
         <View style={styles.flex} />
         {ticket.priorite ? <Badge label={ticket.priorite} tone={priorityTone(ticket.priorite)} /> : null}
         <Badge label={ticket.statut || '—'} tone={ticket.ferme ? 'faint' : 'ok'} />
       </View>
       <T v="bodyStrong" numberOfLines={2}>
-        {ticket.titre || '(sans titre)'}
+        {ticket.label || ticket.titre || '(sans titre)'}
       </T>
+      {ticket.label && ticket.titre && ticket.titre !== ticket.label ? (
+        <T v="small" tone="muted" numberOfLines={2}>
+          {ticket.titre}
+        </T>
+      ) : null}
       <View style={styles.rowFoot}>
         <Feather name="user" size={11} color={tokens.colors.text3} />
         <T v="mono" tone="faint" numberOfLines={1} style={styles.flex}>
@@ -234,8 +256,15 @@ export function CSPTicketScreen({ ticket: initial, onBack }: { ticket: CSPTicket
           {ticket.priorite ? <Badge label={ticket.priorite} tone={priorityTone(ticket.priorite)} /> : null}
           <Badge label={ticket.statut || '—'} tone={ticket.ferme ? 'faint' : 'ok'} />
         </View>
-        <T v="title">{ticket.titre || '(sans titre)'}</T>
+        <T v="title">{ticket.label || ticket.titre || '(sans titre)'}</T>
+        {ticket.label && ticket.titre ? (
+          <T v="small" tone="muted">
+            {ticket.titre}
+          </T>
+        ) : null}
         <Divider />
+        {ticket.compagnie ? <Readout k="compagnie" v={ticket.compagnie} tone="default" /> : null}
+        {ticket.cycle ? <Readout k="cycle" v={ticket.cycle} tone="default" /> : null}
         <Readout k="responsable" v={ticket.responsable || 'non assigné'} tone="default" />
         <Readout k="auteur" v={ticket.auteur || '—'} />
         <Readout k="créé" v={formatDate(ticket.cree)} />

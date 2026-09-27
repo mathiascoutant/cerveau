@@ -193,6 +193,8 @@ func (t *userToolbox) CSPTickets(ctx context.Context, query string, includeClose
 		out = append(out, assistant.TicketView{
 			ID:          tk.ID,
 			Ref:         tk.Ref,
+			Compagnie:   tk.Compagnie,
+			Cycle:       tk.Cycle,
 			Titre:       tk.Titre,
 			Statut:      tk.Statut,
 			Priorite:    tk.Priorite,
@@ -213,6 +215,7 @@ func (t *userToolbox) CSPTickets(ctx context.Context, query string, includeClose
 func ticketMatches(tk tuleap.Ticket, want string) bool {
 	hay := strings.ToLower(strings.Join([]string{
 		tk.Ref, tk.Titre, tk.Statut, tk.Priorite, tk.Responsable, tk.Auteur, tk.Description,
+		tk.Compagnie, tk.Cycle, tk.Label,
 	}, " "))
 	for _, w := range strings.Fields(want) {
 		w = strings.TrimPrefix(w, "#")
