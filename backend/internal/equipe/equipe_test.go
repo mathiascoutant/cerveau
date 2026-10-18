@@ -158,3 +158,19 @@ func TestConsigneIngenieur(t *testing.T) {
 		t.Error("tout ce qui précède le contexte du moment doit rester stable")
 	}
 }
+
+// « Vois avec l'ingénieur » se délègue toujours, et ce que Léo a trouvé lui
+// est attribué : Claire ne répond pas à sa place.
+func TestConsigneResponsableDelegueQuandOnLeDemande(t *testing.T) {
+	roster := Roster(Voix{})
+	c := contexte{
+		moi: roster[1], roster: roster, userName: "Mathias", now: time.Date(2026, 10, 18, 18, 0, 0, 0, time.UTC), tz: "Europe/Paris",
+		capacites: capacites{projets: true, sonde: true, github: true, code: true},
+	}
+	prompt := consigneResponsable(c)
+	for _, want := range []string{"VOIR AVEC L'INGÉNIEUR", "TOUJOURS la mission avec confier_a_l_ingenieur", "Léo a regardé"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("consigne de la responsable : %q manquant", want)
+		}
+	}
+}
