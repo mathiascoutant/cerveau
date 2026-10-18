@@ -33,7 +33,16 @@ type Client struct {
 
 	mu   sync.Mutex
 	conn *ssh.Client
+	// slots borne les relevés simultanés sur la connexion. sshd refuse au-delà
+	// de MaxSessions (10 par défaut) : l'ingénieur qui lançait six relevés
+	// pendant que le point des projets en lançait cinq voyait les derniers
+	// refusés — et chaque refus faisait fermer la connexion des autres.
+	slots chan struct{}
 }
+
+// maxSessions : relevés simultanés sur la connexion partagée, sous la limite
+// par défaut de sshd.
+const maxSessions = 6
 
 // Config décrit comment joindre la sonde.
 type Config struct {
@@ -81,6 +90,7 @@ func NewClient(c Config) (*Client, error) {
 	return &Client{
 		addr:    host,
 		command: command,
+		slots:   make(chan struct{}, maxSessions),
 		cfg: &ssh.ClientConfig{
 			User:              user,
 			Auth:              []ssh.AuthMethod{auth},
@@ -197,8 +207,14 @@ func (c *Client) call(ctx context.Context, req Requete, into any) error {
 	if err != nil {
 		return err
 	}
+	select {
+	case c.slots <- struct{}{}:
+		defer func() { <-c.slots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		conn, err := c.connection(ctx)
 		if err != nil {
 			return err
@@ -211,13 +227,34 @@ func (c *Client) call(ctx context.Context, req Requete, into any) error {
 				// compte, pas le code de sortie.
 				return decode(out, into)
 			}
-			c.drop(conn)
 			lastErr = err
+			// Une session refusée n'est pas une connexion morte : le serveur
+			// a dit « pas maintenant ». On réessaie sur la même, un peu plus
+			// tard, au lieu de couper les relevés des autres.
+			var refused *ssh.OpenChannelError
+			if errors.As(err, &refused) {
+				if !sleepCtx(ctx, time.Duration(attempt+1)*300*time.Millisecond) {
+					return ctx.Err()
+				}
+				continue
+			}
+			c.drop(conn)
 			continue
 		}
 		return decode(out, into)
 	}
 	return fmt.Errorf("la sonde ne répond pas : %w", lastErr)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *Client) run(ctx context.Context, conn *ssh.Client, command string) ([]byte, error) {

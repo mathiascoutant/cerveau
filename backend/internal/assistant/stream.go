@@ -295,6 +295,9 @@ func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string
 	var (
 		firstAny  time.Time
 		firstText time.Time
+		// notes : les annonces déjà affichées, que la réponse finale ne doit
+		// pas répéter.
+		notes []string
 	)
 	markEvent := func() {
 		if firstAny.IsZero() {
@@ -382,6 +385,7 @@ func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string
 		if emitted {
 			if reply != "" {
 				emit(Event{Type: "note", Text: reply})
+				notes = append(notes, reply)
 			}
 			emit(Event{Type: "reset"})
 			firstText = time.Time{}
@@ -441,11 +445,23 @@ func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string
 		// répondre — son « done » à lui fermera le tour.
 		return result, nil
 	}
+	result.Reply = withoutNotes(result.Reply, notes)
 	if result.Reply == "" {
 		result.Reply = "Je n'ai pas réussi à conclure, désolé. Tu peux reformuler ?"
 	}
 	emit(Event{Type: "done", Result: &result, Metrics: metrics})
 	return result, nil
+}
+
+// withoutNotes retire de la réponse une annonce qu'elle répète en tête : elle
+// est déjà affichée au-dessus, et la voix ne doit pas la dire deux fois.
+func withoutNotes(reply string, notes []string) string {
+	for _, note := range notes {
+		if note != "" && strings.HasPrefix(reply, note) {
+			reply = strings.TrimSpace(strings.TrimPrefix(reply, note))
+		}
+	}
+	return reply
 }
 
 type callOutput struct {

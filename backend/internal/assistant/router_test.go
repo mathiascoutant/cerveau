@@ -116,3 +116,13 @@ func TestSystemPromptKeepsStablePrefix(t *testing.T) {
 		t.Error("la consigne rapide ne doit mentionner aucun outil")
 	}
 }
+
+func TestWithoutNotes(t *testing.T) {
+	got := withoutNotes("Je demande à Léo de regarder le VPS.\n\nLéo a vérifié : tout répond.", []string{"Je demande à Léo de regarder le VPS."})
+	if got != "Léo a vérifié : tout répond." {
+		t.Errorf("annonce répétée : %q", got)
+	}
+	if got := withoutNotes("Léo a vérifié.", []string{"Je regarde."}); got != "Léo a vérifié." {
+		t.Errorf("réponse modifiée à tort : %q", got)
+	}
+}
