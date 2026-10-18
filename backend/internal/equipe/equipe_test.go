@@ -103,7 +103,7 @@ func TestOutilsSelonLesCapacites(t *testing.T) {
 	reg := &registre.Registre{Projets: []registre.Projet{{ID: "p", Nom: "P", Composants: []registre.Composant{{ID: "c", Depot: "o/r"}}}}}
 	e := New(assistant.New("cle", "", ""), projets.New(reg, nil, projets.NewGitHub("", nil)), nil, Config{})
 	ing, _ := e.Membre(IDIngenieur)
-	raw, _ := json.Marshal(e.toolsFor(ing, e.capacites()))
+	raw, _ := json.Marshal(e.toolsFor(ing, e.capacites(), false))
 	got := names(raw)
 	for _, absent := range []string{"journaux", "base_etat", "vps_systeme", "code_chercher", "confier_a_l_ingenieur"} {
 		if got[absent] {
@@ -117,7 +117,7 @@ func TestOutilsSelonLesCapacites(t *testing.T) {
 	}
 
 	withProbe := New(assistant.New("cle", "", ""), projets.New(reg, &sonde.Client{}, projets.NewGitHub("jeton", nil)), nil, Config{})
-	raw, _ = json.Marshal(withProbe.toolsFor(ing, withProbe.capacites()))
+	raw, _ = json.Marshal(withProbe.toolsFor(ing, withProbe.capacites(), false))
 	got = names(raw)
 	for _, present := range []string{"journaux", "base_etat", "base_expliquer", "vps_systeme", "code_chercher"} {
 		if !got[present] {
@@ -126,7 +126,7 @@ func TestOutilsSelonLesCapacites(t *testing.T) {
 	}
 
 	resp, _ := withProbe.Membre(IDResponsable)
-	raw, _ = json.Marshal(withProbe.toolsFor(resp, withProbe.capacites()))
+	raw, _ = json.Marshal(withProbe.toolsFor(resp, withProbe.capacites(), false))
 	got = names(raw)
 	if !got["confier_a_l_ingenieur"] || got["journaux"] || got["code_lire"] {
 		t.Errorf("la responsable délègue, elle ne fouille pas : %v", got)

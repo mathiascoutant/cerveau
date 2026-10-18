@@ -77,8 +77,9 @@ func tool(name, description string, parameters map[string]any) responses.ToolUni
 	return t
 }
 
-// toolsFor rend les outils d'un membre.
-func (e *Equipe) toolsFor(m Membre, caps capacites) []responses.ToolUnionParam {
+// toolsFor rend les outils d'un membre. Sans passage, il n'a pas de quoi
+// rendre la parole : c'est lui qui répond.
+func (e *Equipe) toolsFor(m Membre, caps capacites, sansPassage bool) []responses.ToolUnionParam {
 	var depots, bases, projectIDs []string
 	if e.projets != nil {
 		depots = e.projets.Registre.Depots()
@@ -227,6 +228,9 @@ func (e *Equipe) toolsFor(m Membre, caps capacites) []responses.ToolUnionParam {
 	for _, c := range Collegues(e.roster, m.ID) {
 		targets = append(targets, c.ID)
 		who = append(who, fmt.Sprintf("« %s » : %s, %s", c.ID, c.Nom, strings.ToLower(c.Role)))
+	}
+	if sansPassage {
+		return tools
 	}
 	tools = append(tools, tool(
 		"rendre_la_parole",

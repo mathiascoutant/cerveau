@@ -97,6 +97,9 @@ type Demande struct {
 	Timezone string
 	UserName string
 	CacheKey string
+	// SansPassage : le membre répond lui-même, sans pouvoir passer la
+	// parole — il vient de la recevoir, et la repasser ferait boucler.
+	SansPassage bool
 }
 
 // Ask fait répondre un membre de l'équipe, en flux.
@@ -148,7 +151,7 @@ func (e *Equipe) run(ctx context.Context, m Membre, d Demande, emit assistant.Em
 		Agent:         m.ID,
 		Route:         e.routes[m.ID],
 		Instructions:  instructions,
-		Tools:         e.toolsFor(m, caps),
+		Tools:         e.toolsFor(m, caps, d.SansPassage),
 		Label:         labelOf,
 		MaxIterations: 14,
 		ToolTimeout:   toolTimeout,
