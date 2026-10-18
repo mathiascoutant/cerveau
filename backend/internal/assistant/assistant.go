@@ -57,6 +57,8 @@ type Toolbox interface {
 	SearchSlack(ctx context.Context, q SlackSearch) (SlackSearchView, error)
 	// Tickets CSP du tracker Tuleap.
 	CSPTickets(ctx context.Context, query string, includeClosed bool, limit int) ([]TicketView, error)
+	// Ce qu'il a déjà lu, et ce qui est arrivé depuis. Voir echanges.go.
+	RecallExchanges(ctx context.Context, query string) ([]EchangeView, error)
 }
 
 // MailSearch cadre une recherche dans la boîte.
@@ -159,7 +161,9 @@ type EventView struct {
 // EmailView est une enveloppe de mail. Recu est déjà exprimé par rapport à
 // maintenant (« hier à 16h30 ») : voir When, le modèle ne doit pas recalculer.
 type EmailView struct {
-	De    string `json:"de"`
+	De string `json:"de"`
+	// Identite : qui est l'expéditeur pour lui, d'après l'annuaire.
+	Identite
 	Objet string `json:"objet"`
 	Recu  string `json:"recu"`
 	// PourToi : ce que le mail attend de lui, calculé par le serveur à partir
@@ -174,16 +178,21 @@ type EmailView struct {
 // aller-retour IMAP de plus, on ne le fait que si on le demande.
 type EmailContentView struct {
 	De string `json:"de"`
+	// Identite : qui est l'expéditeur pour lui, d'après l'annuaire.
+	Identite
 	// Adresse : l'adresse brute de l'expéditeur, pour pouvoir adresser une
-	// réponse. Elle ne se prononce pas à voix haute.
+	// réponse — et la retenir. Elle ne se prononce pas à voix haute.
 	Adresse string `json:"adresse,omitempty"`
 	// Pour et Copie : à qui le mail était adressé. Un mail envoyé à six
 	// personnes ne se répond pas comme un mail adressé à soi seul, et la
 	// salutation change avec le nombre.
 	Pour  []string `json:"pour,omitempty"`
 	Copie []string `json:"copie,omitempty"`
-	Objet string   `json:"objet"`
-	Recu  string   `json:"recu"`
+	// Personnes : ceux des destinataires que l'annuaire connaît. « Tu es en
+	// copie avec ton patron » ne se dit pas sans.
+	Personnes []PersonView `json:"personnes,omitempty"`
+	Objet     string       `json:"objet"`
+	Recu      string       `json:"recu"`
 	// PourToi : sa place parmi les destinataires, déjà tranchée — destinataire
 	// unique, destinataire parmi d'autres, simple copie, diffusion, ou absent
 	// des champs (copie cachée, alias, liste).
@@ -195,9 +204,22 @@ type EmailContentView struct {
 	// Destinataires : combien de personnes ont reçu ce mail, copie comprise.
 	Destinataires int    `json:"destinataires,omitempty"`
 	Contenu       string `json:"contenu"`
-	// Fil : les messages précédents de la conversation, du plus récent au plus
-	// ancien. Ne se lit pas à voix haute : c'est du contexte, pas du contenu.
+	// MessageID : de quoi rouvrir exactement ce mail plus tard.
+	MessageID string `json:"message_id,omitempty"`
+	// TeNomme : le corps l'interpelle par son prénom. En copie, c'est ce qui
+	// change une information en demande.
+	TeNomme bool `json:"te_nomme,omitempty"`
+	// Fil : ce qui PRÉCÈDE ce mail dans la conversation, du plus ancien au
+	// plus récent — le premier est celui qui a lancé le sujet. Retrouvé dans
+	// sa boîte (réception et envois) par les en-têtes, complété par
+	// l'historique cité. Du contexte, pas du contenu à lire.
 	Fil []ThreadView `json:"fil,omitempty"`
+	// Suite : ce qui est arrivé APRÈS ce mail dans la même conversation, du
+	// plus ancien au plus récent, ses propres réponses comprises.
+	Suite []ThreadView `json:"suite,omitempty"`
+	// DejaRepondu : il a déjà répondu à ce mail — un message de la suite est
+	// de lui. Ce n'est plus une demande en attente.
+	DejaRepondu bool `json:"deja_repondu,omitempty"`
 	// Tronque : vrai si le mail était trop long pour être rendu en entier.
 	Tronque bool `json:"tronque,omitempty"`
 	// Echeance : la date que le corps du mail réclame, déjà résolue et mise en
@@ -215,17 +237,23 @@ type EmailContentView struct {
 	EcheanceDite string `json:"echeance_dite,omitempty"`
 }
 
-// ThreadView est un message antérieur du fil : de quoi situer l'échange avant
-// d'y répondre, pas de quoi le relire.
+// ThreadView est un autre message de la conversation : de quoi situer
+// l'échange avant d'y répondre, pas de quoi le relire.
 type ThreadView struct {
 	De string `json:"de"`
+	// Identite : qui est l'auteur pour lui, d'après l'annuaire.
+	Identite
 	// DeToi : ce message a été écrit par l'utilisateur lui-même. C'est ce qui
 	// permet de répondre à « j'ai dit quoi dans le mail d'avant ».
 	DeToi   bool   `json:"de_toi,omitempty"`
 	Recu    string `json:"recu,omitempty"`
 	Pour    string `json:"pour,omitempty"`
+	Copie   string `json:"copie,omitempty"`
 	Objet   string `json:"objet,omitempty"`
 	Extrait string `json:"extrait"`
+	// MessageID : pour l'ouvrir en entier avec lire_mail. Absent d'un
+	// message qui n'existe que recopié dans un autre.
+	MessageID string `json:"message_id,omitempty"`
 }
 
 // SlackView distingue deux réalités que l'API Slack ne traite pas pareil :
@@ -238,8 +266,16 @@ type SlackView struct {
 	NonLus int `json:"non_lus,omitempty"`
 	// MessagesRecents : repli quand l'état de lecture est indisponible.
 	MessagesRecents int `json:"messages_recents,omitempty"`
-	// Mentions : nombre de fois où l'utilisateur est cité nommément.
+	// Mentions : nombre de fois où l'utilisateur est cité nommément (@).
 	Mentions int `json:"mentions,omitempty"`
+	// Nomme : messages qui l'appellent par son prénom, sans @.
+	Nomme int `json:"nomme,omitempty"`
+	// MentionsGroupe : messages adressés à tout le canal ou à un groupe —
+	// pas à lui personnellement.
+	MentionsGroupe int `json:"mentions_groupe,omitempty"`
+	// Interpellations : les messages qui le visent personnellement, chacun
+	// avec contexte_avant, ce qui le précède dans la conversation.
+	Interpellations []SlackMessageView `json:"interpellations,omitempty"`
 	// Dernier : quand remonte le message le plus récent de la conversation,
 	// déjà situé par rapport à maintenant. Sans lui, « le dernier message de
 	// Machin » n'avait aucune date à laquelle se raccrocher.
@@ -259,6 +295,8 @@ type SlackMessageView struct {
 	ID     string `json:"id,omitempty"`
 	Canal  string `json:"canal,omitempty"`
 	Auteur string `json:"auteur"`
+	// Identite : qui est l'auteur pour lui, d'après l'annuaire.
+	Identite
 	// AuteurID : l'identifiant de l'auteur d'après l'API. C'est LUI qui fait
 	// foi : un prénom dans le texte n'est jamais une signature.
 	AuteurID string   `json:"auteur_id,omitempty"`
@@ -272,6 +310,16 @@ type SlackMessageView struct {
 	Mentions []MentionView `json:"mentions,omitempty"`
 	// TeCite : il est lui-même parmi les mentions.
 	TeCite bool `json:"te_cite,omitempty"`
+	// TeVise : comment ce message le vise — « toi » (mention @ nominative),
+	// « prenom » (son prénom écrit, sans @), « groupe » (@ici, @canal, @tout
+	// le monde), « equipe » (un groupe d'utilisateurs). Absent : il n'est pas
+	// visé, c'est l'activité du canal.
+	TeVise string `json:"te_vise,omitempty"`
+	// ContexteAvant : les messages qui précèdent celui-ci dans sa
+	// conversation ou son fil, du plus ancien au plus récent. Rempli pour les
+	// messages qui le visent : c'est là que se trouve le « ça » de « tu as
+	// fait ça ? ».
+	ContexteAvant []SlackMessageView `json:"contexte_avant,omitempty"`
 	// FilDe : identifiant du message auquel celui-ci répond dans un fil.
 	FilDe string `json:"repond_dans_le_fil_de,omitempty"`
 	// Lien : permalien vers le message.
@@ -320,8 +368,10 @@ type WhatsAppChatView struct {
 
 type WhatsAppMessageView struct {
 	Auteur string `json:"auteur"`
-	Texte  string `json:"texte"`
-	Quand  string `json:"quand"`
+	// Identite : qui est l'auteur pour lui, d'après l'annuaire.
+	Identite
+	Texte string `json:"texte"`
+	Quand string `json:"quand"`
 	// DeToi : message écrit par l'utilisateur lui-même.
 	DeToi bool `json:"de_toi,omitempty"`
 	// TeCite : il y est cité nommément, ou ce message répond à l'un des siens.
@@ -465,6 +515,8 @@ type Request struct {
 	// Ce n'est pas une source de plus mais le fond sur lequel les autres se
 	// lisent — voir memoire.go.
 	Facts []FactView
+	// Echanges : ce que Raoul a lu pour lui récemment — voir echanges.go.
+	Echanges []EchangeView
 	// CacheKey : identifie l'utilisateur auprès du cache de prompts d'OpenAI.
 	// Une valeur stable par compte suffit — jamais un secret.
 	CacheKey string
@@ -796,16 +848,43 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 		}
 		return encode(tickets), nil, nil
 
-	case "retenir":
+	case "memoire_echanges":
 		var in struct {
-			Categorie string `json:"categorie"`
-			Sujet     string `json:"sujet"`
-			Contenu   string `json:"contenu"`
+			Recherche string `json:"recherche"`
 		}
 		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
 			return "", nil, err
 		}
-		fact, err := tb.Remember(ctx, FactView{Kind: in.Categorie, Subject: in.Sujet, Content: in.Contenu})
+		list, err := tb.RecallExchanges(ctx, in.Recherche)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(list) == 0 {
+			return "Rien de lu là-dessus : tu ne l'as pas encore ouvert pour lui. Va le lire.", nil, nil
+		}
+		return encode(list), nil, nil
+
+	case "retenir":
+		var in struct {
+			Categorie  string `json:"categorie"`
+			Sujet      string `json:"sujet"`
+			Contenu    string `json:"contenu"`
+			Role       string `json:"role"`
+			Importance string `json:"importance"`
+			Adresse    string `json:"adresse"`
+			SlackID    string `json:"slack_id"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		fact := FactView{Kind: in.Categorie, Subject: in.Sujet, Content: in.Contenu, Role: in.Role, Importance: in.Importance}
+		if a := strings.TrimSpace(in.Adresse); a != "" {
+			fact.Adresses = []string{a}
+		}
+		if id := strings.TrimSpace(in.SlackID); id != "" {
+			fact.SlackIDs = []string{id}
+		}
+		fact, err := tb.Remember(ctx, fact)
 		if err != nil {
 			return "", nil, err
 		}
@@ -1181,6 +1260,38 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 // toolDefinitions n'expose que les outils des sources branchées. Une source
 // absente ne doit pas être un outil qui échoue : le modèle raconterait l'échec.
 // Sans outil, elle n'existe simplement pas.
+// rememberTool décrit retenir. À part parce que ses champs dépendent des
+// messageries branchées : l'identifiant Slack d'une personne n'a de sens — ni
+// de place dans ce que lit le modèle — que si Slack l'est.
+func rememberTool(src Sources, tool func(string, string, map[string]any) responses.ToolUnionParam, str func(string) map[string]any, object func(map[string]any, ...string) map[string]any) responses.ToolUnionParam {
+	ids := "adresse"
+	props := map[string]any{
+		"categorie": map[string]any{
+			"type":        "string",
+			"enum":        []string{FactPerson, FactProject, FactPreference, FactOther},
+			"description": "Où ça se range. « fait » est le dernier recours, pas le choix par défaut.",
+		},
+		"sujet":   str("L'étiquette sous laquelle ça se range, deux ou trois mots : un prénom, un nom de dossier, le thème de l'habitude (ex. « Cyril », « DAW », « les réunions du matin »). Réutilise l'étiquette existante quand tu complètes quelque chose de connu."),
+		"contenu": str("Ce qu'il y a à savoir, en une ou deux phrases, à la troisième personne (ex. « Contact technique chez Orange, porte le dossier des boxes, on se tutoie »). Quand le sujet est déjà connu, écris la fiche ENTIÈRE — l'ancien savoir plus le nouveau : ce texte remplace intégralement le précédent. Pour une personne déjà connue dont tu ne fais qu'ajouter l'adresse, le rôle ou l'importance, laisse-le vide : la fiche garde son texte."),
+		"role":    str("Personne seulement : sa place pour lui, en quelques mots (ex. « son patron, CEO de PXCom », « client, chef de projet chez Airbus », « dev de l'équipe »)."),
+		"importance": map[string]any{
+			"type":        "string",
+			"enum":        importanceLevels,
+			"description": "Personne seulement : le poids de ce qu'elle lui demande. critique = son patron, la direction, un client majeur ; haute = qui le sollicite directement et compte ; normale = un collègue ; basse = un contact lointain, un fournisseur.",
+		},
+		"adresse": str("Personne seulement : son adresse mail, telle qu'un outil te l'a donnée (champ adresse d'un mail). C'est elle qui permet de la reconnaître sans la confondre avec un homonyme."),
+	}
+	if src.Slack {
+		ids = "adresse, identifiant Slack"
+		props["slack_id"] = str("Personne seulement : son identifiant Slack (champ auteur_id d'un message), pour la reconnaître sur Slack.")
+	}
+	return tool(
+		"retenir",
+		"Retient durablement une information sur l'utilisateur : qui est quelqu'un de son entourage (et sa place : rôle, importance, "+ids+"), ce que recouvre un de ses dossiers, une manière de faire qu'il attend. À appeler DE TA PROPRE INITIATIVE, dans le même tour, sans le commenter ni demander l'autorisation, dès qu'il t'apprend quelque chose qui vaudra encore dans un mois — et à rappeler quand il te corrige. Ce qui porte une échéance n'a rien à faire ici : c'est ajouter_tache. Ce qu'un autre outil sait déjà dire non plus.",
+		object(props, "categorie"),
+	)
+}
+
 func toolDefinitions(src Sources) []responses.ToolUnionParam {
 	str := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}
@@ -1270,19 +1381,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 				"recherche": str("Quelques mots de la tâche. Si plusieurs correspondent, l'outil le dit : demande laquelle."),
 			}, "recherche"),
 		),
-		tool(
-			"retenir",
-			"Retient durablement une information sur l'utilisateur : qui est quelqu'un de son entourage, ce que recouvre un de ses dossiers, une manière de faire qu'il attend. À appeler DE TA PROPRE INITIATIVE, dans le même tour, sans le commenter ni demander l'autorisation, dès qu'il t'apprend quelque chose qui vaudra encore dans un mois — et à rappeler quand il te corrige. Ce qui porte une échéance n'a rien à faire ici : c'est ajouter_tache. Ce qu'un autre outil sait déjà dire non plus.",
-			object(map[string]any{
-				"categorie": map[string]any{
-					"type":        "string",
-					"enum":        []string{FactPerson, FactProject, FactPreference, FactOther},
-					"description": "Où ça se range. « fait » est le dernier recours, pas le choix par défaut.",
-				},
-				"sujet":   str("L'étiquette sous laquelle ça se range, deux ou trois mots : un prénom, un nom de dossier, le thème de l'habitude (ex. « Cyril », « DAW », « les réunions du matin »). Réutilise l'étiquette existante quand tu complètes quelque chose de connu."),
-				"contenu": str("Ce qu'il y a à savoir, en une ou deux phrases, à la troisième personne (ex. « Contact technique chez Orange, porte le dossier des boxes, on se tutoie »). Quand le sujet est déjà connu, écris la fiche ENTIÈRE — l'ancien savoir plus le nouveau : ce texte remplace intégralement le précédent."),
-			}, "categorie", "contenu"),
-		),
+		rememberTool(src, tool, str, object),
 		tool(
 			"oublier",
 			"Oublie tout ce qui est retenu à propos d'un sujet. À appeler quand il dit « oublie ce que je t'ai dit sur… », « efface ça ». Emporte aussi bien la fiche du sujet que les autres fiches qui le mentionnent.",
@@ -1327,7 +1426,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			),
 			tool(
 				"lire_mail",
-				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, destinataires) et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
+				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, te_nomme, destinataires) et TOUTE la conversation, retrouvée dans la réception et dans les envois : fil (ce qui précède, du premier message au dernier) et suite (ce qui est arrivé après, ses propres réponses comprises — deja_repondu le dit). Les messages écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant, où en est l'échange, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 				object(spaceProperty(src, map[string]any{
 					"recherche":  str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 					"non_lu":     map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
@@ -1440,6 +1539,14 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 	}
 
 	if src.Mail || src.MailPerso || src.Slack || src.WhatsApp {
+		tools = append(tools, tool(
+			"memoire_echanges",
+			"Rend ce que tu as DÉJÀ lu pour lui sur une personne, un sujet ou une conversation — le dernier message vu, à qui il s'adressait, ce que tu en avais dit — et vérifie à l'instant si quelque chose de nouveau est arrivé depuis (champ depuis, et les nouveaux messages). À appeler AVANT de rouvrir un mail ou une conversation quand il te reparle de quelque chose que tu as déjà lu (« c'était quoi son dernier mail ? », « ça a bougé ? ») : s'il n'y a rien de nouveau, tu réponds sans rien rouvrir.",
+			object(map[string]any{
+				"recherche": str("Personne, sujet ou nom de conversation, tel qu'il l'a dit (ex. « Cyril », « la maquette », « dev »). Vide pour les derniers échanges lus."),
+			}),
+		))
+
 		var sources []string
 		if src.Mail || src.MailPerso {
 			sources = append(sources, "mail")
@@ -1675,7 +1782,7 @@ Puis tu le dis comme un avis, avec ce qui le fonde. « Ils rediscutent du budget
 
 `
 
-func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources, facts []FactView) string {
+func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources, facts []FactView, recent []EchangeView) string {
 	who := userName
 	if who == "" {
 		who = "ton interlocuteur"
@@ -1760,11 +1867,18 @@ echeance_dite porte les mots exacts du mail — « avant vendredi », « sous 48
 
 PAS D'ÉCHÉANCE, PAS D'INVENTION. Le champ est vide dans l'immense majorité des mails, et c'est normal : il ne se remplit que si quelqu'un a écrit une date noir sur blanc. Un mail qui presse sans donner de jour presse sans donner de jour — tu le dis, et tu n'en fabriques pas une.
 
-LE FIL. Un mail arrive rarement seul : lire_mail descend aussi le champ fil, les messages antérieurs de la conversation, du plus récent au plus ancien. Chacun porte qui l'a écrit, quand, et son texte. Ceux marqués de_toi sont les siens — ce qu'IL a répondu.
+LE FIL ET LA SUITE. Un mail arrive rarement seul : lire_mail descend la conversation ENTIÈRE, retrouvée dans sa boîte de réception ET dans sa boîte d'envoi — même quand le mail lui-même ne recopie rien.
+- fil : ce qui PRÉCÈDE ce mail, du plus ancien au plus récent. Le premier message est celui qui a lancé le sujet : qui, pour demander quoi, à qui. C'est lui qui donne le but de l'échange.
+- suite : ce qui est arrivé APRÈS ce mail, du plus ancien au plus récent — les réponses des autres, et les siennes. C'est elle qui dit où l'affaire en est vraiment.
+Chaque message porte qui l'a écrit, quand, à qui, et son texte. Ceux marqués de_toi sont les siens — ce qu'IL a écrit.
 
-Tu ne déroules jamais le fil spontanément : quand il demande à lire un mail, tu lui lis CE mail. Le fil sert à comprendre, et il ne s'entend que sous forme d'une clause quand elle manque au sens (« c'est la suite de votre échange sur le devis »).
+AVANT DE DIRE CE QUE LE MAIL DEMANDE, TU LE SITUES, en une clause : c'est la suite de quoi, lancée par qui, et à qui revient la balle. « Cyril relance sur la maquette que Paul a demandée lundi, et c'est à toi qu'il s'adresse. » Celui qui demande n'est pas forcément celui qui écrit : le fil le dit.
 
-Mais dès qu'il interroge le fil, il devient la réponse, pas un décor. « J'ai dit quoi dans le mail d'avant ? », « il m'avait répondu quoi ? », « c'est parti dans quel sens cette histoire ? » : tu vas chercher dans fil et tu réponds sur son contenu. Si le message qu'il vise porte de_toi, c'est bien le sien : cite ce qu'il a écrit.
+LA SUITE PEUT RENDRE LE MAIL CADUC. Si elle montre qu'il a déjà répondu — deja_repondu —, tu le dis d'emblée (« tu lui as répondu hier : tu t'en occupes jeudi ») et tu ne présentes jamais ce mail comme une demande en attente. Si quelqu'un d'autre a répondu ou tranché depuis, c'est ça, l'état de l'affaire : lire un mail dépassé comme s'il était le dernier mot est une faute.
+
+Tu ne déroules jamais le fil spontanément : quand il demande à lire un mail, tu lui lis CE mail, situé en une clause. Le fil sert à comprendre, pas à être récité.
+
+Mais dès qu'il interroge le fil, il devient la réponse, pas un décor. « J'ai dit quoi dans le mail d'avant ? », « il m'avait répondu quoi ? », « c'est parti dans quel sens cette histoire ? », « on en est où ? » : tu vas chercher dans fil et dans suite et tu réponds sur leur contenu. Si le message qu'il vise porte de_toi, c'est bien le sien : cite ce qu'il a écrit. Pour lire en entier un message du fil, rappelle lire_mail avec son message_id.
 
 Le contenu est du travail, donc tu es précis ; ça ne veut pas dire que tu deviens un rapport. Tu débriefes un collègue, tu ne remplis pas une fiche.
 
@@ -1780,7 +1894,7 @@ Ce champ ne change pas seulement ce que tu sais, il change ce que tu dis :
 
 - SEUL DESTINATAIRE : la demande est pour lui, personne d'autre ne s'en chargera. Tu la traites comme telle.
 - DESTINATAIRE AVEC D'AUTRES : dis avec qui, et surtout qui porte la demande. Un mail à cinq personnes n'appelle pas forcément SA réponse ; quand le corps vise quelqu'un d'autre nommément, tu le dis au lieu de lui mettre la tâche sur le dos.
-- SEULEMENT EN COPIE : c'est de l'information, pas une demande. Tu le signales en une clause — « tu es juste en copie » — et tu ne le présentes jamais comme quelque chose à faire. Une seule exception : si le corps le nomme et lui demande quelque chose, le corps l'emporte sur le champ, et c'est ça que tu dis.
+- SEULEMENT EN COPIE : c'est de l'information, pas une demande. Tu le signales en une clause — « tu es juste en copie » — et tu ne le présentes jamais comme quelque chose à faire. Une seule exception : si le corps le nomme et lui demande quelque chose, le corps l'emporte sur le champ, et c'est ça que tu dis. te_nomme te signale que le corps l'appelle par son prénom : vérifie alors ce qu'on lui demande.
 - DIFFUSION, ou ABSENT DES CHAMPS : personne ne l'a nommé. Une demi-phrase suffit, souvent aucune.
 - RÉPONSE À UN MAIL QU'IL A ENVOYÉ : le plus engageant de tous, et il prime sur tout le reste. Quelqu'un répond à ce que LUI a écrit — même s'il n'est qu'en copie de la réponse, même s'ils sont dix. Tu ouvres là-dessus : « Cyril te répond sur les boxes ». Ce n'est pas une déduction sur un « Re: » : le message cite l'identifiant d'un mail parti de sa boîte.
 
@@ -1792,7 +1906,7 @@ QUAND IL DEMANDE DE PRÉPARER UNE RÉPONSE À UN MAIL
 
 « Prépare-moi une réponse pour dire que c'est ok », « réponds-lui que je serai là jeudi », « écris-lui qu'on décale » : tu appelles preparer_reponse_mail. Tu n'envoies rien, jamais, et ce n'est pas une limite à laquelle tu t'excuses : c'est le fonctionnement normal. Le mail se range dans l'onglet Réponses de l'app, il le copie et l'expédie lui-même.
 
-Si tu n'as pas encore lu le mail auquel il répond, lis-le d'abord avec lire_mail : on ne répond pas à un message dont on ne connaît que l'objet. lire_mail te donne aussi ce qui a déjà été dit — historique_cite, fil — et à qui le message était adressé. Sers-t'en : c'est la différence entre une réponse dans la conversation et une réponse à côté.
+Si tu n'as pas encore lu le mail auquel il répond, lis-le d'abord avec lire_mail : on ne répond pas à un message dont on ne connaît que l'objet. lire_mail te donne aussi ce qui a déjà été dit — fil et suite — et à qui le message était adressé. Si la suite montre qu'il a déjà répondu, dis-le avant de rédiger : il ne veut peut-être pas répondre deux fois. Sers-t'en : c'est la différence entre une réponse dans la conversation et une réponse à côté.
 
 À QUI TU T'ADRESSES. La première ligne d'un mail nomme quelqu'un, et se tromper de nom saute aux yeux avant même que la phrase soit lue.
 
@@ -1931,9 +2045,9 @@ Nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule toujours « demain »
 		identity,
 		only(src.Slack || src.WhatsApp, conversationRules)+only(src.Mail || src.Slack || src.WhatsApp, debriefRules),
 		urgentRules(src),
-		memoryBlock(facts),
+		memoryBlock(facts)+recentBlock(recent),
 		memoryRules,
-		spaceRules(src)+teamRules(src)+only(src.Mail || src.MailPerso, mailSearchRules)+only(src.Slack, slackSearchRules)+only(src.CSP, cspRules),
+		spaceRules(src)+teamRules(src)+entourageRules(src)+echangeRules(src)+only(src.Mail || src.MailPerso, mailSearchRules)+only(src.Slack, slackSearchRules+slackTargetRules)+only(src.CSP, cspRules),
 	)
 }
 
@@ -1964,6 +2078,23 @@ Marie écrit « J'ai vu que Paul avait corrigé le problème hier ». Qui a écr
 « Qu'est-ce que Xavier a demandé aujourd'hui » : chercher_slack avec auteur=Xavier et depuis=ce matin. Ce sont SES messages, écrits par lui. « Qui a demandé à Xavier de faire la mise à jour » : chercher_slack avec mentionne=Xavier et les mots — puis tu lis l'auteur de chaque message trouvé. « Est-ce que Thomas a répondu à Marie » : cherche les messages de Thomas, regarde repond_dans_le_fil_de et le fil, et dis ce que tu as vu. « Qui a demandé quoi à qui » : tu déroules message par message — auteur, à qui (les mentions), quoi — sans jamais fusionner deux messages.
 
 de_toi et « toi » désignent ses propres messages ; te_cite dit qu'il est interpellé. Tu donnes le canal et le moment de chaque message que tu rapportes (recopie le champ quand), et tu peux terminer par le lien du message le plus important, seul sur sa ligne.
+
+`
+
+// slackTargetRules : être visé, ou seulement présent.
+const slackTargetRules = `QUAND ON LE VISE SUR SLACK
+
+te_vise dit comment un message le vise, et ça change tout ce que tu en dis :
+- toi : on l'a mentionné personnellement (@). C'est à lui qu'on parle.
+- prenom : on l'appelle par son prénom, sans @ — « Mathias, tu as vu ? ». C'est à lui aussi, autant qu'une mention.
+- groupe : @ici, @canal, @tout le monde. On parle à tout le canal, pas à lui : une demi-phrase suffit, jamais une urgence, sauf si le texte lui demande quelque chose de précis.
+- equipe : une mention de groupe (@devs…), dont il fait peut-être partie. Même traitement, en le disant.
+- absent : il n'est pas visé. C'est l'activité du canal, qui se résume ou se tait.
+Dans slack_non_lus, mentions compte les mentions @ nominatives, nomme les appels par son prénom, mentions_groupe les messages au canal entier. Tu ne présentes jamais une mention de groupe comme une mention personnelle.
+
+QUAND ON LUI DEMANDE QUELQUE CHOSE SANS DIRE QUOI — « Mathias, tu as fait ça ? », « c'est bon de ton côté ? », « tu peux t'en occuper ? » —, tu ne répètes pas la question telle quelle. Tu cherches ce que « ça » désigne : dans contexte_avant (les messages qui précèdent celui qui le vise), et quand tu lis le canal, dans les messages juste au-dessus et dans le fil. Puis tu dis la vraie demande : « Sophie te demande si tu as fait la migration de la base dont Paul parlait juste avant ». Pas besoin de remonter loin : quelques messages suffisent presque toujours.
+
+Si ce qui précède ne le dit pas, tu le dis honnêtement, sans broder : « Sophie t'a mentionné pour te demander si tu as fait "ça", mais je ne retrouve pas de quoi il s'agit dans ce qui précède. » Et tu proposes de lire plus haut dans le canal. Jamais tu n'inventes l'objet d'une demande.
 
 `
 

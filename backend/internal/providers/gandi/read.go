@@ -84,41 +84,33 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 	}
 
 	msg := chosen.msg
-	body, quoted := extractParts(fetched[0].FindBodySection(section))
+	raw := fetched[0].FindBodySection(section)
+	body, quoted := extractParts(raw)
 	msg.Body = body
 
-	// Le fil que le mail recopie prime sur tout : c'est la vraie conversation,
-	// dans le bon ordre, et c'est le seul endroit où figurent les messages que
-	// l'utilisateur a lui-même envoyés — sa boîte de réception ne les a pas.
-	for _, q := range quoted {
-		msg.Thread = append(msg.Thread, ThreadMessage{
-			From:    q.From,
-			Sent:    q.Sent,
-			To:      q.To,
-			Subject: q.Subject,
-			Excerpt: q.Body,
-		})
+	// En dernier, parce que ça change de boîte sélectionnée : la conversation
+	// entière, retrouvée par les en-têtes dans la réception et les envois —
+	// ce qui précède, ce qui a suivi, et s'il répond à l'un des siens.
+	if !completeThread(c, &msg, readFiliation(raw), quoted, creds.Email) && len(quoted) == 0 && looksLikeReply(msg.Subject) {
+		// Rien par les en-têtes ni dans le corps, alors que l'objet annonce
+		// une réponse : en dernier recours, les mails de même objet.
+		if _, err := c.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err == nil {
+			msg.Thread = readThread(c, all, chosen)
+			sortChrono(msg.Thread)
+		}
 	}
-	if len(msg.Thread) == 0 {
-		msg.Thread = readThread(c, all, chosen)
-	}
-
-	// En dernier, parce que ça change de boîte sélectionnée : plus rien ne doit
-	// être lu dans INBOX après. Savoir que ce mail répond à un des siens change
-	// la façon d'en parler — et de le traiter, en copie comme en direct.
-	msg.AnswersYou = answersSent(c, msg.InReplyTo)
 	return msg, nil
 }
 
-// readThread rapatrie les messages précédents de la même conversation.
+// readThread rapatrie les messages précédents de même objet.
 //
-// IMAP ne donne pas de fil : on rapproche les messages par leur objet dépouillé
-// de ses « Re: ». C'est imparfait — deux « Facture » sans lien se retrouvent
-// ensemble — mais l'inverse coûte plus cher : répondre sans savoir ce qui a été
-// dit produit un mail poli et hors sujet.
+// C'est le repli des clients qui ne posent pas d'en-têtes de filiation : on
+// rapproche les messages par leur objet dépouillé de ses « Re: ». C'est
+// imparfait — deux « Facture » sans lien se retrouvent ensemble —, d'où sa
+// place de dernier recours, réservé aux mails dont l'objet annonce une réponse.
 //
-// Les enveloppes sont déjà en main, seuls les corps se paient : on en prend
-// trois au maximum, et un échec ici ne fait pas échouer la lecture du mail.
+// Les enveloppes sont déjà en main, seuls les corps se paient, et un échec ici
+// ne fait pas échouer la lecture du mail.
 func readThread(c *imapclient.Client, all []candidate, chosen candidate) []ThreadMessage {
 	subject := baseSubject(chosen.msg.Subject)
 	if subject == "" {
@@ -258,6 +250,7 @@ func pick(c *imapclient.Client, nums []uint32, query string) (candidate, []candi
 				Date:      f.Envelope.Date,
 				To:        addressList(f.Envelope.To),
 				Cc:        addressList(f.Envelope.Cc),
+				MessageID: normalizeMessageID(f.Envelope.MessageID),
 				InReplyTo: f.Envelope.InReplyTo,
 			},
 			seqNum: f.SeqNum,

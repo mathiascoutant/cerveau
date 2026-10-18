@@ -12,6 +12,7 @@ import { AccesScreen } from './src/screens/AccesScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { ProjetsScreen } from './src/screens/ProjetsScreen';
 import { EquipeScreen } from './src/screens/EquipeScreen';
+import { EntourageScreen } from './src/screens/EntourageScreen';
 import { NavBar, NavItem } from './src/design/NavBar';
 import { SpaceBar, SpaceTab } from './src/design/SpaceBar';
 import { loadEquipe, parlerA } from './src/lib/equipe';
@@ -38,10 +39,11 @@ const TABS: readonly NavItem<Tab>[] = [
   { key: 'acces', label: 'Accès', icon: 'sliders' },
 ];
 
-type ProView = 'suivi' | 'jobs';
+type ProView = 'suivi' | 'jobs' | 'entourage';
 const PRO_TABS: readonly SpaceTab<ProView>[] = [
   { key: 'suivi', label: 'Suivi', icon: 'check-square' },
   { key: 'jobs', label: 'Jobs', icon: 'tag' },
+  { key: 'entourage', label: 'Entourage', icon: 'users' },
 ];
 
 type PersoView = 'projets' | 'equipe';
@@ -233,7 +235,9 @@ export default function App() {
                 {tab === 'raoul' ? (
                   <RaoulScreen listenRequest={listenRequest} ask={pendingAsk} />
                 ) : tab === 'pro' ? (
-                  proView === 'jobs' ? (
+                  proView === 'entourage' ? (
+                    <EntourageScreen />
+                  ) : proView === 'jobs' ? (
                     route.name === 'ticket' ? (
                       <CSPTicketScreen ticket={route.ticket} onBack={pop} />
                     ) : route.name === 'csp' ? (

@@ -43,7 +43,12 @@ func (s *Server) converse(ctx context.Context, user *store.User, text string, no
 			err error
 		)
 		if agent == "" {
-			res, err = s.engine.AskStream(ctx, s.toolbox(user), s.request(ctx, user, text, now, tz, history), emit)
+			tb := s.toolbox(user)
+			res, err = s.engine.AskStream(ctx, tb, s.request(ctx, user, text, now, tz, history), emit)
+			if err == nil {
+				// Ce qu'il vient de dire d'un échange est ce qu'il en a compris.
+				tb.closeTurn(context.WithoutCancel(ctx), res.Reply)
+			}
 		} else {
 			res, err = s.equipe.Ask(ctx, agent, equipe.Demande{
 				Text: text, History: history, Now: now, Timezone: tz,

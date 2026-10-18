@@ -14,6 +14,7 @@ import (
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/echeance"
+	"github.com/mathiascoutant/cerveau/backend/internal/fuzzy"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
@@ -31,17 +32,22 @@ type userToolbox struct {
 	srv   *Server
 	user  *store.User
 	space string
+	// people : l'annuaire de son entourage, chargé au premier besoin et
+	// partagé par les deux espaces de la même requête.
+	people *peopleCache
+	// seen : les échanges lus pendant la requête — voir echanges.go.
+	seen *readLog
 }
 
 // toolbox rend la boîte à outils pro, celle de toujours.
 func (s *Server) toolbox(user *store.User) *userToolbox {
-	return &userToolbox{srv: s, user: user, space: store.SpacePro}
+	return &userToolbox{srv: s, user: user, space: store.SpacePro, people: &peopleCache{}, seen: &readLog{}}
 }
 
 // InSpace rend la même boîte à outils, lisant la boîte mail de l'autre espace.
 // L'assistant s'en sert quand le modèle demande explicitement « perso ».
 func (t *userToolbox) InSpace(space string) assistant.Toolbox {
-	return &userToolbox{srv: t.srv, user: t.user, space: store.NormalizeSpace(space)}
+	return &userToolbox{srv: t.srv, user: t.user, space: store.NormalizeSpace(space), people: t.people, seen: t.seen}
 }
 
 func (t *userToolbox) mailCreds(ctx context.Context) (gandi.Credentials, error) {
@@ -105,9 +111,10 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 	out := make([]assistant.EmailView, 0, len(mails))
 	for _, m := range mails {
 		out = append(out, assistant.EmailView{
-			De:    m.From,
-			Objet: m.Subject,
-			Recu:  t.when(m.Date),
+			De:       m.From,
+			Identite: t.mailAuthor(ctx, m.From, m.FromAddr, moi, m.Bulk),
+			Objet:    m.Subject,
+			Recu:     t.when(m.Date),
 			// Sa place parmi les destinataires est tranchée ici, pas par le
 			// modèle : « suis-je dans ce champ À ? » est une comparaison de
 			// chaînes, et une comparaison de chaînes ne se confie pas à
@@ -139,19 +146,39 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		}
 		return assistant.EmailContentView{}, err
 	}
-	view := assistant.EmailContentView{
-		De:      msg.From,
-		Adresse: msg.FromAddr,
-		Pour:    msg.To,
-		Copie:   msg.Cc,
-		Objet:   msg.Subject,
-		Recu:    t.when(msg.Date),
-		Contenu: msg.Body,
-		Tronque: strings.HasSuffix(msg.Body, "…"),
+	view := t.mailContent(ctx, msg, creds.Email, gandi.FolderInbox)
+	t.noteMail(ctx, msg, view)
+	return view, nil
+}
 
-		PourToi:         string(triage.Addressing(toTriageMail(msg), creds.Email)),
-		ReponseATonMail: msg.AnswersYou,
-		Destinataires:   len(msg.To) + len(msg.Cc),
+// mailContent met un mail lu en mots pour le modèle, avec toute sa
+// conversation : ce qui le précède, ce qui l'a suivi, et sa place à lui
+// dedans. Commun à la lecture par expéditeur et à la lecture par identifiant —
+// le même mail ne doit pas se raconter différemment selon la façon dont on
+// l'a ouvert.
+func (t *userToolbox) mailContent(ctx context.Context, msg gandi.Message, email, folder string) assistant.EmailContentView {
+	view := assistant.EmailContentView{
+		De:            msg.From,
+		Adresse:       msg.FromAddr,
+		Pour:          msg.To,
+		Copie:         msg.Cc,
+		Personnes:     t.knownRecipients(ctx, msg.To, msg.Cc),
+		Objet:         msg.Subject,
+		Recu:          t.when(msg.Date),
+		Contenu:       msg.Body,
+		Tronque:       strings.HasSuffix(msg.Body, "…"),
+		Destinataires: len(msg.To) + len(msg.Cc),
+		MessageID:     msg.MessageID,
+	}
+	if folder == gandi.FolderSent || writtenBy(msg.FromAddr, email) {
+		// Un mail de sa boîte d'envoi : c'est lui qui l'a écrit. Le champ
+		// pour_toi n'a pas de sens, et « de » le désigne.
+		view.PourToi = "envoyé par toi"
+	} else {
+		view.Identite = t.mailAuthor(ctx, msg.From, msg.FromAddr, email, msg.Bulk)
+		view.PourToi = string(triage.Addressing(toTriageMail(msg), email))
+		view.ReponseATonMail = msg.AnswersYou
+		view.TeNomme = namesYou(msg.Body, t.srv.userName(t.user))
 	}
 	// L'échéance se lit dans le corps, donc elle n'existe qu'ici : la liste des
 	// non-lus ne descend que les enveloppes, et rapatrier quinze corps pour y
@@ -163,24 +190,85 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 	// L'adresse de sa propre boîte sert à reconnaître ses envois dans le fil :
 	// « j'ai dit quoi dans le mail d'avant » n'a de réponse que si on sait
 	// lesquels de ces messages sont les siens.
-	mine := strings.ToLower(creds.Email)
-	for _, m := range msg.Thread {
+	view.Fil = t.threadViews(ctx, msg.Thread, email)
+	view.Suite = t.threadViews(ctx, msg.Followups, email)
+	for _, m := range view.Suite {
+		if m.DeToi {
+			view.DejaRepondu = true
+		}
+	}
+	return view
+}
+
+func (t *userToolbox) threadViews(ctx context.Context, list []gandi.ThreadMessage, email string) []assistant.ThreadView {
+	out := make([]assistant.ThreadView, 0, len(list))
+	for _, m := range list {
 		// Recu : l'horodatage IMAP quand on l'a, sinon l'en-tête recopié tel
 		// quel — jamais une date reconstruite.
 		recu := m.Sent
 		if !m.Date.IsZero() {
 			recu = t.when(m.Date)
 		}
-		view.Fil = append(view.Fil, assistant.ThreadView{
-			De:      m.From,
-			DeToi:   writtenBy(m.From, mine),
-			Recu:    recu,
-			Pour:    m.To,
-			Objet:   m.Subject,
-			Extrait: m.Excerpt,
+		mine := m.Mine || writtenBy(m.From, email)
+		var who assistant.Identite
+		if !mine {
+			// Un message cité n'a que sa ligne « De : » : on y cherche une
+			// adresse, et à défaut on s'en tient au nom.
+			name, addr := m.From, m.FromAddr
+			if addr == "" {
+				name, addr = splitAddress(quotedSender(m.From))
+			}
+			who = t.annuaire(ctx).forMail(name, addr)
+		}
+		out = append(out, assistant.ThreadView{
+			De:        m.From,
+			Identite:  who,
+			DeToi:     mine,
+			Recu:      recu,
+			Pour:      m.To,
+			Copie:     m.Cc,
+			Objet:     m.Subject,
+			Extrait:   m.Excerpt,
+			MessageID: m.MessageID,
 		})
 	}
-	return view, nil
+	return out
+}
+
+// quotedSender isole l'expéditeur d'une ligne de citation : « Le 3 mars 2026 à
+// 10:02, Paul Durand <paul@x.fr> a écrit » devient « Paul Durand <paul@x.fr> ».
+// Une ligne « De : » d'Outlook est déjà l'expéditeur seul.
+func quotedSender(line string) string {
+	line = strings.TrimSpace(line)
+	low := strings.ToLower(line)
+	for _, suffix := range []string{" a écrit", " wrote"} {
+		if i := strings.LastIndex(low, suffix); i > 0 {
+			line = line[:i]
+			if j := strings.LastIndex(line, ", "); j >= 0 {
+				line = line[j+2:]
+			}
+			break
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+// namesYou dit si le corps d'un mail l'interpelle par son prénom. En copie ou
+// parmi dix destinataires, c'est ce qui change une information en demande :
+// « Mathias, tu peux regarder ? » ne s'adresse qu'à lui, quels que soient les
+// champs À et Cc.
+func namesYou(body, name string) bool {
+	first := strings.Fields(name)
+	if len(first) == 0 || len([]rune(first[0])) < 3 {
+		return false
+	}
+	want := fuzzy.Normalize(first[0])
+	for _, word := range strings.Fields(fuzzy.Normalize(body)) {
+		if word == want {
+			return true
+		}
+	}
+	return false
 }
 
 // slackActivity rend l'activité brute, avec l'horodatage réel du dernier
@@ -214,15 +302,21 @@ func (t *userToolbox) UnreadSlack(ctx context.Context, limit int) ([]assistant.S
 	}
 	out := make([]assistant.SlackView, 0, len(threads))
 	for _, th := range threads {
-		out = append(out, assistant.SlackView{
+		view := assistant.SlackView{
 			Canal:           th.Channel,
 			Type:            th.Kind,
 			NonLus:          th.Unread,
 			MessagesRecents: th.Recent,
 			Mentions:        th.Mentions,
+			Nomme:           th.Nomme,
+			MentionsGroupe:  th.MentionsGroupe,
 			Dernier:         t.when(th.Latest),
 			Extraits:        th.Messages,
-		})
+		}
+		for _, it := range th.Interpellations {
+			view.Interpellations = append(view.Interpellations, t.slackInterpellation(ctx, it.Message, it.Contexte))
+		}
+		out = append(out, view)
 	}
 	return out, nil
 }
@@ -268,16 +362,18 @@ func (t *userToolbox) ReadSlackChannel(ctx context.Context, name string, limit i
 	}
 	out := assistant.SlackChannelView{Canal: label}
 	for _, m := range messages {
-		out.Messages = append(out.Messages, t.slackMessage(m))
+		out.Messages = append(out.Messages, t.slackMessage(ctx, m))
 	}
+	t.noteSlack(ctx, label, messages)
 	return out, nil
 }
 
-func (t *userToolbox) slackMessage(m slack.Message) assistant.SlackMessageView {
+func (t *userToolbox) slackMessage(ctx context.Context, m slack.Message) assistant.SlackMessageView {
 	v := assistant.SlackMessageView{
 		ID: m.ID, Canal: m.Canal, Auteur: m.Auteur, AuteurID: m.AuteurID,
-		Texte: m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers, DeToi: m.DeToi,
-		TeCite: m.TeCite, FilDe: m.FilDe, Lien: m.Lien,
+		Identite: t.slackAuthor(ctx, m.AuteurID, m.Auteur, m.DeToi),
+		Texte:    m.Texte, Quand: t.when(m.Quand), Fichiers: m.Fichiers, DeToi: m.DeToi,
+		TeCite: m.TeCite, TeVise: m.TeVise, FilDe: m.FilDe, Lien: m.Lien,
 	}
 	// Les mentions descendent résolues : c'est avec elles, et pas avec les
 	// prénoms du texte, que le modèle dit qui est interpellé.
@@ -285,7 +381,18 @@ func (t *userToolbox) slackMessage(m slack.Message) assistant.SlackMessageView {
 		v.Mentions = append(v.Mentions, assistant.MentionView{ID: mention.ID, Nom: mention.Nom})
 	}
 	for _, r := range m.Fil {
-		v.Fil = append(v.Fil, t.slackMessage(r))
+		v.Fil = append(v.Fil, t.slackMessage(ctx, r))
+	}
+	return v
+}
+
+// slackInterpellation : un message qui le vise, avec ce qui le précède.
+func (t *userToolbox) slackInterpellation(ctx context.Context, m slack.Message, before []slack.Message) assistant.SlackMessageView {
+	v := t.slackMessage(ctx, m)
+	for _, b := range before {
+		c := t.slackMessage(ctx, b)
+		c.Fil = nil
+		v.ContexteAvant = append(v.ContexteAvant, c)
 	}
 	return v
 }
@@ -404,14 +511,19 @@ func (t *userToolbox) ReadWhatsAppChat(ctx context.Context, name string, limit i
 		if !m.FromMe && !chat.LastReadAt.IsZero() && m.Timestamp.After(chat.LastReadAt) {
 			out.NonLus++
 		}
-		out.Messages = append(out.Messages, assistant.WhatsAppMessageView{
+		view := assistant.WhatsAppMessageView{
 			Auteur: m.Sender,
 			Texte:  m.Body,
 			Quand:  t.when(m.Timestamp),
 			DeToi:  m.FromMe,
 			TeCite: m.Mentioned,
-		})
+		}
+		if !m.FromMe {
+			view.Identite = t.annuaire(ctx).forName(m.Sender)
+		}
+		out.Messages = append(out.Messages, view)
 	}
+	t.noteWhatsApp(ctx, chat, msgs)
 	return out, nil
 }
 

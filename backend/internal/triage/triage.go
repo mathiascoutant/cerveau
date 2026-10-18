@@ -57,6 +57,9 @@ type Item struct {
 	// message. Ce qu'on en fait est laissé au modèle — mais lui ne peut pas le
 	// savoir, l'en-tête qui l'établit ne lui parvient jamais.
 	Fil bool
+	// Adresse : celle de l'expéditeur d'un mail. C'est par elle qu'on sait
+	// qui il est pour l'utilisateur — un prénom ne suffit pas.
+	Adresse string
 }
 
 // Mail est ce que le tri a besoin de savoir d'un mail. Volontairement plus
@@ -190,12 +193,13 @@ func Mails(mails []Mail, moi string) []Item {
 			motif = ReasonReply
 		}
 		out = append(out, Item{
-			Source: "mail",
-			Titre:  fallback(strings.TrimSpace(m.Objet), "(sans objet)"),
-			De:     displayName(m.De, m.Adresse),
-			Quand:  m.Date,
-			Motif:  motif,
-			Fil:    m.DansUnFil,
+			Source:  "mail",
+			Titre:   fallback(strings.TrimSpace(m.Objet), "(sans objet)"),
+			De:      displayName(m.De, m.Adresse),
+			Quand:   m.Date,
+			Motif:   motif,
+			Fil:     m.DansUnFil,
+			Adresse: strings.ToLower(strings.TrimSpace(m.Adresse)),
 		})
 	}
 	return out
@@ -243,9 +247,9 @@ func Chats(source string, convs []Conversation) []Item {
 // est établi par les en-têtes, pas déduit d'un « Re: ».
 func urgentMail(m Mail, moi string) bool {
 	if m.RepondAToi {
-		return !robot(m.Adresse)
+		return !Robot(m.Adresse)
 	}
-	if m.Diffusion || robot(m.Adresse) || automatique(m.Objet) {
+	if m.Diffusion || Robot(m.Adresse) || automatique(m.Objet) {
 		return false
 	}
 	switch Addressing(m, moi) {
@@ -285,7 +289,9 @@ var robotBoxes = []string{
 	"newsletter", "mailing", "marketing", "no-responder",
 }
 
-func robot(addr string) bool {
+// Robot dit si une adresse est celle d'une machine — no-reply, notifications,
+// newsletter. Personne à qui répondre, ni à présenter.
+func Robot(addr string) bool {
 	local, _, found := strings.Cut(strings.ToLower(strings.TrimSpace(addr)), "@")
 	if !found {
 		return false

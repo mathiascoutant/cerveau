@@ -160,6 +160,7 @@ func (s *Server) request(ctx context.Context, user *store.User, text string, now
 		History:   history,
 		Sources:   s.sources(ctx, user),
 		Facts:     s.facts(ctx, user),
+		Echanges:  s.recentExchanges(ctx, user),
 		// L'identifiant Mongo du compte : stable, opaque, sans rien de secret.
 		CacheKey: "raoul:" + user.ID.Hex(),
 		Perso:    s.persoAccess(),

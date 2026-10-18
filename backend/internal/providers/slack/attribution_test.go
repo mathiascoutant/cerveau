@@ -15,6 +15,7 @@ func attributionClient() *Client {
 	c.userNames["UXAVIER"] = "Xavier"
 	c.userNames["UMARIE"] = "Marie"
 	c.userNames["UPAUL"] = "Paul"
+	c.userNames["UME"] = "Mathias"
 	return c
 }
 

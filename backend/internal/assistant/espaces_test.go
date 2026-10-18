@@ -111,7 +111,7 @@ func TestReglesDesEspacesNeNommentQueCeQuiEstBranche(t *testing.T) {
 	if !strings.Contains(two, "DEUX boîtes mail") {
 		t.Errorf("les deux boîtes doivent être distinguées :\n%s", two)
 	}
-	prompt := systemPrompt(time.Now(), "Europe/Paris", "Mathias", "m@x.fr", Sources{Mail: true, Projets: true, Equipe: equipeTest}, nil)
+	prompt := systemPrompt(time.Now(), "Europe/Paris", "Mathias", "m@x.fr", Sources{Mail: true, Projets: true, Equipe: equipeTest}, nil, nil)
 	if !strings.Contains(prompt, "passer_la_parole") || !strings.Contains(prompt, "[Claire, responsable informatique]") {
 		t.Error("la consigne doit expliquer le passage de parole")
 	}

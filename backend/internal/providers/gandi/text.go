@@ -323,3 +323,9 @@ var mailAccents = map[rune]rune{
 	'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
 	'ý': 'y', 'ÿ': 'y',
 }
+
+// CleanSubject retire les « Re: » et « Fwd: » empilés, sans toucher au reste :
+// c'est l'objet tel qu'on le dit, celui sous lequel une conversation se range.
+func CleanSubject(s string) string {
+	return strings.TrimSpace(replyPrefixRE.ReplaceAllString(strings.TrimSpace(s), ""))
+}

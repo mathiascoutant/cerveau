@@ -320,6 +320,61 @@ export type Connaissance = {
   updated_at: string;
 };
 
+/** Le poids de ce qu'une personne lui demande. */
+export type Importance = 'critique' | 'haute' | 'normale' | 'basse';
+
+/**
+ * Quelqu'un de son entourage, tel que Raoul le connaît : sa place pour lui et
+ * ce qui permet de le reconnaître quand il écrit.
+ */
+export type Personne = {
+  id: string;
+  kind: string;
+  subject?: string;
+  content: string;
+  /** « voix » : appris en écoutant ; « app » : saisi à la main. */
+  origin?: string;
+  role?: string;
+  importance?: Importance;
+  adresses?: string[];
+  slack_ids?: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+/** Une conversation que Raoul a lue pour lui. */
+export type Echange = {
+  id: string;
+  source: 'mail' | 'slack' | 'whatsapp';
+  espace?: Space;
+  sujet: string;
+  participants?: string[];
+  dernier_de?: string;
+  dernier_quand?: string;
+  dernier_extrait?: string;
+  dernier_de_toi?: boolean;
+  pour_toi?: string;
+  /** Ce qu'il en a compris : l'analyse d'un débrief, ou ce qu'il en a dit. */
+  resume?: string;
+  resume_le?: string;
+  vu_le: string;
+};
+
+export type Entourage = {
+  personnes: Personne[];
+  /** Le reste de ce qu'il retient : dossiers, habitudes, faits. */
+  autres: Personne[];
+  echanges: Echange[];
+};
+
+export type PersonneEdit = {
+  sujet?: string;
+  contenu?: string;
+  role: string;
+  importance: Importance | '';
+  adresses?: string[];
+};
+
 export type VerifURL = {
   url: string;
   statut?: number;
@@ -877,6 +932,18 @@ export const api = {
     request<{ connaissances: Connaissance[] }>(`/equipe/connaissances${projet ? `?projet=${encodeURIComponent(projet)}` : ''}`),
 
   oublierConnaissance: (id: string) => request<{ deleted: string }>(`/equipe/connaissances/${id}`, { method: 'DELETE' }),
+
+  /** Son entourage pro : les gens, ce que Raoul retient d'autre, ce qu'il a lu. */
+  entourage: () => request<Entourage>('/entourage'),
+
+  ajouterPersonne: (edit: PersonneEdit) =>
+    request<Personne>('/entourage', { method: 'POST', body: JSON.stringify(edit) }),
+
+  modifierPersonne: (id: string, edit: PersonneEdit) =>
+    request<Personne>(`/entourage/${id}`, { method: 'PATCH', body: JSON.stringify(edit) }),
+
+  /** Retire une fiche de la mémoire, personne ou autre. */
+  oublierFiche: (id: string) => request<{ deleted: string }>(`/memory/${id}`, { method: 'DELETE' }),
 
   syncCalendar: (payload: {
     from: string;

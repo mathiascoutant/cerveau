@@ -520,6 +520,10 @@ espaces qui ne se mélangent pas : le **pro** et le **perso**.
   traiter, le point du jour, les réponses de mail préparées). **Jobs** : les
   outils métier — la carte **CSP** ouvre tes tickets Tuleap, la carte
   **Flight Schedule** est là, désactivée, sans faux écran derrière.
+  **Entourage** : les gens avec qui tu travailles tels que Raoul les connaît
+  — leur rôle, leur importance, les adresses qui permettent de les
+  reconnaître —, ce qu'il a lu récemment et ce qu'il en a compris, et le reste
+  de ce qu'il retient. Tout s'y corrige.
 - **Perso** — tes projets. **Projets** : ce qui tourne sur ton VPS, ce qui
   répond, ce qui est déployé, la CI, les bases, avec les alertes en tête.
   **Équipe** : l'organigramme (Raoul, Claire la responsable informatique,
@@ -543,7 +547,8 @@ Le backend donne au modèle des outils et le laisse mener l'enquête :
 | `mails_non_lus` | IMAP Gandi, en direct |
 | `chercher_mails` | reçus et envoyés, par personne et objet, avec `message_id` |
 | `mails_envoyes` | la boîte d'envoi — « le dernier mail que j'ai envoyé » |
-| `lire_mail` | un mail précis, par recherche ou par `message_id` |
+| `lire_mail` | un mail précis, par recherche ou par `message_id`, avec toute sa conversation (ce qui précède, ce qui a suivi) |
+| `memoire_echanges` | ce que Raoul a déjà lu sur une personne ou un sujet, et ce qui est arrivé depuis |
 | `slack_non_lus` | API Slack, en direct |
 | `lire_canal_slack` | une conversation, fils compris |
 | `chercher_slack` | toutes les conversations, par auteur, personne citée, mots, période |
@@ -615,6 +620,37 @@ cette phrase — le reste ressort au mot près.
 Les quatorze derniers tours voyagent dans le contexte du modèle. Au-delà, l'outil
 `chercher_historique` va rechercher l'échange en base, par mots-clés et par date.
 Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
+
+### Côté pro : qui t'écrit, de quoi il retourne, où on en est
+
+> « Lis-moi le dernier mail de Cyril. » — « … Au fait, Cyril Martin, c'est qui
+> pour toi ? » — « Mon patron. »
+
+**Les gens.** Chaque mail, message Slack ou WhatsApp descend avec ce que Raoul
+sait de son auteur, établi par le serveur d'après son adresse ou son
+identifiant Slack — jamais deviné sur un prénom : deux Cyril ne se confondent
+pas. Quand l'auteur est inconnu, Raoul demande une fois qui c'est, et retient
+la réponse (rôle, importance, adresse). L'importance pèse sur le tri : une
+demande du patron passe devant, dans les réponses comme dans la liste à
+traiter.
+
+**Les fils.** Ouvrir un mail ramène toute la conversation, retrouvée dans la
+réception ET dans les envois par les en-têtes (`References`, `In-Reply-To`) :
+le premier message (qui a lancé le sujet, pour quoi), ce qui a suivi — y
+compris tes propres réponses —, et le corps cité quand la boîte n'a pas le
+début (tu as été ajouté en copie en cours de route). Raoul situe le mail avant
+de le résumer, et dit quand tu as déjà répondu.
+
+**Slack.** Chaque message dit comment il te vise : mention personnelle, ton
+prénom écrit sans @, mention du canal entier, ou rien. Pour « Mathias, tu as
+fait ça ? », Raoul remonte les messages qui précèdent pour dire ce qu'est
+« ça » — et le dit franchement quand il ne le retrouve pas.
+
+**La mémoire des échanges.** Chaque lecture est gardée (collection
+`echanges`, deux mois) : le dernier message vu, et ce que Raoul en a dit. «
+Cyril, c'était quoi son dernier mail ? » passe par `memoire_echanges`, qui
+vérifie à l'instant s'il y a du neuf (une recherche IMAP, un appel Slack) :
+rien de nouveau, Raoul répond de mémoire sans tout relire.
 
 ---
 
@@ -713,6 +749,9 @@ restent sur la boîte pro : ce sont des outils de travail.
 | `POST` | `/api/v1/assistant/speech` | prépare la lecture d'un texte, renvoie une URL jetable |
 | `GET` | `/api/v1/speech/{ticket}` | diffuse l'audio ElevenLabs (ticket à usage unique) |
 | `GET/POST` | `/webhooks/whatsapp` | webhook Meta (signature HMAC vérifiée) |
+| `GET` | `/api/v1/entourage` | les gens de son entourage pro, le reste de la mémoire, les échanges lus récemment |
+| `POST` | `/api/v1/entourage` | ajoute une personne (prénom, rôle, importance, adresses) |
+| `PATCH` | `/api/v1/entourage/{id}` | corrige la place d'une personne |
 | `GET` | `/api/v1/perso/projets` | le point sur les projets perso (`?refresh=1` refait les relevés) |
 | `GET` | `/api/v1/equipe` | l'équipe, qui a la parole, ce que le serveur sait interroger |
 | `PUT` | `/api/v1/equipe/interlocuteur` | donne la parole à un membre (`raoul` la lui rend) |

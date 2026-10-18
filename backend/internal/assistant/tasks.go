@@ -21,6 +21,9 @@ type MessageView struct {
 	// messageries ne se distinguent pas autrement.
 	Origine string `json:"origine"`
 	De      string `json:"de,omitempty"`
+	// Identite : qui est l'auteur pour lui. Une demande de son patron ne se
+	// classe pas comme celle d'un fournisseur.
+	Identite
 	Titre   string `json:"titre"`
 	Extrait string `json:"extrait,omitempty"`
 	Quand   string `json:"quand,omitempty"`
@@ -148,6 +151,8 @@ FORMAT DE « sources ». Les messages qui ont produit la tâche, recopiés TELS 
 LE CHAMP « suite_d_un_echange » dit que le message n'ouvre pas le sujet : il répond à quelque chose, l'échange a commencé avant. Ce n'est pas un « Re: » dans l'objet, que n'importe qui tape à la main — c'est l'en-tête de filiation. Quand il est vrai, quelqu'un attend depuis plus longtemps que la date du message ne le laisse croire, et le « pourquoi » doit le dire (« il revient à la charge », « c'est la suite de votre échange sur le devis ») plutôt que de présenter la demande comme neuve.
 
 LE CHAMP « motif » dit pourquoi le message a été retenu, et il pèse. « réponse à un mail que tu as envoyé » est le plus fort : quelqu'un répond à ce que %[1]s a écrit, la balle est dans son camp et il attend probablement une suite — c'est une urgence haute sauf preuve du contraire, et le « pourquoi » doit dire que c'est une réponse à son propre mail. Un message privé ou une citation nominative engagent plus qu'un mail où il figure parmi plusieurs destinataires.
+
+LES CHAMPS « qui » ET « importance » disent qui est l'auteur pour %[1]s, d'après ce qu'il t'a appris : « son patron, CEO », « client chez Airbus »… L'importance — critique, haute, normale, basse — pèse sur le tri : une demande d'une personne critique (son patron, la direction, un client majeur) entre dans la liste et passe en tête, en urgence haute, sauf si elle n'attend rien de lui. Le « pourquoi » nomme sa place (« ton patron te demande… »). Une personne basse ne prend jamais la place d'une demande plus importante.
 
 N'invente rien. Tout ce que tu écris vient des messages fournis.`,
 		who,

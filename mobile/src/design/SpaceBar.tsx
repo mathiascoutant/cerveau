@@ -52,7 +52,9 @@ export function SpaceBar<K extends string>({
               style={[styles.segment, on && styles.segmentOn]}
             >
               <Feather name={tab.icon} size={13} color={on ? tone : tokens.colors.text3} />
-              <Text style={[tokens.type.smallStrong, { color }]}>{tab.label}</Text>
+              <Text style={[tokens.type.smallStrong, styles.label, { color }]} numberOfLines={1}>
+                {tab.label}
+              </Text>
             </Pressable>
           );
         })}
@@ -91,4 +93,5 @@ const styles = StyleSheet.create({
     borderRadius: tokens.radius.sm,
   },
   segmentOn: { backgroundColor: tokens.colors.panelRaised },
+  label: { flexShrink: 1 },
 });

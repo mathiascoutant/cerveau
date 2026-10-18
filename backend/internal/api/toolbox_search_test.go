@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 
 func testToolbox() *userToolbox {
 	return &userToolbox{
-		srv:  &Server{cfg: config.Config{DefaultTimezone: "Europe/Paris"}},
-		user: &store.User{Timezone: "Europe/Paris"},
+		srv:    &Server{cfg: config.Config{DefaultTimezone: "Europe/Paris"}},
+		user:   &store.User{Timezone: "Europe/Paris"},
+		people: knownPeople(nil),
 	}
 }
 
@@ -28,9 +30,9 @@ func TestMailHitDistinguishesSentFromReceived(t *testing.T) {
 	sent := tb.mailHit(gandi.Found{
 		Message: gandi.Message{
 			From: "Mathias", FromAddr: me, To: []string{"Hebat <hebat@x.fr>"},
-			Subject: "Planning", Date: time.Now().Add(-time.Hour),
+			Subject: "Planning", Date: time.Now().Add(-time.Hour), MessageID: "abc@pxcom",
 		},
-		Folder: gandi.FolderSent, MessageID: "abc@pxcom",
+		Folder: gandi.FolderSent,
 	}, me)
 	if !sent.DeToi || sent.Dossier != "envoyé" || sent.PourToi != "" {
 		t.Errorf("mail envoyé mal marqué : %+v", sent)
@@ -43,8 +45,9 @@ func TestMailHitDistinguishesSentFromReceived(t *testing.T) {
 		Message: gandi.Message{
 			From: "Hebat", FromAddr: "hebat@x.fr", To: []string{"Mathias <" + me + ">"},
 			Subject: "Re: Planning", Date: time.Now().Add(-30 * time.Minute), AnswersYou: true,
+			MessageID: "def@x",
 		},
-		Folder: gandi.FolderInbox, MessageID: "def@x", Seen: true,
+		Folder: gandi.FolderInbox, Seen: true,
 	}, me)
 	if received.DeToi || received.Dossier != "reçu" || received.PourToi == "" || !received.ReponseATonMail {
 		t.Errorf("mail reçu mal marqué : %+v", received)
@@ -66,7 +69,7 @@ func TestMailHitDistinguishesSentFromReceived(t *testing.T) {
 // mentions résolues, le parent du fil et le lien.
 func TestSlackMessageViewCarriesAttribution(t *testing.T) {
 	tb := testToolbox()
-	view := tb.slackMessage(slack.Message{
+	view := tb.slackMessage(context.Background(), slack.Message{
 		ID: "1727000000.000100", Canal: "#csp", Auteur: "Thomas", AuteurID: "UTHOMAS",
 		Texte: "@Xavier, peux-tu regarder le problème CSP ?", Quand: time.Now().Add(-5 * time.Minute),
 		Mentions: []slack.Mention{{ID: "UXAVIER", Nom: "Xavier"}},

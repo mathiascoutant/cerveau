@@ -49,6 +49,9 @@ type Message struct {
 	Mentions []Mention `json:"mentions,omitempty"`
 	// TeCite : l'utilisateur lui-même figure parmi les mentions.
 	TeCite bool `json:"te_cite,omitempty"`
+	// TeVise : comment ce message le vise — VisePerso, ViseNomme, ViseGroupe,
+	// ViseEquipe —, vide quand il ne le vise pas. Voir vise.go.
+	TeVise string `json:"te_vise,omitempty"`
 	// Lien : permalien vers le message dans Slack.
 	Lien string `json:"lien,omitempty"`
 	// Fichiers : les pièces jointes, par leur nom. « Il a envoyé le devis »
@@ -296,6 +299,7 @@ func (c *Client) toMessage(ctx context.Context, m rawMessage, maxLen int, channe
 			}
 		}
 	}
+	msg.TeVise = c.targeting(ctx, m.Text, m.User)
 	return msg, true
 }
 
@@ -418,4 +422,37 @@ func matchConversation(ctx context.Context, c *Client, convs []conversation, que
 		choices = append(choices, c.label(ctx, convs[i]))
 	}
 	return conversation{}, choices, false
+}
+
+// NewSince rend les messages arrivés dans une conversation après un message
+// donné, par son horodatage Slack, du plus ancien au plus récent. C'est la
+// question « quoi de neuf depuis que je l'ai lu ? » : un appel, au lieu de
+// relire toute la conversation. Les réponses dans un fil n'y figurent pas —
+// l'historique ne montre que le premier niveau.
+func (c *Client) NewSince(ctx context.Context, channelID, ts string) ([]Message, error) {
+	if channelID == "" || ts == "" {
+		return nil, nil
+	}
+	var hist struct {
+		apiResponse
+		Messages []rawMessage `json:"messages"`
+	}
+	err := c.call(ctx, "conversations.history", url.Values{
+		"channel":   {channelID},
+		"oldest":    {ts},
+		"inclusive": {"false"},
+		"limit":     {"30"},
+	}, &hist)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(hist.Messages)
+	label := c.channelName(ctx, channelID)
+	out := make([]Message, 0, len(hist.Messages))
+	for _, m := range hist.Messages {
+		if msg, ok := c.toMessage(ctx, m, maxReplyTextLen, channelID, label); ok {
+			out = append(out, msg)
+		}
+	}
+	return out, nil
 }

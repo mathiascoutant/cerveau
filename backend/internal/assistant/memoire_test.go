@@ -68,7 +68,7 @@ func TestSystemPromptCarriesMemory(t *testing.T) {
 	paris, _ := time.LoadLocation("Europe/Paris")
 	now := time.Date(2026, 8, 20, 19, 30, 0, 0, paris)
 
-	empty := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true}, nil)
+	empty := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true}, nil, nil)
 	if !strings.Contains(empty, "CE QUE TU RETIENS") {
 		t.Error("les règles d'écriture de la mémoire manquent quand elle est vide")
 	}
@@ -77,7 +77,7 @@ func TestSystemPromptCarriesMemory(t *testing.T) {
 	}
 
 	filled := systemPrompt(now, "Europe/Paris", "Mathias", "mathias@exemple.fr", Sources{Mail: true},
-		[]FactView{{Kind: FactPerson, Subject: "Cyril", Content: "Technique chez Orange"}})
+		[]FactView{{Kind: FactPerson, Subject: "Cyril", Content: "Technique chez Orange"}}, nil)
 	for _, needle := range []string{"CE QUE TU SAIS DÉJÀ DE LUI", "Cyril", "Technique chez Orange"} {
 		if !strings.Contains(filled, needle) {
 			t.Errorf("le prompt ne porte pas %q", needle)

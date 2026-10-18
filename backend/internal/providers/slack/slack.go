@@ -85,10 +85,24 @@ type Activity struct {
 	// demandée. Ce n'est PAS un compteur de non-lus.
 	Recent int `json:"messages_recents,omitempty"`
 	// Mentions : nombre de fois où l'utilisateur est cité nommément.
-	Mentions int       `json:"mentions,omitempty"`
-	Latest   time.Time `json:"-"`
-	Messages []string  `json:"extraits,omitempty"`
+	Mentions int `json:"mentions,omitempty"`
+	// Nomme : messages qui l'appellent par son prénom, sans @ — une question
+	// qui lui est posée tout autant.
+	Nomme int `json:"nomme,omitempty"`
+	// MentionsGroupe : messages adressés à tout le canal (@ici, @canal, @tout
+	// le monde) ou à un groupe. Pas à lui personnellement.
+	MentionsGroupe int       `json:"mentions_groupe,omitempty"`
+	Latest         time.Time `json:"-"`
+	Messages       []string  `json:"extraits,omitempty"`
+	// Interpellations : les messages qui le visent personnellement, chacun
+	// avec ce qui le précède. Deux au plus par conversation.
+	Interpellations []Interpellation `json:"-"`
 }
+
+// maxInterpellations : chaque contexte coûte un appel à l'historique, et le
+// point sur Slack en fait déjà un par conversation. Les deux plus récentes
+// suffisent à dire ce qu'on lui demande.
+const maxInterpellations = 2
 
 // TestConnection valide le token et renvoie le nom du workspace.
 func (c *Client) TestConnection(ctx context.Context) (team string, user string, err error) {
@@ -306,19 +320,14 @@ func (c *Client) inspect(ctx context.Context, conv conversation, window time.Dur
 func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activity) (int, error) {
 	var hist struct {
 		apiResponse
-		Messages []struct {
-			User    string `json:"user"`
-			BotID   string `json:"bot_id"`
-			Text    string `json:"text"`
-			Subtype string `json:"subtype"`
-			TS      string `json:"ts"`
-		} `json:"messages"`
+		Messages []rawMessage `json:"messages"`
 	}
 	if err := c.call(ctx, "conversations.history", params, &hist); err != nil {
 		return 0, err
 	}
 	tag := c.mentionTag(ctx)
 	mentions := 0
+	channelID := params.Get("channel")
 	for _, m := range hist.Messages {
 		// Les entrées/sorties de canal et autres événements système ne sont pas
 		// des messages à lire.
@@ -329,6 +338,23 @@ func (c *Client) fillMessages(ctx context.Context, params url.Values, act *Activ
 		// qui se confond avec le reste de la phrase.
 		if tag != "" && strings.Contains(m.Text, tag) {
 			mentions++
+		}
+		vise := c.targeting(ctx, m.Text, m.User)
+		switch vise {
+		case ViseNomme:
+			act.Nomme++
+		case ViseGroupe, ViseEquipe:
+			act.MentionsGroupe++
+		}
+		// Une question qui le vise ne se comprend qu'avec ce qui la précède :
+		// on remonte le contexte des plus récentes.
+		if (vise == VisePerso || vise == ViseNomme) && len(act.Interpellations) < maxInterpellations {
+			if msg, ok := c.toMessage(ctx, m, maxReadText, channelID, act.Channel); ok {
+				act.Interpellations = append(act.Interpellations, Interpellation{
+					Message:  msg,
+					Contexte: c.ContextBefore(ctx, channelID, act.Channel, m.TS, m.ThreadTS),
+				})
+			}
 		}
 		author := "un bot"
 		if m.User != "" {

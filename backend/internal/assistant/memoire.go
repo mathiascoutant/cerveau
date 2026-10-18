@@ -26,6 +26,13 @@ type FactView struct {
 	Kind    string `json:"categorie"`
 	Subject string `json:"sujet,omitempty"`
 	Content string `json:"contenu"`
+	// Pour une personne : sa place pour lui, le poids de ce qu'elle demande,
+	// et de quoi la reconnaître. Les adresses et identifiants ne descendent
+	// pas dans la consigne — le serveur s'en sert pour annoter les messages.
+	Role       string   `json:"role,omitempty"`
+	Importance string   `json:"importance,omitempty"`
+	Adresses   []string `json:"adresses,omitempty"`
+	SlackIDs   []string `json:"slack_ids,omitempty"`
 }
 
 // Les catégories, côté modèle. Elles doublent celles du store plutôt que de
@@ -88,7 +95,7 @@ func memoryBlock(facts []FactView) string {
 		fmt.Fprintf(&b, "%s :\n", section.title)
 		for _, f := range list {
 			if s := strings.TrimSpace(f.Subject); s != "" {
-				fmt.Fprintf(&b, "- %s — %s\n", s, strings.TrimSpace(f.Content))
+				fmt.Fprintf(&b, "- %s%s — %s\n", s, placeOf(f), strings.TrimSpace(f.Content))
 				continue
 			}
 			fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(f.Content))
@@ -110,6 +117,26 @@ Ce qui suit peut être daté ou faux — il change d'avis, les gens changent de 
 ` + b.String()
 }
 
+// placeOf rend la place d'une personne entre parenthèses, après son nom :
+// « Cyril (son patron, CEO · importance critique) ». Vide pour tout le reste,
+// et le rôle n'est pas répété quand il est aussi tout le contenu de la fiche.
+func placeOf(f FactView) string {
+	if f.Kind != FactPerson {
+		return ""
+	}
+	var parts []string
+	if role := strings.TrimSpace(f.Role); role != "" && !strings.EqualFold(role, strings.TrimSpace(f.Content)) {
+		parts = append(parts, role)
+	}
+	if level := strings.TrimSpace(f.Importance); level != "" {
+		parts = append(parts, "importance "+level)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, " · ") + ")"
+}
+
 // memoryRules dit quand écrire dans la mémoire. Toujours présent, même quand
 // elle est vide : c'est justement quand il ne sait encore rien qu'il a le plus
 // à apprendre.
@@ -118,7 +145,7 @@ const memoryRules = `CE QUE TU RETIENS
 Tu appelles retenir quand il t'apprend quelque chose qui vaudra encore dans un mois. Tu le fais dans le même tour, sans le commenter, sans demander l'autorisation, et sans le lui dire — « c'est noté » après chaque phrase transforme une conversation en dictée. Il parle, tu retiens, tu réponds à ce qu'il a dit.
 
 CE QUI SE RETIENT — quatre catégories, et le choix de la catégorie compte autant que le contenu :
-- personne : qui est quelqu'un de son entourage, ce qu'ils font ensemble, comment ils se parlent. « Cyril, c'est le technique chez Orange » ;
+- personne : qui est quelqu'un de son entourage, ce qu'ils font ensemble, comment ils se parlent. « Cyril, c'est le technique chez Orange ». Sa place va dans role et importance, et ce qui permet de la reconnaître quand elle écrit (son adresse, son identifiant de messagerie) dans les champs prévus ;
 - projet : un dossier en cours, ce qu'il recouvre, avec qui. « DAW, c'est le déploiement des boxes pour PXCom » ;
 - preference : une manière de faire qu'il attend de toi ou des autres. « Jamais de réunion avant 10h », « mes mails, tu les fais courts » ;
 - fait : ce qui ne rentre dans aucune des trois, et rien d'autre. Ce n'est pas le tiroir par défaut.

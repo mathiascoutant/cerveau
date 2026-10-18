@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -169,25 +170,40 @@ func (s *Server) urgentList(ctx context.Context, user *store.User, refresh bool)
 	}
 	wg.Wait()
 
-	retained := triage.Merge(urgentMessages, fromMail, fromChat, fromWhatsApp)
+	retained := triage.Merge(0, fromMail, fromChat, fromWhatsApp)
 	if len(retained) == 0 {
 		return out, nil
 	}
+	// Qui écrit compte autant que quand : au-delà de ce que le modèle peut
+	// synthétiser, on écarte d'abord les personnes les moins importantes,
+	// jamais le mail de son patron parce qu'il date d'hier.
+	dir := tb.annuaire(ctx)
+	ids := make([]assistant.Identite, len(retained))
+	for i, item := range retained {
+		ids[i] = itemIdentity(dir, item)
+	}
+	retained, ids = keepImportant(retained, ids, urgentMessages)
 
 	messages := make([]assistant.MessageView, 0, len(retained))
-	for _, item := range retained {
+	for i, item := range retained {
 		messages = append(messages, assistant.MessageView{
-			Origine: origin(item),
-			De:      item.De,
-			Titre:   item.Titre,
-			Extrait: item.Apercu,
-			Quand:   tb.when(item.Quand),
-			Motif:   motif(item.Motif),
-			Fil:     item.Fil,
+			Origine:  origin(item),
+			De:       item.De,
+			Identite: ids[i],
+			Titre:    item.Titre,
+			Extrait:  item.Apercu,
+			Quand:    tb.when(item.Quand),
+			Motif:    motif(item.Motif),
+			Fil:      item.Fil,
 		})
 	}
 
+	// L'annuaire entre dans l'empreinte : apprendre que Cyril est son patron
+	// doit reclasser la liste, même si aucun message n'est arrivé.
 	print := fingerprint(retained)
+	if stamp := peopleStamp(ids); stamp != "" {
+		print += "+" + stamp
+	}
 	cached, err := s.store.LatestTasks(ctx, user.ID)
 	fresh := err == nil && cached.Fingerprint == print && time.Since(cached.GeneratedAt) < tasksMaxAge
 	if fresh && !refresh {
@@ -279,6 +295,78 @@ func taskKey(t assistant.TaskView) string {
 		h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// itemIdentity : qui est l'auteur d'une entrée pour lui. L'adresse pour un
+// mail ; pour une messagerie, le nom seul — Slack et WhatsApp ne descendent
+// ici que des prénoms.
+func itemIdentity(dir *annuaire, item triage.Item) assistant.Identite {
+	if item.Source == "mail" {
+		return dir.forMail(item.De, item.Adresse)
+	}
+	return dir.forName(item.De)
+}
+
+// importanceRank : du plus au moins pressant ; un inconnu compte comme une
+// personne normale.
+func importanceRank(level string) int {
+	switch level {
+	case store.ImportanceCritique:
+		return 0
+	case store.ImportanceHaute:
+		return 1
+	case store.ImportanceBasse:
+		return 3
+	}
+	return 2
+}
+
+// keepImportant garde au plus limit entrées : les plus importantes d'abord,
+// puis les plus récentes à importance égale. L'ordre d'origine — du plus
+// récent au plus ancien — est conservé.
+func keepImportant(items []triage.Item, ids []assistant.Identite, limit int) ([]triage.Item, []assistant.Identite) {
+	if len(items) <= limit {
+		return items, ids
+	}
+	order := make([]int, len(items))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return importanceRank(ids[order[a]].Importance) < importanceRank(ids[order[b]].Importance)
+	})
+	keep := make([]bool, len(items))
+	for _, i := range order[:limit] {
+		keep[i] = true
+	}
+	outItems := make([]triage.Item, 0, limit)
+	outIDs := make([]assistant.Identite, 0, limit)
+	for i := range items {
+		if keep[i] {
+			outItems = append(outItems, items[i])
+			outIDs = append(outIDs, ids[i])
+		}
+	}
+	return outItems, outIDs
+}
+
+// peopleStamp résume ce que l'annuaire dit des auteurs retenus. Vide quand il
+// ne dit rien : une liste sans annuaire garde l'empreinte qu'elle a toujours
+// eue, et son cache.
+func peopleStamp(ids []assistant.Identite) string {
+	var b strings.Builder
+	for _, id := range ids {
+		if id.Qui == "" && id.Importance == "" {
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(id.Qui + "\x00" + id.Importance + "\n")
+	}
+	if strings.Trim(b.String(), "\n") == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
 }
 
 // motif met en mots la raison pour laquelle le tri a retenu un message.
@@ -401,14 +489,45 @@ func triageWhatsApp(threads []store.WhatsAppThread) []triage.Conversation {
 func triageConversations(threads []slack.Activity) []triage.Conversation {
 	out := make([]triage.Conversation, 0, len(threads))
 	for _, th := range threads {
+		extraits := th.Messages
+		// Une question qui le vise passe devant, avec ce qui la précède :
+		// « Mathias, tu as fait ça ? » ne se range pas sans savoir ce qu'est
+		// « ça ».
+		if len(th.Interpellations) > 0 {
+			it := th.Interpellations[0]
+			line := it.Message.Auteur + " : " + it.Message.Texte
+			if before := contextLine(it.Contexte); before != "" {
+				line += " (juste avant : " + before + ")"
+			}
+			extraits = append([]string{line}, th.Messages...)
+		}
+		// Son prénom écrit sans @ l'interpelle autant qu'une mention — dans
+		// un canal. Un message privé reste un message privé.
+		mentions := th.Mentions
+		if th.Kind != "dm" {
+			mentions += th.Nomme
+		}
 		out = append(out, triage.Conversation{
 			Canal:    th.Channel,
 			Type:     th.Kind,
 			NonLus:   th.Unread,
-			Mentions: th.Mentions,
+			Mentions: mentions,
 			Dernier:  th.Latest,
-			Extraits: th.Messages,
+			Extraits: extraits,
 		})
 	}
 	return out
+}
+
+// contextLine résume en une ligne les deux derniers messages qui précèdent
+// une interpellation.
+func contextLine(before []slack.Message) string {
+	if len(before) > 2 {
+		before = before[len(before)-2:]
+	}
+	parts := make([]string, 0, len(before))
+	for _, m := range before {
+		parts = append(parts, m.Auteur+" : "+truncateRunes(m.Texte, 160))
+	}
+	return strings.Join(parts, " / ")
 }

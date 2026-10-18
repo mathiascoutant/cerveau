@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
@@ -17,13 +18,29 @@ import (
 // qu'il a déjà, et un tour de plus à chaque fois qu'il choisit de le faire.
 
 // Remember retient une information, ou remplace celle qui portait ce sujet.
+//
+// Pour une personne déjà connue, un contenu vide garde le texte de la fiche :
+// c'est le geste « retiens son adresse » ou « c'est mon patron », qui complète
+// ce qu'on sait sans réécrire tout le reste.
 func (t *userToolbox) Remember(ctx context.Context, fact assistant.FactView) (assistant.FactView, error) {
+	content := strings.TrimSpace(fact.Content)
+	if content == "" && fact.Kind == assistant.FactPerson {
+		if known, err := t.srv.store.FactBySubject(ctx, t.user.ID, store.FactPerson, fact.Subject); err == nil {
+			content = known.Content
+		} else {
+			content = strings.TrimSpace(fact.Role)
+		}
+	}
 	saved, err := t.srv.store.SaveFact(ctx, store.Fact{
-		UserID:  t.user.ID,
-		Kind:    fact.Kind,
-		Subject: fact.Subject,
-		Content: fact.Content,
-		Origin:  "voix",
+		UserID:     t.user.ID,
+		Kind:       fact.Kind,
+		Subject:    fact.Subject,
+		Content:    content,
+		Role:       fact.Role,
+		Importance: fact.Importance,
+		Adresses:   fact.Adresses,
+		SlackIDs:   fact.SlackIDs,
+		Origin:     "voix",
 	})
 	if err != nil {
 		return assistant.FactView{}, err
@@ -65,5 +82,8 @@ func (s *Server) facts(ctx context.Context, user *store.User) []assistant.FactVi
 }
 
 func factView(f store.Fact) assistant.FactView {
-	return assistant.FactView{Kind: f.Kind, Subject: f.Subject, Content: f.Content}
+	return assistant.FactView{
+		Kind: f.Kind, Subject: f.Subject, Content: f.Content,
+		Role: f.Role, Importance: f.Importance, Adresses: f.Adresses, SlackIDs: f.SlackIDs,
+	}
 }

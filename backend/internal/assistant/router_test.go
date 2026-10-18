@@ -95,8 +95,8 @@ func TestTrimHistory(t *testing.T) {
 // peut changer.
 func TestSystemPromptKeepsStablePrefix(t *testing.T) {
 	src := Sources{Mail: true, Slack: true, CSP: true}
-	a := systemPrompt(time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC), "Europe/Paris", "Mathias", "m@x.fr", src, nil)
-	b := systemPrompt(time.Date(2026, 9, 28, 17, 45, 0, 0, time.UTC), "Europe/Paris", "Mathias", "m@x.fr", src, nil)
+	a := systemPrompt(time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC), "Europe/Paris", "Mathias", "m@x.fr", src, nil, nil)
+	b := systemPrompt(time.Date(2026, 9, 28, 17, 45, 0, 0, time.UTC), "Europe/Paris", "Mathias", "m@x.fr", src, nil, nil)
 	cut := strings.Index(a, "CONTEXTE DU MOMENT")
 	if cut < 0 {
 		t.Fatal("section du contexte du moment absente")

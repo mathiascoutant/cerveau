@@ -81,10 +81,17 @@ type Message struct {
 	// c'est écrire « Bonjour Cyril » à un message envoyé à cinq personnes.
 	To []string `json:"to,omitempty"`
 	Cc []string `json:"cc,omitempty"`
+	// MessageID : l'identifiant que le client mail a posé sur ce message,
+	// normalisé (sans chevrons). C'est par lui qu'on le rouvre exactement, et
+	// par lui que les autres messages de la conversation le citent.
+	MessageID string `json:"-"`
 	// InReplyTo : le Message-ID du message auquel celui-ci répond, tel que
 	// l'enveloppe IMAP le donne. C'est le seul lien de filiation fiable entre
 	// deux mails — un « Re: » dans l'objet se tape à la main.
 	InReplyTo []string `json:"-"`
+	// References : toute la lignée, du premier message de la conversation au
+	// parent. Lue dans les en-têtes bruts : l'enveloppe IMAP ne la donne pas.
+	References []string `json:"-"`
 	// AnswersYou : ce mail répond à un message que l'utilisateur a envoyé.
 	// Établi en rapprochant InReplyTo des Message-ID de sa boîte d'envoi.
 	AnswersYou bool `json:"-"`
@@ -93,16 +100,24 @@ type Message struct {
 	// message, pas une devinette sur son contenu — d'où sa présence ici, à
 	// côté des autres champs lus tels quels.
 	Bulk bool `json:"-"`
-	// Thread : les messages antérieurs de la conversation, du plus récent au
-	// plus ancien. Ils viennent d'abord du fil que le mail recopie lui-même,
-	// et à défaut d'une recherche dans la boîte.
+	// Thread : les messages antérieurs de la conversation, du plus ancien au
+	// plus récent — le premier est celui qui a lancé le sujet. Retrouvés dans
+	// la boîte (réception et envois) par leurs en-têtes, complétés par
+	// l'historique que le mail recopie quand la boîte ne les a pas.
 	Thread []ThreadMessage `json:"-"`
+	// Followups : ce qui est arrivé APRÈS ce message dans la même
+	// conversation, du plus ancien au plus récent — les réponses, dont les
+	// siennes. C'est ce qui dit où l'affaire en est vraiment.
+	Followups []ThreadMessage `json:"-"`
 }
 
-// ThreadMessage est un message antérieur de la conversation, rendu court : il
-// sert à situer l'échange, pas à être lu.
+// ThreadMessage est un autre message de la conversation, rendu court : il sert
+// à situer l'échange, pas à être lu.
 type ThreadMessage struct {
 	From string
+	// FromAddr : l'adresse de l'expéditeur, pour les messages retrouvés dans
+	// la boîte. Un message cité n'a que la ligne « De : » recopiée.
+	FromAddr string
 	// Date n'est renseignée que pour les messages retrouvés en IMAP, où le
 	// serveur donne un vrai horodatage.
 	Date time.Time
@@ -112,8 +127,16 @@ type ThreadMessage struct {
 	// date mal interprétée est pire qu'une date brute.
 	Sent    string
 	To      string
+	Cc      string
 	Subject string
 	Excerpt string
+	// MessageID : pour rouvrir ce message en entier. Vide pour un message
+	// cité, qui n'existe que recopié.
+	MessageID string
+	// Mine : écrit par l'utilisateur — retrouvé dans sa boîte d'envoi, ou
+	// expédié depuis son adresse. Exact, là où un message cité ne se
+	// reconnaît qu'à l'adresse recopiée dans sa ligne « De : ».
+	Mine bool
 }
 
 // TestConnection vérifie les identifiants sans rien lire d'autre.
@@ -221,9 +244,15 @@ func UnreadCount(ctx context.Context, creds Credentials) (int, error) {
 	return len(found.AllSeqNums()), nil
 }
 
+// connect ouvre la connexion IMAP. Toujours en TLS : une variable plutôt
+// qu'un appel direct pour que les tests puissent parler à un serveur en
+// mémoire, sans certificat.
+var connect = func(host string) (*imapclient.Client, error) {
+	return imapclient.DialTLS(host, &imapclient.Options{})
+}
+
 func dial(ctx context.Context, creds Credentials) (*imapclient.Client, error) {
-	dialer := &imapclient.Options{}
-	c, err := imapclient.DialTLS(creds.host(), dialer)
+	c, err := connect(creds.host())
 	if err != nil {
 		return nil, fmt.Errorf("connexion à %s impossible : %w", creds.host(), err)
 	}

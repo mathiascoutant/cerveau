@@ -80,24 +80,8 @@ func (t *userToolbox) ReadEmailByID(ctx context.Context, messageID string) (assi
 	if err != nil {
 		return assistant.EmailContentView{}, err
 	}
-	view := assistant.EmailContentView{
-		De:            f.From,
-		Adresse:       f.FromAddr,
-		Pour:          f.To,
-		Copie:         f.Cc,
-		Objet:         f.Subject,
-		Recu:          t.when(f.Date),
-		Contenu:       f.Body,
-		Tronque:       strings.HasSuffix(f.Body, "…"),
-		Destinataires: len(f.To) + len(f.Cc),
-	}
-	if f.Folder == gandi.FolderSent {
-		// Un mail de la boîte d'envoi : c'est lui qui l'a écrit. Le champ
-		// pour_toi n'a pas de sens, et « de » le désigne.
-		view.PourToi = "envoyé par toi"
-	} else {
-		view.PourToi = string(triage.Addressing(toTriageMail(f.Message), creds.Email))
-	}
+	view := t.mailContent(ctx, f.Message, creds.Email, f.Folder)
+	t.noteMail(ctx, f.Message, view)
 	return view, nil
 }
 
@@ -161,8 +145,21 @@ func (t *userToolbox) SearchSlack(ctx context.Context, q assistant.SlackSearch) 
 		Messages:       []assistant.SlackMessageView{},
 		Avertissements: res.Warnings,
 	}
-	for _, m := range res.Messages {
-		view.Messages = append(view.Messages, t.slackMessage(m))
+	// Un message qui le vise ne se comprend qu'avec ce qui le précède : on
+	// remonte le contexte des quatre plus récents.
+	withContext := map[int]bool{}
+	for i := len(res.Messages) - 1; i >= 0 && len(withContext) < 4; i-- {
+		if v := res.Messages[i].TeVise; v == slack.VisePerso || v == slack.ViseNomme {
+			withContext[i] = true
+		}
+	}
+	for i, m := range res.Messages {
+		if withContext[i] {
+			before := client.ContextBefore(ctx, m.CanalID, m.Canal, m.ID, m.FilDe)
+			view.Messages = append(view.Messages, t.slackInterpellation(ctx, m, before))
+			continue
+		}
+		view.Messages = append(view.Messages, t.slackMessage(ctx, m))
 	}
 	return view, nil
 }

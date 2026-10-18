@@ -52,10 +52,9 @@ type SearchQuery struct {
 type Found struct {
 	Message
 	// Folder : d'où il vient. Un mail de la boîte d'envoi est un mail que
-	// l'utilisateur a écrit — le champ De y porte sa propre adresse.
+	// l'utilisateur a écrit — le champ De y porte sa propre adresse. Son
+	// MessageID (dans Message) est ce qui permet de le rouvrir avec ReadByID.
 	Folder string
-	// MessageID normalisé (sans chevrons), pour ReadByID.
-	MessageID string
 	// Seen : lu ou non, tel que le serveur le tient.
 	Seen bool
 	// Draft : porte le drapeau \Draft. Un brouillon n'est pas un mail envoyé,
@@ -140,7 +139,8 @@ func Sent(ctx context.Context, creds Credentials, to, subject string, limit int,
 	return found, nil
 }
 
-// ReadByID ouvre exactement le message dont on a le Message-ID, où qu'il soit.
+// ReadByID ouvre exactement le message dont on a le Message-ID, où qu'il soit,
+// avec toute sa conversation.
 //
 // C'est ce qui rend une recherche rigoureuse : Search rend des identifiants,
 // et l'ouverture se fait sur l'identifiant — jamais sur un nom que deux
@@ -179,9 +179,14 @@ func ReadByID(ctx context.Context, creds Credentials, messageID string) (Found, 
 			continue
 		}
 		found := list[0]
-		if body, ok := fetchBody(c, found.seq); ok {
-			found.Body = body
+		raw, ok := fetchRaw(c, found.seq)
+		if !ok {
+			return found, nil
 		}
+		body, quoted := extractParts(raw)
+		found.Body = body
+		// Change de boîte sélectionnée : plus rien à lire ici après.
+		completeThread(c, &found.Message, readFiliation(raw), quoted, creds.Email)
 		return found, nil
 	}
 	return Found{}, fmt.Errorf("aucun message ne porte l'identifiant %q", messageID)
@@ -261,11 +266,11 @@ func fetchEnvelopes(c *imapclient.Client, nums []uint32, label string) ([]Found,
 				Date:      m.Envelope.Date,
 				To:        addressList(m.Envelope.To),
 				Cc:        addressList(m.Envelope.Cc),
+				MessageID: normalizeMessageID(m.Envelope.MessageID),
 				InReplyTo: m.Envelope.InReplyTo,
 			},
-			Folder:    label,
-			MessageID: normalizeMessageID(m.Envelope.MessageID),
-			seq:       m.SeqNum,
+			Folder: label,
+			seq:    m.SeqNum,
 		}
 		for _, flag := range m.Flags {
 			switch flag {
@@ -282,13 +287,22 @@ func fetchEnvelopes(c *imapclient.Client, nums []uint32, label string) ([]Found,
 
 // fetchBody rapatrie le corps d'un message de la boîte sélectionnée, en PEEK.
 func fetchBody(c *imapclient.Client, seq uint32) (string, bool) {
+	raw, ok := fetchRaw(c, seq)
+	if !ok {
+		return "", false
+	}
+	body, _ := extractParts(raw)
+	return body, true
+}
+
+// fetchRaw rapatrie un message brut, en-têtes compris, en PEEK.
+func fetchRaw(c *imapclient.Client, seq uint32) ([]byte, bool) {
 	section := &imap.FetchItemBodySection{Peek: true}
 	fetched, err := c.Fetch(imap.SeqSetNum(seq), &imap.FetchOptions{
 		BodySection: []*imap.FetchItemBodySection{section},
 	}).Collect()
 	if err != nil || len(fetched) == 0 {
-		return "", false
+		return nil, false
 	}
-	body, _ := extractParts(fetched[0].FindBodySection(section))
-	return body, true
+	return fetched[0].FindBodySection(section), true
 }

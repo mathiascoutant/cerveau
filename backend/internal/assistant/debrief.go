@@ -112,6 +112,11 @@ func (e *Engine) debrief(ctx context.Context, tb Toolbox, req Request, now time.
 	if err != nil {
 		return "", err
 	}
+	// L'analyse est ce que Raoul a compris de l'échange : il s'en souviendra
+	// la prochaine fois qu'on lui en parle, sans relire.
+	if memory, ok := tb.(ExchangeMemory); ok {
+		memory.NoteUnderstanding(ctx, analysis)
+	}
 	return "ANALYSE DE " + strings.ToUpper(label) + " — faite pour toi par une lecture approfondie. " +
 		"Restitue L'ESSENTIEL à l'oral, avec tes mots et dans ton ton ; garde LES DÉTAILS pour ses questions suivantes. " +
 		"N'ajoute rien qui n'y figure pas.\n\n" + analysis, nil

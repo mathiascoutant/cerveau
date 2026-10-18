@@ -207,7 +207,7 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 	if route.Tier == TierFast {
 		spec.Instructions = fastPrompt(now, loc.String(), req.UserName)
 	} else {
-		spec.Instructions = systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts)
+		spec.Instructions = systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts, req.Echanges)
 		spec.Tools = toolDefinitions(req.Sources)
 	}
 	return e.Run(ctx, spec, history, req.Text, emit)

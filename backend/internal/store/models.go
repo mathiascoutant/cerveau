@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -372,9 +373,50 @@ type Fact struct {
 	// Origin : d'où vient l'information — « voix » quand Raoul l'a retenue en
 	// écoutant, « app » quand elle a été saisie à la main. L'app s'en sert pour
 	// dire ce qui a été appris tout seul.
-	Origin    string    `bson:"origin,omitempty" json:"origin,omitempty"`
+	Origin string `bson:"origin,omitempty" json:"origin,omitempty"`
+
+	// Pour une personne seulement — l'annuaire de son entourage.
+	//
+	// Role : ce qu'elle est pour lui, en quelques mots (« son patron, PDG de
+	// PXCom », « client chez Azul »). Importance : ce que pèse ce qu'elle
+	// écrit — « critique », « haute », « normale » ou « basse ». C'est elle
+	// qui fait passer un mail du patron devant une relance de fournisseur.
+	//
+	// Adresses et SlackIDs : ce qui permet de la reconnaître d'une source à
+	// l'autre, sans deviner sur un prénom. Deux Cyril ne se confondent pas
+	// quand l'un est cyril@pxcom.aero et l'autre U04C7HJ8P.
+	Role       string   `bson:"role,omitempty" json:"role,omitempty"`
+	Importance string   `bson:"importance,omitempty" json:"importance,omitempty"`
+	Adresses   []string `bson:"adresses,omitempty" json:"adresses,omitempty"`
+	SlackIDs   []string `bson:"slack_ids,omitempty" json:"slack_ids,omitempty"`
+
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// Les niveaux d'importance d'une personne, du plus lourd au plus léger.
+const (
+	ImportanceCritique = "critique"
+	ImportanceHaute    = "haute"
+	ImportanceNormale  = "normale"
+	ImportanceBasse    = "basse"
+)
+
+// NormalizeImportance ramène une importance à l'un des quatre niveaux ; vide
+// quand elle n'est pas reconnue — une importance inventée ne vaut pas mieux
+// qu'aucune.
+func NormalizeImportance(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case ImportanceCritique:
+		return ImportanceCritique
+	case ImportanceHaute, "élevée", "elevee", "forte":
+		return ImportanceHaute
+	case ImportanceNormale, "moyenne":
+		return ImportanceNormale
+	case ImportanceBasse, "faible":
+		return ImportanceBasse
+	}
+	return ""
 }
 
 // Les quatre catégories. Elles sont volontairement peu nombreuses : un modèle à

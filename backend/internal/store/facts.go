@@ -64,18 +64,38 @@ func (s *Store) SaveFact(ctx context.Context, f Fact) (Fact, error) {
 	f.Key = factKey(f.Kind, f.Subject, f.Content)
 
 	now := time.Now()
+	set := bson.M{
+		"kind":       f.Kind,
+		"subject":    f.Subject,
+		"content":    f.Content,
+		"origin":     f.Origin,
+		"updated_at": now,
+	}
+	// Le rôle et l'importance ne se remplacent que s'ils sont donnés : une
+	// fiche réécrite pour y ajouter une phrase ne doit pas perdre ce qu'on
+	// savait déjà de la place de la personne.
+	if role := strings.TrimSpace(f.Role); role != "" {
+		set["role"] = role
+	}
+	if level := NormalizeImportance(f.Importance); level != "" {
+		set["importance"] = level
+	}
+	update := bson.M{"$set": set, "$setOnInsert": bson.M{"created_at": now}}
+	// Les identités s'ajoutent, elles ne se remplacent jamais : apprendre
+	// l'adresse pro de Cyril n'efface pas son identifiant Slack.
+	add := bson.M{}
+	if addrs := cleanAddresses(f.Adresses); len(addrs) > 0 {
+		add["adresses"] = bson.M{"$each": addrs}
+	}
+	if ids := cleanIDs(f.SlackIDs); len(ids) > 0 {
+		add["slack_ids"] = bson.M{"$each": ids}
+	}
+	if len(add) > 0 {
+		update["$addToSet"] = add
+	}
 	res := s.facts().FindOneAndUpdate(ctx,
 		bson.M{"user_id": f.UserID, "key": f.Key},
-		bson.M{
-			"$set": bson.M{
-				"kind":       f.Kind,
-				"subject":    f.Subject,
-				"content":    f.Content,
-				"origin":     f.Origin,
-				"updated_at": now,
-			},
-			"$setOnInsert": bson.M{"created_at": now},
-		},
+		update,
 		options.FindOneAndUpdate().
 			SetUpsert(true).
 			SetReturnDocument(options.After),
@@ -85,6 +105,96 @@ func (s *Store) SaveFact(ctx context.Context, f Fact) (Fact, error) {
 		return Fact{}, err
 	}
 	return out, nil
+}
+
+// FactBySubject rend la fiche d'un sujet, à l'orthographe près.
+func (s *Store) FactBySubject(ctx context.Context, userID bson.ObjectID, kind, subject string) (Fact, error) {
+	var out Fact
+	err := s.facts().FindOne(ctx, bson.M{"user_id": userID, "key": factKey(kind, subject, "")}).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Fact{}, ErrNotFound
+	}
+	return out, err
+}
+
+// FactByID rend une fiche désignée par son identifiant.
+func (s *Store) FactByID(ctx context.Context, userID, id bson.ObjectID) (Fact, error) {
+	var out Fact
+	err := s.facts().FindOne(ctx, bson.M{"user_id": userID, "_id": id}).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Fact{}, ErrNotFound
+	}
+	return out, err
+}
+
+// People rend toutes les personnes de son entourage, sans la borne de la
+// consigne : l'annuaire sert à reconnaître l'auteur de chaque message, et un
+// collègue dont la fiche n'a pas été touchée depuis trois mois reste son
+// collègue.
+func (s *Store) People(ctx context.Context, userID bson.ObjectID) ([]Fact, error) {
+	cur, err := s.facts().Find(ctx,
+		bson.M{"user_id": userID, "kind": FactPerson},
+		options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}).SetLimit(500),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var out []Fact
+	return out, cur.All(ctx, &out)
+}
+
+// UpdatePerson règle la place d'une personne depuis l'app : son rôle, son
+// importance, ses adresses. Les adresses données remplacent la liste — c'est
+// l'écran où l'on corrige une adresse mal rattachée.
+func (s *Store) UpdatePerson(ctx context.Context, userID, id bson.ObjectID, role, importance string, adresses []string) (Fact, error) {
+	set := bson.M{"role": strings.TrimSpace(role), "updated_at": time.Now()}
+	if level := NormalizeImportance(importance); level != "" || strings.TrimSpace(importance) == "" {
+		set["importance"] = level
+	}
+	if adresses != nil {
+		set["adresses"] = cleanAddresses(adresses)
+	}
+	res := s.facts().FindOneAndUpdate(ctx,
+		bson.M{"user_id": userID, "_id": id, "kind": FactPerson},
+		bson.M{"$set": set},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	)
+	var out Fact
+	if err := res.Decode(&out); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Fact{}, ErrNotFound
+		}
+		return Fact{}, err
+	}
+	return out, nil
+}
+
+func cleanAddresses(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, a := range in {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" || !strings.Contains(a, "@") || seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	return out
+}
+
+func cleanIDs(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range in {
+		id = strings.ToUpper(strings.TrimSpace(id))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // Facts rend ce qui est retenu, rangé pour être lu : les personnes d'abord,
