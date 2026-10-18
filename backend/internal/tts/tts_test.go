@@ -118,3 +118,30 @@ func TestSpeakDisabled(t *testing.T) {
 		t.Fatalf("attendu ErrDisabled, obtenu %v", err)
 	}
 }
+
+// Un refus pour quota met ElevenLabs en pause : les réponses suivantes partent
+// directement sur la voix du téléphone au lieu d'attendre un échec de plus.
+// Une autre erreur (voix inconnue) ne coupe rien.
+func TestQuotaPausesSynthesis(t *testing.T) {
+	status, body := http.StatusUnauthorized, `{"detail":{"code":"quota_exceeded"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, body, status)
+	}))
+	defer srv.Close()
+
+	c := New("clé", "", "", "")
+	c.baseURL = srv.URL
+	if _, err := c.Speak(context.Background(), "bonjour"); err == nil || c.Enabled() {
+		t.Fatalf("quota épuisé : err=%v, enabled=%v", err, c.Enabled())
+	}
+	if _, err := c.Speak(context.Background(), "bonjour"); err != ErrDisabled {
+		t.Errorf("en pause, attendu ErrDisabled, obtenu %v", err)
+	}
+
+	status, body = http.StatusNotFound, `{"detail":"voice_not_found"}`
+	other := New("clé", "", "", "")
+	other.baseURL = srv.URL
+	if _, err := other.Speak(context.Background(), "bonjour"); err == nil || !other.Enabled() {
+		t.Errorf("voix inconnue : la synthèse ne doit pas se mettre en pause")
+	}
+}

@@ -10,7 +10,7 @@ import { api, ApiError, claimAccount, Connection, detectedApiUrl, getApiUrl, log
 import { useEquipe } from '../lib/equipe';
 import { calendarSupported, hasCalendarAccess, requestCalendarAccess, syncCalendar } from '../lib/calendar';
 import { clearCache } from '../lib/cache';
-import { frenchVoices } from '../lib/speech';
+import { frenchVoices, teamVoices } from '../lib/speech';
 import { loadDigest, loadUrgent } from './SuiviScreen';
 
 /**
@@ -35,6 +35,7 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [email, setEmail] = useState<string | null>(null);
   const [voices, setVoices] = useState<{ label: string; best: boolean }[] | null>(null);
   const [voice, setVoice] = useState<VoiceInfo | null>(null);
+  const [cast, setCast] = useState<{ agent: string; who: string; voice: string | null; shared: boolean }[] | null>(null);
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarUsable, setCalendarUsable] = useState(true);
   const [tuleapConfigured, setTuleapConfigured] = useState<boolean | null>(null);
@@ -81,6 +82,9 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
     void frenchVoices()
       .then((list) => setVoices(list.map((v, i) => ({ label: `${v.name} · ${v.quality}`, best: i === 0 }))))
       .catch(() => setVoices([]));
+    void teamVoices()
+      .then(setCast)
+      .catch(() => setCast([]));
     void refresh();
   }, [refresh]);
 
@@ -208,15 +212,27 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
           <View style={styles.voiceRow}>
             <Feather name={voice?.engine === 'elevenlabs' ? 'check-circle' : 'circle'} size={13} color={voice?.engine === 'elevenlabs' ? tokens.colors.accent : tokens.colors.text3} />
             <T v="mono" tone={voice?.engine === 'elevenlabs' ? 'default' : 'faint'}>
-              {voice?.engine === 'elevenlabs' ? `ElevenLabs · ${voice.model ?? 'modèle par défaut'}${voice.language ? ` · ${voice.language}` : ''}` : 'ElevenLabs · inactif (aucune clé sur le serveur)'}
+              {voice?.engine === 'elevenlabs' ? `ElevenLabs · ${voice.model ?? 'modèle par défaut'}${voice.language ? ` · ${voice.language}` : ''}` : 'Voix de l’iPhone · gratuites'}
             </T>
           </View>
           <T v="small" tone="muted">
-            {voice?.engine === 'elevenlabs' ? 'Voix générée par le serveur ; celle du téléphone ne sert que si le réseau lâche.' : 'Renseigne ELEVENLABS_API_KEY côté serveur pour une voix moins synthétique.'}
+            {voice?.engine === 'elevenlabs' ? 'Voix générée par le serveur ; celle du téléphone ne sert que si le réseau lâche.' : 'Raoul, Claire et Léo parlent chacun avec une voix différente de l’iPhone. Réglages > Accessibilité > Contenu énoncé > Voix permet d’en télécharger de meilleures (« améliorées »), gratuitement.'}
           </T>
           <Divider />
           <T v="label" tone="faint" style={{ textTransform: 'uppercase' }}>
-            voix système (repli)
+            qui parle avec quelle voix
+          </T>
+          {cast?.map((c) => (
+            <View key={c.agent} style={styles.voiceRow}>
+              <Feather name="user" size={13} color={tokens.colors.text3} />
+              <T v="mono" tone={c.voice ? 'default' : 'faint'}>
+                {c.who} · {c.voice ? `${c.voice}${c.shared ? ', ton plus grave' : ''}` : 'voix par défaut'}
+              </T>
+            </View>
+          ))}
+          <Divider />
+          <T v="label" tone="faint" style={{ textTransform: 'uppercase' }}>
+            voix françaises de l’iPhone
           </T>
           {voices === null ? (
             <T v="small" tone="faint">

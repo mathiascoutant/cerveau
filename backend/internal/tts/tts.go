@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -62,7 +63,17 @@ type Client struct {
 	// baseURL n'est remplacé que par les tests.
 	baseURL string
 	http    *http.Client
+
+	// pausedUntil : quota épuisé, ElevenLabs se tait jusqu'à cet instant. Sans
+	// ça, chaque réponse lançait une synthèse vouée à l'échec, et l'app
+	// attendait six secondes avant de parler avec la voix du téléphone.
+	mu          sync.Mutex
+	pausedUntil time.Time
 }
+
+// quotaPause : le temps qu'on laisse avant de réessayer ElevenLabs après un
+// refus pour quota. Une recharge se voit au plus tard une heure après.
+const quotaPause = time.Hour
 
 func New(apiKey, voiceID, model, language string) *Client {
 	if voiceID == "" {
@@ -86,7 +97,27 @@ func New(apiKey, voiceID, model, language string) *Client {
 	}
 }
 
-func (c *Client) Enabled() bool { return c.apiKey != "" }
+// Enabled : une clé est donnée, et le quota n'est pas épuisé.
+func (c *Client) Enabled() bool {
+	if c.apiKey == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().After(c.pausedUntil)
+}
+
+// pauseIfQuota met ElevenLabs en pause quand un refus dit que le quota ou le
+// crédit est épuisé.
+func (c *Client) pauseIfQuota(status int, body []byte) {
+	low := strings.ToLower(string(body))
+	if status != http.StatusPaymentRequired && !strings.Contains(low, "quota") && !strings.Contains(low, "credit") {
+		return
+	}
+	c.mu.Lock()
+	c.pausedUntil = time.Now().Add(quotaPause)
+	c.mu.Unlock()
+}
 
 // VoiceID, Model et Language servent l'écran de diagnostic de l'app.
 func (c *Client) VoiceID() string  { return c.voiceID }
@@ -149,6 +180,7 @@ func (c *Client) SpeakWith(ctx context.Context, voiceID, text string) (io.ReadCl
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		resp.Body.Close()
+		c.pauseIfQuota(resp.StatusCode, raw)
 		return nil, fmt.Errorf("synthèse vocale : statut %d : %s", resp.StatusCode, raw)
 	}
 	return resp.Body, nil

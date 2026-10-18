@@ -101,22 +101,25 @@ function play(uri: string): Promise<boolean> {
  * serveur ne répond pas — inutile de lui demander de synthétiser la phrase qui
  * annonce qu'il est injoignable.
  */
-export function speakOnDevice(text: string, lang?: string): Promise<void> {
+export function speakOnDevice(text: string, lang?: string, agent?: string): Promise<void> {
   const locale = localeFor(lang);
+  const timbre = timbreOf(agent);
   return new Promise((resolve) => {
     // La voix française choisie avec soin ne sert qu'au français : lui faire
     // lire de l'anglais donne un accent qui rend le texte incompréhensible.
-    void (locale === 'fr-FR' ? bestFrenchVoice() : Promise.resolve(null)).then((voice) => {
+    void (locale === 'fr-FR' ? voiceFor(agent) : Promise.resolve(null)).then((choice) => {
       if (stopped) {
         resolve();
         return;
       }
       Speech.speak(text, {
         language: locale,
-        voice: voice ?? undefined,
+        voice: choice?.id ?? undefined,
         // À vitesse nominale, les voix iOS enchaînent les mots sans respiration.
-        rate: 0.96,
-        pitch: 0.98,
+        rate: timbre.rate,
+        // Même voix qu'un collègue faute de mieux sur l'appareil : un ton
+        // plus grave suffit à savoir qui parle.
+        pitch: choice?.shared ? timbre.pitch - 0.08 : timbre.pitch,
         onDone: () => resolve(),
         onStopped: () => resolve(),
         onError: () => resolve(),
@@ -157,7 +160,7 @@ function fallback(reason: string): void {
  * travailler pendant que la réponse arrive jusqu'ici. Sans elle, on demande le
  * ticket comme avant : une phrase fabriquée par l'app n'en a pas.
  */
-export async function speak(text: string, lang?: string, prepared?: string): Promise<void> {
+export async function speak(text: string, lang?: string, prepared?: string, agent?: string): Promise<void> {
   stopped = false;
   if (!text.trim()) return;
 
@@ -186,7 +189,7 @@ export async function speak(text: string, lang?: string, prepared?: string): Pro
     if (stopped) return;
   }
 
-  await speakOnDevice(text, lang);
+  await speakOnDevice(text, lang, agent);
 }
 
 /**
@@ -224,14 +227,49 @@ export function stopSpeaking(): void {
   player = null;
 }
 
-/* -- Voix système : sélection de la moins mauvaise ------------------------- */
+/* -- Voix système : une par membre de l'équipe ---------------------------- */
 
-let selected: string | null | undefined;
+/**
+ * Les voix gratuites de l'iPhone, distribuées entre Raoul, Claire et Léo : on
+ * doit savoir qui parle sans regarder l'écran. Chacun a ses prénoms de voix
+ * préférés, son genre, son ton et son débit ; on prend la meilleure voix
+ * installée qui lui correspond, et Léo évite celle de Raoul quand l'appareil
+ * en propose une autre.
+ */
+type Timbre = { names: string[]; gender: 'male' | 'female'; pitch: number; rate: number };
 
-/** Voix connues pour bien rendre en français, par ordre de préférence. */
-const PREFERRED_NAMES = ['thomas', 'audrey', 'aurélie', 'aurelie', 'marie', 'daniel'];
+const TIMBRES: Record<string, Timbre> = {
+  raoul: { names: ['thomas', 'nicolas', 'daniel', 'jacques'], gender: 'male', pitch: 0.98, rate: 0.96 },
+  responsable_info: {
+    names: ['audrey', 'aurélie', 'aurelie', 'marie', 'amélie', 'amelie', 'céline', 'celine', 'virginie'],
+    gender: 'female',
+    pitch: 1.04,
+    rate: 0.98,
+  },
+  ingenieur: { names: ['nicolas', 'daniel', 'jacques', 'henri', 'thomas'], gender: 'male', pitch: 0.94, rate: 1.0 },
+};
 
-function score(voice: Speech.Voice): number {
+function timbreOf(agent?: string): Timbre {
+  return TIMBRES[agent ?? 'raoul'] ?? TIMBRES.raoul;
+}
+
+const FEMALE = ['audrey', 'aurélie', 'aurelie', 'marie', 'amélie', 'amelie', 'céline', 'celine', 'virginie', 'chantal', 'julie'];
+const MALE = ['thomas', 'nicolas', 'daniel', 'jacques', 'henri'];
+// Voix fantaisie (« Grandma », « Rocko »…) : présentes en français, mais on
+// ne confie pas une réponse sérieuse à un grand-père de dessin animé.
+const NOVELTY = ['eddy', 'flo', 'grandma', 'grandpa', 'reed', 'rocko', 'sandy', 'shelley', 'grand-mère', 'grand-père'];
+
+function genderOf(voice: Speech.Voice): 'male' | 'female' | null {
+  const id = voice.identifier?.toLowerCase() ?? '';
+  const name = voice.name?.toLowerCase() ?? '';
+  if (id.includes('female')) return 'female';
+  if (id.includes('male')) return 'male';
+  if (FEMALE.some((n) => name.includes(n))) return 'female';
+  if (MALE.some((n) => name.includes(n))) return 'male';
+  return null;
+}
+
+function score(voice: Speech.Voice, timbre: Timbre): number {
   const name = voice.name?.toLowerCase() ?? '';
   const id = voice.identifier?.toLowerCase() ?? '';
   let n = 0;
@@ -242,7 +280,11 @@ function score(voice: Speech.Voice): number {
   else if (voice.quality === Speech.VoiceQuality.Enhanced) n += 60;
   if (id.includes('siri')) n += 40; // les voix Siri sont les plus naturelles
 
-  const rank = PREFERRED_NAMES.findIndex((p) => name.includes(p));
+  const gender = genderOf(voice);
+  if (gender === timbre.gender) n += 50;
+  else if (gender) n -= 50;
+
+  const rank = timbre.names.findIndex((p) => name.includes(p));
   if (rank >= 0) n += 20 - rank;
 
   // Le français de France plutôt que canadien ou belge.
@@ -250,27 +292,60 @@ function score(voice: Speech.Voice): number {
   return n;
 }
 
-async function bestFrenchVoice(): Promise<string | null> {
-  if (selected !== undefined) return selected ?? null;
+type Choice = { id: string; shared: boolean } | null;
+const chosen = new Map<string, Choice>();
+let frenchCache: Speech.Voice[] | null = null;
+
+async function usableFrenchVoices(): Promise<Speech.Voice[]> {
+  if (frenchCache) return frenchCache;
+  const voices = await Speech.getAvailableVoicesAsync();
+  frenchCache = voices.filter((v) => {
+    const name = v.name?.toLowerCase() ?? '';
+    const id = v.identifier?.toLowerCase() ?? '';
+    return v.language?.toLowerCase().startsWith('fr') && !id.includes('eloquence') && !NOVELTY.some((n) => name === n || name.startsWith(n + ' '));
+  });
+  return frenchCache;
+}
+
+/** La voix d'un membre de l'équipe, choisie une fois par session. */
+async function voiceFor(agent?: string): Promise<Choice> {
+  const key = agent && TIMBRES[agent] ? agent : 'raoul';
+  if (chosen.has(key)) return chosen.get(key) ?? null;
+  let choice: Choice = null;
   try {
-    const voices = await Speech.getAvailableVoicesAsync();
-    const french = voices.filter((v) => v.language?.toLowerCase().startsWith('fr'));
-    if (french.length === 0) {
-      selected = null;
-      return null;
-    }
-    french.sort((a, b) => score(b) - score(a));
-    selected = french[0].identifier;
+    const french = await usableFrenchVoices();
+    const timbre = TIMBRES[key];
+    const ranked = [...french].sort((a, b) => score(b, timbre) - score(a, timbre));
+    // Léo ne prend pas la voix de Raoul s'il en existe une autre de son genre.
+    const taken = key === 'ingenieur' ? (await voiceFor('raoul'))?.id : undefined;
+    const own = ranked.find((v) => v.identifier !== taken && genderOf(v) !== (timbre.gender === 'male' ? 'female' : 'male'));
+    if (own) choice = { id: own.identifier, shared: false };
+    else if (ranked[0]) choice = { id: ranked[0].identifier, shared: ranked[0].identifier === taken };
   } catch {
-    selected = null;
+    choice = null;
   }
-  return selected ?? null;
+  chosen.set(key, choice);
+  return choice;
+}
+
+/** Qui parle avec quelle voix de l'iPhone — pour l'écran Accès. */
+export async function teamVoices(): Promise<{ agent: string; who: string; voice: string | null; shared: boolean }[]> {
+  const french = await usableFrenchVoices();
+  const nameOf = (id?: string) => french.find((v) => v.identifier === id)?.name ?? null;
+  const out = [];
+  for (const [agent, who] of [
+    ['raoul', 'Raoul'],
+    ['responsable_info', 'Claire'],
+    ['ingenieur', 'Léo'],
+  ] as const) {
+    const choice = await voiceFor(agent);
+    out.push({ agent, who, voice: nameOf(choice?.id), shared: Boolean(choice?.shared) });
+  }
+  return out;
 }
 
 /** Diagnostic : liste ce que l'appareil propose réellement en français. */
 export async function frenchVoices(): Promise<Speech.Voice[]> {
-  const voices = await Speech.getAvailableVoicesAsync();
-  return voices
-    .filter((v) => v.language?.toLowerCase().startsWith('fr'))
-    .sort((a, b) => score(b) - score(a));
+  const french = await usableFrenchVoices();
+  return [...french].sort((a, b) => score(b, TIMBRES.raoul) - score(a, TIMBRES.raoul));
 }

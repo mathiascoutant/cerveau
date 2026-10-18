@@ -69,7 +69,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 			WithDeep(cfg.OpenAIDeepModel, cfg.OpenAIDeepEffort),
 		csp: newCSPCache(),
 		stt: stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
-		tts: tts.New(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
+		tts: tts.New(elevenLabsKey(cfg), cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),
@@ -186,4 +186,14 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	return r
+}
+
+// elevenLabsKey : la clé ElevenLabs, sauf quand la configuration demande les
+// voix gratuites du téléphone (VOIX=appareil). Sans clé, le serveur ne prépare
+// plus aucun son et l'app parle avec les voix de l'iPhone.
+func elevenLabsKey(cfg config.Config) string {
+	if cfg.Voix == "appareil" {
+		return ""
+	}
+	return cfg.ElevenLabsAPIKey
 }

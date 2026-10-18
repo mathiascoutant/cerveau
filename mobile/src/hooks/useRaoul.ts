@@ -256,6 +256,8 @@ export function useRaoul() {
       let actions: AssistantAction[] = [];
       let metrics: AssistantMetrics | undefined;
       let speechUrl: string | undefined;
+      // Qui répond : sa voix sur l'iPhone quand le serveur n'en fabrique pas.
+      let speaker = currentInterlocuteur();
 
       try {
         await askStream(
@@ -300,6 +302,7 @@ export function useRaoul() {
                 metrics = ev.metrics ?? ev.result.metrics;
                 speechUrl = ev.speech_url;
                 const agent = ev.result.agent || 'raoul';
+                speaker = agent;
                 noteInterlocuteur(agent);
                 patch((item) => ({ ...item, agent, text: reply, metrics, streaming: false }));
                 break;
@@ -339,7 +342,7 @@ export function useRaoul() {
       // audio en fond), mais rien ne garantit qu'on puisse en démarrer un une
       // fois passé en arrière-plan.
       setState('speaking');
-      const spoken = speak(reply, undefined, speechUrl);
+      const spoken = speak(reply, undefined, speechUrl, speaker);
 
       let effects: string[] = [];
       if (actions.length) {

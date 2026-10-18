@@ -67,6 +67,10 @@ type Config struct {
 	// Langue imposée à la synthèse. Sans elle le modèle devine, et un seul mot
 	// anglais dans une phrase française lui fait prendre l'accent.
 	ElevenLabsLanguage string
+	// Voix : « appareil » fait parler l'équipe avec les voix gratuites du
+	// téléphone, ElevenLabs n'est alors plus appelé du tout — même avec une
+	// clé. Vide : ElevenLabs quand une clé est donnée.
+	Voix string
 
 	// WhatsAppSessionDB : fichier SQLite où whatsmeow garde la session de
 	// l'appareil lié. Le seul état de Cerveau qui ne vit pas dans Mongo — la
@@ -148,6 +152,7 @@ func Load() (Config, error) {
 		ElevenLabsVoiceID:     env("ELEVENLABS_VOICE_ID", ""),
 		ElevenLabsModel:       env("ELEVENLABS_MODEL", ""),
 		ElevenLabsLanguage:    env("ELEVENLABS_LANGUAGE", ""),
+		Voix:                  strings.ToLower(strings.TrimSpace(env("VOIX", ""))),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),

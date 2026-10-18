@@ -3,6 +3,8 @@ package api
 import (
 	"testing"
 
+	"github.com/mathiascoutant/cerveau/backend/internal/config"
+
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -72,5 +74,14 @@ func TestNamesYou(t *testing.T) {
 	}
 	if namesYou("Bonjour à tous, voici le compte rendu.", "Mathias") {
 		t.Error("interpellation inventée")
+	}
+}
+
+func TestElevenLabsKeyRespectsVoix(t *testing.T) {
+	if got := elevenLabsKey(config.Config{ElevenLabsAPIKey: "k", Voix: "appareil"}); got != "" {
+		t.Error("VOIX=appareil doit couper ElevenLabs")
+	}
+	if got := elevenLabsKey(config.Config{ElevenLabsAPIKey: "k"}); got != "k" {
+		t.Error("sans VOIX, la clé doit passer")
 	}
 }

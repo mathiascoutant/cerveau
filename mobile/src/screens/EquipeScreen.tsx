@@ -9,7 +9,7 @@ import { alpha, tokens } from '../design/tokens';
 import { api, Connaissance, EquipeInfo, Membre } from '../api';
 import { useSlot } from '../lib/cache';
 import { CONNAISSANCES_KEY, EQUIPE_KEY, loadConnaissances, loadEquipe, oublierConnaissance } from '../lib/equipe';
-import { speak, stopSpeaking } from '../lib/speech';
+import { speak, speakOnDevice, stopSpeaking } from '../lib/speech';
 
 /**
  * Équipe : qui suit tes projets perso, et ce qu'ils en savent.
@@ -93,9 +93,11 @@ function MemberCard({ m, depth, speaking, onTalk }: { m: Membre; depth: number; 
     setPlaying(true);
     try {
       const { url, texte } = await api.voixMembre(m.id);
-      await speak(texte, undefined, url);
-    } catch (err) {
-      Alert.alert('Voix indisponible', (err as Error).message);
+      await speak(texte, undefined, url, m.id);
+    } catch {
+      // Pas de voix serveur (voix gratuites du téléphone, ou quota épuisé) :
+      // on l'entend quand même, avec la voix de l'iPhone qui lui est attribuée.
+      await speakOnDevice(`Salut, c'est ${m.nom}, ${m.role.toLowerCase()}.`, undefined, m.id);
     } finally {
       setPlaying(false);
     }
