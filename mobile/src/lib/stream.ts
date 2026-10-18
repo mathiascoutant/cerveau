@@ -89,32 +89,59 @@ export async function askStream(text: string, onEvent: (ev: StreamEvent) => void
 
   const decoder = new TextDecoder();
   let buffer = '';
+  // Le serveur parle au moins toutes les quinze secondes (un ping). Un flux
+  // muet plus longtemps est un flux mort — serveur redémarré, réseau coupé —
+  // et sans ce garde-fou l'app attendait indéfiniment devant le cercle.
+  let stalled = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      stalled = true;
+      void reader.cancel().catch(() => undefined);
+    }, STALL_MS);
+  };
+  let finished = false;
+  const relay = (ev: StreamEvent) => {
+    if (ev.type === 'done' || ev.type === 'error') finished = true;
+    onEvent(ev);
+  };
   const abort = () => {
     void reader.cancel().catch(() => undefined);
   };
   signal.addEventListener('abort', abort);
+  arm();
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      arm();
       buffer += decoder.decode(value, { stream: true });
       let cut = buffer.indexOf('\n\n');
       while (cut >= 0) {
         const frame = buffer.slice(0, cut);
         buffer = buffer.slice(cut + 2);
-        deliver(frame, onEvent);
+        deliver(frame, relay);
         cut = buffer.indexOf('\n\n');
       }
     }
-    if (buffer.trim()) deliver(buffer, onEvent);
+    if (buffer.trim()) deliver(buffer, relay);
   } catch (err) {
     if (signal.aborted) throw new AbortedError();
+    if (stalled) throw new Error('Le serveur ne répond plus. Réessaie dans un instant.');
     throw err;
   } finally {
+    if (watchdog) clearTimeout(watchdog);
     signal.removeEventListener('abort', abort);
   }
   if (signal.aborted) throw new AbortedError();
+  if (stalled) throw new Error('Le serveur ne répond plus. Réessaie dans un instant.');
+  // Un flux qui se ferme sans fin ni erreur a été coupé en route.
+  if (!finished) throw new Error('La réponse a été coupée en route. Réessaie.');
 }
+
+/** Silence au-delà duquel le flux est tenu pour mort : trois pings manqués. */
+const STALL_MS = 45_000;
 
 async function streamRequest(base: string, headers: Record<string, string>, text: string, signal: AbortSignal): Promise<Response> {
   return (await expoFetch(`${base}/api/v1/assistant/stream`, {
