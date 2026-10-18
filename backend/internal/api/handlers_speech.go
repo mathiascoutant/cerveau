@@ -60,6 +60,8 @@ type speechTicket struct {
 	userID  bson.ObjectID
 	text    string
 	expires time.Time
+	// voice : la voix d'un membre de l'équipe ; vide pour celle de Raoul.
+	voice string
 
 	// start garantit une synthèse et une seule, quel que soit le nombre de
 	// requêtes que le lecteur ouvre sur le ticket.
@@ -75,7 +77,13 @@ func newSpeechTickets() *speechTickets {
 	return &speechTickets{items: map[string]*speechTicket{}}
 }
 
-func (t *speechTickets) issue(userID bson.ObjectID, text string) (string, error) {
+// voicedSynth : un synthétiseur capable de prendre une autre voix que la
+// sienne. *tts.Client le satisfait ; les faux des tests n'en ont pas besoin.
+type voicedSynth interface {
+	SpeakWith(ctx context.Context, voiceID, text string) (io.ReadCloser, error)
+}
+
+func (t *speechTickets) issue(userID bson.ObjectID, text, voice string) (string, error) {
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
@@ -95,6 +103,7 @@ func (t *speechTickets) issue(userID bson.ObjectID, text string) (string, error)
 	t.items[id] = &speechTicket{
 		userID:  userID,
 		text:    text,
+		voice:   voice,
 		expires: now.Add(2 * time.Minute),
 		ready:   make(chan struct{}),
 	}
@@ -133,7 +142,15 @@ func (t *speechTicket) synthesize(synth speechSynth) {
 			ctx, cancel := context.WithTimeout(context.Background(), speechSynthesisTimeout)
 			defer cancel()
 
-			body, err := synth.Speak(ctx, t.text)
+			var (
+				body io.ReadCloser
+				err  error
+			)
+			if voiced, ok := synth.(voicedSynth); ok && t.voice != "" {
+				body, err = voiced.SpeakWith(ctx, t.voice, t.text)
+			} else {
+				body, err = synth.Speak(ctx, t.text)
+			}
 			if err != nil {
 				t.err = err
 				close(t.ready)
@@ -154,6 +171,12 @@ func (t *speechTicket) synthesize(synth speechSynth) {
 // le lecteur réclame le premier octet. Rend "" quand il n'y a rien à dire ou
 // pas de voix distante — l'app parle alors avec celle du téléphone.
 func (s *Server) prepareSpeech(userID bson.ObjectID, text string) string {
+	return s.prepareSpeechAs(userID, text, "")
+}
+
+// prepareSpeechAs fait de même avec la voix d'un membre de l'équipe : on doit
+// savoir qui parle sans regarder l'écran.
+func (s *Server) prepareSpeechAs(userID bson.ObjectID, text, voice string) string {
 	if !s.tts.Enabled() {
 		return ""
 	}
@@ -165,7 +188,7 @@ func (s *Server) prepareSpeech(userID bson.ObjectID, text string) string {
 		text = text[:maxSpeechChars]
 	}
 
-	id, err := s.speech.issue(userID, text)
+	id, err := s.speech.issue(userID, text, voice)
 	if err != nil {
 		slog.Warn("émission du ticket de lecture", "err", err)
 		return ""

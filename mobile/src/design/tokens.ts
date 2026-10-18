@@ -40,6 +40,7 @@ export const palette = {
   violet: '#9C8BFF',
   green: '#4BE29A',
   red: '#FF6C7C',
+  lilac: '#C9B8FF',
 } as const;
 
 /** Compose une couleur hexadécimale avec un canal alpha (0 → 1). */
@@ -79,6 +80,14 @@ export const tokens = {
     ok: palette.green,
     warn: palette.amber,
     danger: palette.red,
+
+    /**
+     * Les deux espaces. Le pro reprend l'accent — c'est l'espace de toujours ;
+     * le perso a sa teinte à lui, pour qu'on sache d'un coup d'œil de quel
+     * côté on est.
+     */
+    pro: palette.cyan,
+    perso: palette.lilac,
   },
 
   /** Rythme d'espacement en pas de 4. */

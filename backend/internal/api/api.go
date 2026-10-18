@@ -10,6 +10,8 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
+	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
+	"github.com/mathiascoutant/cerveau/backend/internal/projets"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/stt"
@@ -33,6 +35,27 @@ type Server struct {
 	confirm *confirmations
 	// csp : cache court des tickets Tuleap, par utilisateur (voir handlers_jobs.go).
 	csp *cspCache
+
+	// projets et equipe : l'espace perso technique. Nil tant qu'aucun
+	// registre de projets n'est configuré — et alors ni écran Projets, ni
+	// passage de parole.
+	projets *projets.Service
+	equipe  *equipe.Equipe
+}
+
+// WithPerso branche le suivi des projets et l'équipe technique qui va avec.
+func (s *Server) WithPerso(p *projets.Service) *Server {
+	if p == nil {
+		return s
+	}
+	s.projets = p
+	s.equipe = equipe.New(s.engine, p, s.store, equipe.Config{
+		Voix:              equipe.Voix{Raoul: s.tts.VoiceID(), Ingenieur: s.cfg.VoixIngenieur, Responsable: s.cfg.VoixResponsable},
+		Modele:            s.cfg.EquipeModele,
+		EffortIngenieur:   s.cfg.EffortIngenieur,
+		EffortResponsable: s.cfg.EffortResponsable,
+	})
+	return s
 }
 
 func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa *whatsapp.Manager) *Server {
@@ -59,7 +82,20 @@ func (s *Server) Routes() http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(120 * time.Second))
+	// Deux minutes pour tout, sauf pour les questions à l'assistant : une
+	// enquête de l'ingénieur dure plus longtemps, et la couper au milieu
+	// jetterait tout le travail fait.
+	r.Use(func(next http.Handler) http.Handler {
+		short := middleware.Timeout(120 * time.Second)(next)
+		long := middleware.Timeout(conversationTimeout + 30*time.Second)(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.URL.Path == "/api/v1/assistant/stream" || req.URL.Path == "/api/v1/assistant/ask" {
+				long.ServeHTTP(w, req)
+				return
+			}
+			short.ServeHTTP(w, req)
+		})
+	})
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -128,6 +164,14 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/jobs", s.handleJobs)
 			r.Get("/jobs/csp/tickets", s.handleCSPTickets)
 			r.Get("/jobs/csp/tickets/{id}", s.handleCSPTicket)
+
+			// L'espace perso : ses projets, et l'équipe qui les suit.
+			r.Get("/perso/projets", s.handleProjets)
+			r.Get("/equipe", s.handleEquipe)
+			r.Put("/equipe/interlocuteur", s.handleInterlocuteur)
+			r.Post("/equipe/{id}/voix", s.handleVoixMembre)
+			r.Get("/equipe/connaissances", s.handleConnaissances)
+			r.Delete("/equipe/connaissances/{id}", s.handleOublierConnaissance)
 
 			r.Post("/assistant/ask", s.handleAsk)
 			r.Post("/assistant/stream", s.handleAskStream)

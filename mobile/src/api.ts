@@ -26,8 +26,17 @@ const SIRI_OPTIONS: SecureStore.SecureStoreOptions = {
 
 export type Provider = 'gandi' | 'slack' | 'whatsapp' | 'calendar' | 'tuleap';
 
+/**
+ * Les deux espaces de sa vie. Tout ce que Raoul lisait avant leur apparition
+ * — Gandi, Slack, WhatsApp, Tuleap — est pro ; ses projets à lui, le VPS et
+ * l'équipe technique sont perso. Une boîte mail peut exister des deux côtés.
+ */
+export type Space = 'pro' | 'perso';
+
 export type Connection = {
   provider: Provider;
+  /** Absent sur un serveur d'avant les espaces : c'est alors du pro. */
+  space?: Space;
   status: 'connected' | 'error' | 'disconnected';
   label?: string;
   last_error?: string;
@@ -261,12 +270,165 @@ export type AssistantAnswer = {
   actions: AssistantAction[];
   steps?: string[];
   metrics?: AssistantMetrics;
+  /** Qui a répondu : absent pour Raoul, sinon un membre de l'équipe. */
+  agent?: string;
   /**
    * Adresse du son de cette réponse, dont le serveur a déjà lancé la synthèse.
    * Absente quand le serveur n'a pas de voix distante — l'app lit alors avec
    * celle du téléphone.
    */
   speech_url?: string;
+};
+
+/* -------------------------------------------------------------------------- */
+/* L'espace perso : l'équipe et ses projets                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Un membre de l'équipe, Raoul compris. */
+export type Membre = {
+  id: string;
+  nom: string;
+  role: string;
+  equipe?: string;
+  superieur?: string;
+  espace?: string;
+  /** Sa teinte dans l'app : on sait qui parle d'un coup d'œil. */
+  couleur: string;
+  presentation: string;
+};
+
+export type Capacites = { sonde: boolean; github: boolean; github_authentifie: boolean };
+
+export type EquipeInfo = {
+  membres: Membre[];
+  /** Qui a la parole : « raoul » ou un membre de l'équipe. */
+  interlocuteur: string;
+  capacites: Capacites;
+};
+
+/** Une fiche du savoir de l'équipe. */
+export type Connaissance = {
+  id: string;
+  equipe: string;
+  projet: string;
+  sujet: string;
+  contenu: string;
+  /** « amorce » : savoir de départ ; « equipe » : appris en travaillant. */
+  origine: 'amorce' | 'equipe' | 'app';
+  auteur?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VerifURL = {
+  url: string;
+  statut?: number;
+  erreur?: string;
+  total_ms: number;
+  dns_ms?: number;
+  connexion_ms?: number;
+  tls_ms?: number;
+  premier_octet_ms?: number;
+  certificat_expire?: string;
+  certificat_jours?: number;
+};
+
+export type Conteneur = {
+  nom: string;
+  image: string;
+  etat: string;
+  statut: string;
+  sante?: string;
+  demarre_le?: string;
+  redemarrages?: number;
+  ports?: { ip?: string; hote?: number; prive: number; public?: boolean }[];
+  revision?: string;
+  version?: string;
+};
+
+export type Execution = {
+  nom: string;
+  statut: string;
+  conclusion?: string;
+  branche?: string;
+  sha: string;
+  date: string;
+  lien?: string;
+};
+
+export type EtatComposant = {
+  id: string;
+  nom: string;
+  type: 'back' | 'front' | 'app' | string;
+  env?: string;
+  etat: EtatNiveau;
+  http?: VerifURL;
+  conteneur?: Conteneur;
+  depot?: {
+    depot: string;
+    branche: string;
+    dernier_commit?: { sha: string; message: string; auteur?: string; date: string };
+    ci?: Execution[];
+    deploiement: 'a_jour' | 'en_retard' | 'inconnu';
+    explication?: string;
+    erreur?: string;
+  };
+};
+
+export type EtatNiveau = 'ok' | 'attention' | 'panne' | 'inconnu';
+
+export type EtatBase = {
+  id: string;
+  nom: string;
+  etat: 'ok' | 'erreur' | 'inconnu';
+  erreur?: string;
+  ping_ms?: number;
+  connexion_ms?: number;
+  version?: string;
+  donnees_mo?: number;
+  stockage_mo?: number;
+  nom_base?: string;
+};
+
+export type EtatProjet = {
+  id: string;
+  nom: string;
+  description?: string;
+  etat: EtatNiveau;
+  composants: EtatComposant[];
+  bases?: EtatBase[];
+};
+
+export type EtatVPS = {
+  nom: string;
+  hote: string;
+  os: string;
+  version: string;
+  fin_support?: string;
+  hors_support?: boolean;
+  noyau: string;
+  allume_depuis_s: number;
+  charge: number[];
+  processeurs: number;
+  memoire: { total_mo: number; disponible_mo: number };
+  disques: { point: string; total_go: number; libre_go: number; utilise_pct: number }[];
+  mises_a_jour: number;
+  mises_a_jour_securite: number;
+  redemarrage_requis?: boolean;
+  docker?: string;
+  conteneurs?: Conteneur[];
+};
+
+export type Alerte = { niveau: 'critique' | 'attention' | 'info'; texte: string; projet?: string };
+
+/** Le point d'ensemble sur ses projets perso. */
+export type EtatProjets = {
+  genere_le: string;
+  vps?: EtatVPS;
+  projets: EtatProjet[];
+  alertes: Alerte[];
+  capacites: Capacites;
+  erreurs?: string[];
 };
 
 let cachedToken: string | null = null;
@@ -620,7 +782,15 @@ async function errorMessage(res: Response): Promise<string> {
 // --- Endpoints ---------------------------------------------------------------
 
 export const api = {
-  me: () => request<{ email?: string; name?: string; timezone: string; voice?: VoiceInfo }>('/me'),
+  me: () =>
+    request<{
+      email?: string;
+      name?: string;
+      timezone: string;
+      voice?: VoiceInfo;
+      /** Absent sur un serveur d'avant l'espace perso. */
+      perso?: { projets: boolean; equipe: boolean };
+    }>('/me'),
 
   setName: (name: string) =>
     request<{ name: string }>('/me', { method: 'PATCH', body: JSON.stringify({ name }) }),
@@ -638,10 +808,11 @@ export const api = {
 
   connections: () => request<{ connections: Connection[] }>('/connections'),
 
-  connectGandi: (email: string, password: string, host?: string) =>
+  /** Une boîte mail IMAP, rangée côté pro (Gandi, défaut) ou côté perso. */
+  connectGandi: (email: string, password: string, host?: string, espace: Space = 'pro') =>
     request<Connection>('/connections/gandi', {
       method: 'PUT',
-      body: JSON.stringify({ email, password, host }),
+      body: JSON.stringify({ email, password, host, espace }),
     }),
 
   /** Démarre le flux OAuth : renvoie l'URL de consentement à ouvrir. */
@@ -685,8 +856,27 @@ export const api = {
 
   whatsAppStatus: () => request<WhatsAppStatus>('/connections/whatsapp/status'),
 
-  disconnect: (provider: Provider) =>
-    request<{ provider: string }>(`/connections/${provider}`, { method: 'DELETE' }),
+  disconnect: (provider: Provider, espace: Space = 'pro') =>
+    request<{ provider: string }>(`/connections/${provider}${espace === 'perso' ? '?espace=perso' : ''}`, { method: 'DELETE' }),
+
+  /** Le point d'ensemble sur ses projets perso. `refresh` refait les relevés. */
+  projets: (refresh = false) => request<EtatProjets>(`/perso/projets${refresh ? '?refresh=1' : ''}`),
+
+  /** L'équipe, et qui a la parole. */
+  equipe: () => request<EquipeInfo>('/equipe'),
+
+  /** Donne la parole à un membre ; « raoul » la lui rend. */
+  setInterlocuteur: (agent: string) =>
+    request<{ interlocuteur: string }>('/equipe/interlocuteur', { method: 'PUT', body: JSON.stringify({ agent }) }),
+
+  /** Une phrase de présentation dans la voix d'un membre. */
+  voixMembre: (id: string) => request<{ url: string; texte: string }>(`/equipe/${id}/voix`, { method: 'POST' }),
+
+  /** Ce que l'équipe sait de ses projets. */
+  connaissances: (projet?: string) =>
+    request<{ connaissances: Connaissance[] }>(`/equipe/connaissances${projet ? `?projet=${encodeURIComponent(projet)}` : ''}`),
+
+  oublierConnaissance: (id: string) => request<{ deleted: string }>(`/equipe/connaissances/${id}`, { method: 'DELETE' }),
 
   syncCalendar: (payload: {
     from: string;

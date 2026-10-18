@@ -25,6 +25,8 @@ type askResponse struct {
 	// SpeechURL : la réponse est déjà en cours de synthèse à cette adresse.
 	// L'app y va directement, sans repasser par POST /assistant/speech.
 	SpeechURL string `json:"speech_url,omitempty"`
+	// Agent : qui a répondu — vide pour Raoul.
+	Agent string `json:"agent,omitempty"`
 }
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
@@ -95,12 +97,11 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		now = time.Now()
 	}
 
-	history := s.history(r.Context(), user)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), conversationTimeout)
 	defer cancel()
+	extendWriteDeadline(w, conversationTimeout)
 
-	result, err := s.engine.Ask(ctx, s.toolbox(user), s.request(ctx, user, transcript, now, tz, history))
+	result, err := s.converse(ctx, user, transcript, now, tz, nil)
 	if err != nil {
 		httpx.Error(w, http.StatusBadGateway, "Raoul n'a pas pu répondre : "+err.Error())
 		return
@@ -111,6 +112,7 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		Transcript: transcript,
 		Reply:      result.Reply,
 		Actions:    result.Actions,
+		Agent:      result.Agent,
 	})
 
 	if result.Actions == nil {
@@ -126,18 +128,23 @@ func (s *Server) respondToPrompt(w http.ResponseWriter, r *http.Request, transcr
 		Reply:      result.Reply,
 		Actions:    result.Actions,
 		Steps:      result.Steps,
-		SpeechURL:  s.prepareSpeech(user.ID, result.Reply),
+		Agent:      result.Agent,
+		SpeechURL:  s.prepareSpeechAs(user.ID, result.Reply, s.voiceOf(result.Agent)),
 	})
+}
+
+// extendWriteDeadline repousse la limite d'écriture du serveur pour une
+// réponse qui peut durer : celle du serveur HTTP (deux minutes) couperait une
+// enquête de l'ingénieur en plein milieu.
+func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d + 30*time.Second))
 }
 
 // request assemble tout ce que le moteur doit savoir pour un tour. Partagé par
 // le chemin sans flux et le chemin en flux, qui ne diffèrent que par la façon
 // de rendre la réponse.
 func (s *Server) request(ctx context.Context, user *store.User, text string, now time.Time, tz string, history []assistant.Turn) assistant.Request {
-	name := user.Name
-	if name == "" {
-		name = s.cfg.DefaultUserName
-	}
+	name := s.userName(user)
 	// Son adresse vient de la connexion Gandi : c'est elle qui lui permet de se
 	// reconnaître parmi les destinataires d'un mail, et de signer une réponse.
 	var email string
@@ -155,20 +162,44 @@ func (s *Server) request(ctx context.Context, user *store.User, text string, now
 		Facts:     s.facts(ctx, user),
 		// L'identifiant Mongo du compte : stable, opaque, sans rien de secret.
 		CacheKey: "raoul:" + user.ID.Hex(),
+		Perso:    s.persoAccess(),
 	}
 }
 
-// history rend les derniers tours, du plus ancien au plus récent.
+// persoAccess : le point sur les projets, pour Raoul. Nil sans projets suivis.
+func (s *Server) persoAccess() assistant.PersoAccess {
+	if s.projets == nil {
+		return nil
+	}
+	return projectsBrief{s}
+}
+
+type projectsBrief struct{ s *Server }
+
+func (b projectsBrief) ProjectsBrief(ctx context.Context) (string, error) {
+	return b.s.projets.Brief(ctx)
+}
+
+// history rend les derniers tours, du plus ancien au plus récent, vus par
+// l'agent qui va répondre ("" pour Raoul).
 //
 // L'app garde la conversation ouverte après le premier « OK Raoul » : les tours
 // s'enchaînent sans réveil, et deux échanges de mémoire ne suffisaient plus à
 // suivre un fil. Ce qui déborde de cette fenêtre n'est pas perdu : l'outil
 // chercher_historique va le rechercher en base.
-func (s *Server) history(ctx context.Context, user *store.User) []assistant.Turn {
+//
+// Les réponses d'un autre agent sont signées de son nom : l'ingénieur à qui
+// Raoul vient de passer la parole doit savoir ce qui s'est dit juste avant,
+// sans croire que c'est lui qui l'a dit.
+func (s *Server) history(ctx context.Context, user *store.User, perspective string) []assistant.Turn {
 	var history []assistant.Turn
 	if past, err := s.store.RecentInteractions(ctx, user.ID, 14); err == nil {
 		for i := len(past) - 1; i >= 0; i-- {
-			history = append(history, assistant.Turn{User: past[i].Transcript, Assistant: past[i].Reply})
+			reply := past[i].Reply
+			if past[i].Agent != perspective && reply != "" {
+				reply = "[" + s.agentLabel(past[i].Agent) + "] " + reply
+			}
+			history = append(history, assistant.Turn{User: past[i].Transcript, Assistant: reply})
 		}
 	}
 	return history
@@ -180,14 +211,20 @@ func (s *Server) history(ctx context.Context, user *store.User) []assistant.Turn
 // « je n'ai rien trouvé sur WhatsApp » à quelqu'un qui n'a pas WhatsApp est
 // une réponse à une question que personne n'a posée.
 func (s *Server) sources(ctx context.Context, user *store.User) assistant.Sources {
-	connected := func(provider string) bool {
-		conn, err := s.store.Connection(ctx, user.ID, provider)
+	connected := func(provider, space string) bool {
+		conn, err := s.store.ConnectionIn(ctx, user.ID, provider, space)
 		return err == nil && conn.Status != "disconnected"
 	}
-	return assistant.Sources{
-		Mail:     connected(store.ProviderGandi),
-		Slack:    connected(store.ProviderSlack),
-		WhatsApp: connected(store.ProviderWhatsApp),
-		CSP:      s.cfg.TuleapEnabled() && connected(store.ProviderTuleap),
+	src := assistant.Sources{
+		Mail:      connected(store.ProviderGandi, store.SpacePro),
+		Slack:     connected(store.ProviderSlack, store.SpacePro),
+		WhatsApp:  connected(store.ProviderWhatsApp, store.SpacePro),
+		CSP:       s.cfg.TuleapEnabled() && connected(store.ProviderTuleap, store.SpacePro),
+		MailPerso: connected(store.ProviderGandi, store.SpacePerso),
+		Projets:   s.projets != nil,
 	}
+	if s.equipe != nil {
+		src.Equipe = s.equipe.ColleguesDeRaoul()
+	}
+	return src
 }

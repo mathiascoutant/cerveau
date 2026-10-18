@@ -72,6 +72,12 @@ var sourceWords = []string{
 	"reçu", "recu", "répondu", "repondu", "demandé", "demande", "écrit", "ecrit", "dit ", "a dit", "hier", "aujourd", "demain",
 	"semaine", "matin", "soir", "dernier", "dernière", "derniere", "qui a", "qu'est-ce que", "planning", "vol", "flight",
 	"note", "retiens", "rappelle", "souviens", "oublie", "emmène", "emmene", "itinéraire", "itineraire",
+	// L'espace perso et l'équipe : sans outils, Raoul ne peut ni donner l'état
+	// d'un projet ni passer la parole — « passe-moi Léo » au rapide, c'est une
+	// réponse inventée au lieu d'un collègue.
+	"passe-moi", "passe moi", "ingénieur", "ingenieur", "responsable", "équipe", "equipe", "projet",
+	"vps", "serveur", "visionshow", "vision show", "neurorun", "neuro run", "cerveau", "déploi", "deploi",
+	"github", "mongo", "base de données", "back", "front", "site", "appli", "perso", "pro ",
 }
 
 // deepMarkers : ce qui signale une analyse à plusieurs sources ou une

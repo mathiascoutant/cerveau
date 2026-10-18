@@ -66,7 +66,7 @@ export function Readout({ k, v, tone = 'muted' }: { k: string; v: string; tone?:
   return (
     <View style={styles.readout}>
       <Text style={[tokens.type.label, { color: tokens.colors.text3, textTransform: 'uppercase' }]}>{k}</Text>
-      <Text style={[tokens.type.mono, { color: TONES[tone] }]} numberOfLines={1}>
+      <Text style={[tokens.type.mono, styles.readoutValue, { color: TONES[tone] }]} numberOfLines={1}>
         {v}
       </Text>
     </View>
@@ -477,6 +477,8 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.4 },
 
   readout: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: tokens.space.md },
+  // Une valeur longue (un dépôt, une adresse) se coupe au lieu de déborder.
+  readoutValue: { flexShrink: 1, textAlign: 'right' },
 
   panel: {
     backgroundColor: tokens.colors.panel,

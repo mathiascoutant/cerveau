@@ -6,7 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Divider, Dot, Field, IconName, Notice, Panel, ScreenHeader, Section, T } from '../design/ui';
 import { navBarSpace } from '../design/NavBar';
 import { alpha, tokens } from '../design/tokens';
-import { api, ApiError, claimAccount, Connection, detectedApiUrl, getApiUrl, logout, Provider, setApiUrl, VoiceInfo, WhatsAppStatus } from '../api';
+import { api, ApiError, claimAccount, Connection, detectedApiUrl, getApiUrl, logout, Provider, setApiUrl, Space, VoiceInfo, WhatsAppStatus } from '../api';
+import { useEquipe } from '../lib/equipe';
 import { calendarSupported, hasCalendarAccess, requestCalendarAccess, syncCalendar } from '../lib/calendar';
 import { clearCache } from '../lib/cache';
 import { frenchVoices } from '../lib/speech';
@@ -18,10 +19,17 @@ import { loadDigest, loadUrgent } from './SuiviScreen';
  * Une carte par source, avec son état et de quoi la brancher ou la couper.
  * Tout ce qui est saisi ici part chiffré côté serveur et n'en ressort jamais
  * vers l'app : on affiche « connecté », jamais le secret.
+ *
+ * Les sources sont rangées par espace, comme le reste de l'app : le pro (la
+ * boîte Gandi, Slack, Tuleap, WhatsApp) d'un côté, le perso de l'autre. Une
+ * boîte mail perso se branche à côté de la pro sans la remplacer.
  */
 export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
   const insets = useSafeAreaInsets();
   const [connections, setConnections] = useState<Record<string, Connection>>({});
+  const [persoConnections, setPersoConnections] = useState<Record<string, Connection>>({});
+  const [perso, setPerso] = useState<{ projets: boolean; equipe: boolean } | null>(null);
+  const equipe = useEquipe();
   const [serverUrl, setServerUrl] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState<string | null>(null);
@@ -36,9 +44,14 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
   const refresh = useCallback(async () => {
     try {
       const res = await api.connections();
-      const map: Record<string, Connection> = {};
-      for (const c of res.connections) map[c.provider] = c;
-      setConnections(map);
+      const pro: Record<string, Connection> = {};
+      const persoMap: Record<string, Connection> = {};
+      for (const c of res.connections) {
+        if (c.space === 'perso') persoMap[c.provider] = c;
+        else pro[c.provider] = c;
+      }
+      setConnections(pro);
+      setPersoConnections(persoMap);
     } catch {
       // serveur injoignable : l'écran reste utilisable pour corriger l'URL
     }
@@ -62,6 +75,7 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
         setName(me.name ?? '');
         setEmail(me.email ?? '');
         if (me.voice) setVoice(me.voice);
+        setPerso(me.perso ?? { projets: false, equipe: false });
       })
       .catch(() => undefined);
     void frenchVoices()
@@ -85,7 +99,8 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
     [refresh],
   );
 
-  const disconnect = (provider: Provider) => run(`disconnect-${provider}`, async () => void (await api.disconnect(provider)));
+  const disconnect = (provider: Provider, space: Space = 'pro') =>
+    run(`disconnect-${provider}-${space}`, async () => void (await api.disconnect(provider, space)));
 
   return (
     <ScrollView style={styles.flex} contentContainerStyle={[styles.content, { paddingBottom: navBarSpace(insets.bottom) }]} keyboardShouldPersistTaps="handled">
@@ -123,8 +138,8 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Panel>
       </Section>
 
-      <Section title="Sources">
-        <Source icon="calendar" title="Agenda iOS" connected={calendarReady} hint="Tous les calendriers du téléphone. Raoul y écrit les créneaux qu’il valide.">
+      <Section title="Agenda · pro et perso">
+        <Source icon="calendar" title="Agenda iOS" connected={calendarReady} hint="Tous les calendriers du téléphone, pro comme perso. Raoul y écrit les créneaux qu’il valide.">
           {calendarUsable ? (
             <Button
               label={calendarReady ? 'Resynchroniser' : 'Autoriser l’accès'}
@@ -148,8 +163,16 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
             </Notice>
           )}
         </Source>
+      </Section>
 
-        <GandiSource connection={connections.gandi} busy={busy === 'gandi'} onConnect={(email, password) => run('gandi', async () => void (await api.connectGandi(email, password)))} onDisconnect={() => disconnect('gandi')} />
+      <Section title="Sources pro">
+        <MailSource
+          space="pro"
+          connection={connections.gandi}
+          busy={busy === 'gandi' || busy === 'disconnect-gandi-pro'}
+          onConnect={(email, password) => run('gandi', async () => void (await api.connectGandi(email, password, undefined, 'pro')))}
+          onDisconnect={() => disconnect('gandi', 'pro')}
+        />
 
         <SlackSource
           connection={connections.slack}
@@ -166,7 +189,18 @@ export function AccesScreen({ onLoggedOut }: { onLoggedOut: () => void }) {
 
         <TuleapSource connection={connections.tuleap} configured={tuleapConfigured} serverKey={tuleapServerKey} busy={busy === 'tuleap'} onConnect={(key) => run('tuleap', async () => void (await api.connectTuleap(key)))} onDisconnect={() => disconnect('tuleap')} />
 
-        <WhatsAppSource connection={connections.whatsapp} busy={busy === 'disconnect-whatsapp'} onPaired={() => void refresh()} onDisconnect={() => disconnect('whatsapp')} />
+        <WhatsAppSource connection={connections.whatsapp} busy={busy === 'disconnect-whatsapp-pro'} onPaired={() => void refresh()} onDisconnect={() => disconnect('whatsapp')} />
+      </Section>
+
+      <Section title="Sources perso">
+        <MailSource
+          space="perso"
+          connection={persoConnections.gandi}
+          busy={busy === 'gandi-perso' || busy === 'disconnect-gandi-perso'}
+          onConnect={(email, password, host) => run('gandi-perso', async () => void (await api.connectGandi(email, password, host, 'perso')))}
+          onDisconnect={() => disconnect('gandi', 'perso')}
+        />
+        <PersoServer perso={perso} capacites={equipe?.capacites ?? null} />
       </Section>
 
       <Section title="Voix de Raoul">
@@ -344,20 +378,97 @@ function Source({ icon, title, connected, label, hint, error, children }: { icon
   );
 }
 
-function GandiSource({ connection, busy, onConnect, onDisconnect }: { connection?: Connection; busy: boolean; onConnect: (email: string, password: string) => void; onDisconnect: () => void }) {
+/**
+ * Une boîte mail, pro ou perso. Les deux passent par IMAP ; la pro est chez
+ * Gandi, la perso n'importe où — le serveur IMAP se déduit de l'adresse pour
+ * les grandes messageries (iCloud, Gmail, Outlook…), et se saisit sinon.
+ */
+function MailSource({
+  space,
+  connection,
+  busy,
+  onConnect,
+  onDisconnect,
+}: {
+  space: Space;
+  connection?: Connection;
+  busy: boolean;
+  onConnect: (email: string, password: string, host?: string) => void;
+  onDisconnect: () => void;
+}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [host, setHost] = useState('');
   const connected = connection?.status === 'connected';
+  const pro = space === 'pro';
   return (
-    <Source icon="mail" title="Mails Gandi" connected={connected} label={connection?.label} error={connection?.last_error} hint="IMAP, avec un mot de passe d’application. Raoul lit reçus et envoyés, il n’envoie jamais rien.">
+    <Source
+      icon="mail"
+      title={pro ? 'Boîte mail pro · Gandi' : 'Boîte mail perso'}
+      connected={connected}
+      label={connection?.label}
+      error={connection?.last_error}
+      hint={
+        pro
+          ? 'IMAP, avec un mot de passe d’application. Raoul lit reçus et envoyés, il n’envoie jamais rien.'
+          : 'Ta boîte à toi, à côté de la pro et sans la remplacer : « mes mails perso » ne lira qu’elle. IMAP, avec un mot de passe d’application.'
+      }
+    >
       {connected ? (
         <Button label="Déconnecter" variant="danger" icon="log-out" loading={busy} onPress={onDisconnect} />
       ) : (
         <>
-          <Field label="Adresse" placeholder="moi@mondomaine.fr" value={email} onChangeText={setEmail} keyboardType="email-address" textContentType="emailAddress" />
-          <Field label="Mot de passe d’application" placeholder="••••••••" value={password} onChangeText={setPassword} secureTextEntry textContentType="password" hint="Gandi Admin › ta boîte mail › Mots de passe d’application." />
-          <Button label="Connecter" icon="link" loading={busy} disabled={!email.trim() || !password} onPress={() => onConnect(email.trim(), password)} />
+          <Field label="Adresse" placeholder={pro ? 'moi@mondomaine.fr' : 'moi@icloud.com'} value={email} onChangeText={setEmail} keyboardType="email-address" textContentType="emailAddress" />
+          <Field
+            label="Mot de passe d’application"
+            placeholder="••••••••"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            textContentType="password"
+            hint={pro ? 'Gandi Admin › ta boîte mail › Mots de passe d’application.' : 'iCloud : appleid.apple.com › Mots de passe pour app. Gmail : compte Google › Sécurité › Mots de passe des applications.'}
+          />
+          {pro ? null : (
+            <Field label="Serveur IMAP (facultatif)" placeholder="déduit de l’adresse" value={host} onChangeText={setHost} keyboardType="url" hint="Vide : iCloud, Gmail, Outlook, Yahoo, Orange, Free et La Poste sont reconnus d’après l’adresse. Sinon : imap.exemple.fr:993." />
+          )}
+          <Button label="Connecter" icon="link" loading={busy} disabled={!email.trim() || !password} onPress={() => onConnect(email.trim(), password, host.trim() || undefined)} />
         </>
+      )}
+    </Source>
+  );
+}
+
+/**
+ * Ce que le serveur suit côté perso. Rien à saisir ici : le registre des
+ * projets, la sonde du VPS et les jetons GitHub se règlent sur le serveur, et
+ * l'app dit seulement ce qui est en place.
+ */
+function PersoServer({ perso, capacites }: { perso: { projets: boolean; equipe: boolean } | null; capacites: { sonde: boolean; github: boolean; github_authentifie: boolean } | null }) {
+  const on = Boolean(perso?.projets);
+  const line = (ok: boolean, label: string, detail: string) => (
+    <View style={styles.voiceRow}>
+      <Feather name={ok ? 'check-circle' : 'circle'} size={13} color={ok ? tokens.colors.perso : tokens.colors.text3} />
+      <T v="mono" tone={ok ? 'default' : 'faint'} style={styles.flex}>
+        {label} · {detail}
+      </T>
+    </View>
+  );
+  return (
+    <Source icon="server" title="Projets et VPS" connected={on} label={on ? 'suivis par le serveur' : undefined} hint="Tes projets perso, le VPS qui les héberge et l’équipe technique qui les suit. Tout se règle sur le serveur : rien ne transite par l’app.">
+      {perso === null ? (
+        <T v="small" tone="faint">
+          Lecture…
+        </T>
+      ) : on ? (
+        <>
+          {line(true, 'registre des projets', 'en place')}
+          {line(Boolean(capacites?.sonde), 'sonde du VPS', capacites?.sonde ? 'système, conteneurs, journaux, bases' : 'non configurée (SONDE_SSH)')}
+          {line(Boolean(capacites?.github_authentifie), 'GitHub', capacites?.github_authentifie ? 'jeton posé : dépôts privés et recherche dans le code' : 'dépôts publics seulement (GITHUB_TOKEN)')}
+        </>
+      ) : (
+        <T v="small" tone="muted">
+          Aucun registre de projets sur le serveur (PROJETS_REGISTRE).
+        </T>
       )}
     </Source>
   );

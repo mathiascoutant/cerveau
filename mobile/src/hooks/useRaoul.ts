@@ -4,6 +4,7 @@ import { speak, speakOnDevice, stopSpeaking } from '../lib/speech';
 
 import { AssistantAction, AssistantMetrics } from '../api';
 import { applyActions } from '../lib/calendar';
+import { currentInterlocuteur, noteInterlocuteur } from '../lib/equipe';
 import { AbortedError, askStream } from '../lib/stream';
 import { cleanCommand, findFarewell, findWake } from '../lib/wakeword';
 import {
@@ -35,6 +36,8 @@ export type ToolStep = {
 export type ChatItem = {
   id: string;
   role: 'user' | 'raoul';
+  /** Qui répond : absent ou « raoul » pour Raoul, sinon un membre de l'équipe. */
+  agent?: string;
   text: string;
   steps?: ToolStep[];
   effects?: string[];
@@ -70,8 +73,9 @@ const RECOGNITION_OPTIONS: RecognitionOptions = {
   continuous: true,
   requiresOnDeviceRecognition: true,
   addsPunctuation: false,
-  // « Raoul » n'est pas dans le lexique courant : on aide le moteur.
-  contextualStrings: ['Raoul', 'OK Raoul', 'Slack', 'WhatsApp', 'Gandi'],
+  // « Raoul » n'est pas dans le lexique courant : on aide le moteur. Les noms
+  // de l'équipe et des projets non plus.
+  contextualStrings: ['Raoul', 'OK Raoul', 'Slack', 'WhatsApp', 'Gandi', 'Léo', 'Claire', 'ingénieur', 'VisionShow', 'Neurorun', 'Cerveau', 'VPS'],
   iosCategory: {
     category: 'playAndRecord',
     categoryOptions: ['defaultToSpeaker', 'allowBluetooth', 'duckOthers'],
@@ -232,7 +236,7 @@ export function useRaoul() {
       setThread((prev) => [
         ...prev,
         { id: userId, role: 'user', text: question, at: new Date() },
-        { id: raoulId, role: 'raoul', text: '', steps: [], streaming: true, at: new Date() },
+        { id: raoulId, role: 'raoul', agent: currentInterlocuteur(), text: '', steps: [], streaming: true, at: new Date() },
       ]);
       const patch = (edit: (item: ChatItem) => ChatItem) =>
         setThread((prev) => prev.map((item) => (item.id === raoulId ? edit(item) : item)));
@@ -269,13 +273,23 @@ export function useRaoul() {
                 reply = '';
                 patch((item) => ({ ...item, text: '' }));
                 break;
-              case 'done':
+              case 'interlocuteur':
+                // La parole passe : la suite de cette réponse est celle de
+                // l'autre, et la conversation continue avec lui.
+                reply = '';
+                noteInterlocuteur(ev.agent);
+                patch((item) => ({ ...item, agent: ev.agent, text: '', steps: [] }));
+                break;
+              case 'done': {
                 reply = ev.result.reply || reply;
                 actions = ev.result.actions ?? [];
                 metrics = ev.metrics ?? ev.result.metrics;
                 speechUrl = ev.speech_url;
-                patch((item) => ({ ...item, text: reply, metrics, streaming: false }));
+                const agent = ev.result.agent || 'raoul';
+                noteInterlocuteur(agent);
+                patch((item) => ({ ...item, agent, text: reply, metrics, streaming: false }));
                 break;
+              }
               case 'error':
                 throw new Error(ev.message);
               default:

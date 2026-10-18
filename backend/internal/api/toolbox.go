@@ -22,13 +22,38 @@ import (
 )
 
 // userToolbox donne à l'assistant l'accès aux données d'UN utilisateur.
+//
+// space dit de quelle boîte mail il s'agit. Tout le reste — Slack, WhatsApp,
+// Tuleap, l'agenda, la liste à faire — ne dépend pas de l'espace : ces
+// sources n'existent qu'en un exemplaire. La boîte mail est la seule qu'on
+// peut brancher deux fois, une pro et une perso.
 type userToolbox struct {
-	srv  *Server
-	user *store.User
+	srv   *Server
+	user  *store.User
+	space string
 }
 
+// toolbox rend la boîte à outils pro, celle de toujours.
 func (s *Server) toolbox(user *store.User) *userToolbox {
-	return &userToolbox{srv: s, user: user}
+	return &userToolbox{srv: s, user: user, space: store.SpacePro}
+}
+
+// InSpace rend la même boîte à outils, lisant la boîte mail de l'autre espace.
+// L'assistant s'en sert quand le modèle demande explicitement « perso ».
+func (t *userToolbox) InSpace(space string) assistant.Toolbox {
+	return &userToolbox{srv: t.srv, user: t.user, space: store.NormalizeSpace(space)}
+}
+
+func (t *userToolbox) mailCreds(ctx context.Context) (gandi.Credentials, error) {
+	return t.srv.gandiCredsIn(ctx, t.user, t.space)
+}
+
+func (t *userToolbox) mailMissing() error {
+	return fmt.Errorf("la boîte mail %s n'est pas connectée", t.space)
+}
+
+func (t *userToolbox) markMailError(ctx context.Context, err error) {
+	t.srv.store.MarkConnectionErrorIn(ctx, t.user.ID, store.ProviderGandi, t.space, err.Error())
 }
 
 func (t *userToolbox) CalendarEvents(ctx context.Context, start, end time.Time) ([]assistant.EventView, error) {
@@ -57,16 +82,16 @@ func (t *userToolbox) CalendarEvents(ctx context.Context, start, end time.Time) 
 // la version complète : « suis-je le destinataire ? » ne se répond pas sur un
 // résumé où le champ « À » a déjà été jeté.
 func (t *userToolbox) unreadMail(ctx context.Context, limit int) ([]gandi.Message, string, error) {
-	creds, err := t.srv.gandiCreds(ctx, t.user)
+	creds, err := t.mailCreds(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, "", errors.New("la boîte mail Gandi n'est pas connectée")
+			return nil, "", t.mailMissing()
 		}
 		return nil, "", err
 	}
 	mails, err := gandi.Unread(ctx, creds, limit)
 	if err != nil {
-		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderGandi, err.Error())
+		t.markMailError(ctx, err)
 		return nil, "", err
 	}
 	return mails, creds.Email, nil
@@ -97,10 +122,10 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 // descendre un corps coûte un aller-retour IMAP de plus, et la plupart des
 // questions n'en ont pas besoin.
 func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bool) (assistant.EmailContentView, error) {
-	creds, err := t.srv.gandiCreds(ctx, t.user)
+	creds, err := t.mailCreds(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return assistant.EmailContentView{}, errors.New("la boîte mail Gandi n'est pas connectée")
+			return assistant.EmailContentView{}, t.mailMissing()
 		}
 		return assistant.EmailContentView{}, err
 	}

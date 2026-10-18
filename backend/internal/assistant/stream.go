@@ -34,7 +34,8 @@ import (
 type Event struct {
 	// Type : « status » (un outil démarre ou finit), « delta » (du texte),
 	// « reset » (le texte émis jusqu'ici n'était pas la réponse : le modèle a
-	// enchaîné sur des outils), « done ».
+	// enchaîné sur des outils), « interlocuteur » (la parole passe à un
+	// autre agent), « done ».
 	Type string `json:"type"`
 	// Pour status : l'outil, son libellé lisible, et sa durée quand il finit.
 	Tool  string `json:"tool,omitempty"`
@@ -46,6 +47,9 @@ type Event struct {
 	// Pour done.
 	Result  *Result  `json:"result,omitempty"`
 	Metrics *Metrics `json:"metrics,omitempty"`
+	// Pour interlocuteur : qui prend la parole (« raoul » pour revenir à
+	// lui). Émis par le serveur entre deux agents, jamais par la boucle.
+	Agent string `json:"agent,omitempty"`
 }
 
 // Emitter reçoit les événements. Appelé depuis la goroutine du moteur, jamais
@@ -54,6 +58,8 @@ type Emitter func(Event)
 
 // Metrics : ce que la réponse a coûté.
 type Metrics struct {
+	// Agent : qui a répondu — vide pour Raoul.
+	Agent  string `json:"agent,omitempty"`
 	Tier   string `json:"tier"`
 	Model  string `json:"model"`
 	Reason string `json:"reason,omitempty"`
@@ -122,6 +128,8 @@ var toolLabels = map[string]string{
 	"reprogrammer_tache":         "Liste à faire",
 	"supprimer_tache":            "Liste à faire",
 	"lancer_navigation":          "Navigation",
+	"etat_projets":               "Projets perso",
+	"passer_la_parole":           "Passage de parole",
 }
 
 func labelOf(tool string) string {
@@ -131,12 +139,45 @@ func labelOf(tool string) string {
 	return tool
 }
 
+// Spec décrit un agent le temps d'un tour : qui il est (sa consigne), ce qu'il
+// sait faire (ses outils et la façon de les exécuter), et sur quel modèle.
+//
+// Raoul et les membres de l'équipe tournent dans la même boucle — modèle,
+// outils, modèle — et ne diffèrent que par là. Une seule boucle, c'est un seul
+// endroit où se règlent le flux, les mesures, les délais et l'interruption :
+// deux boucles finiraient par diverger sur exactement ces détails-là.
+type Spec struct {
+	// Agent : qui répond. Vide pour Raoul, qui est l'interlocuteur par défaut.
+	Agent        string
+	Route        Route
+	Instructions string
+	Tools        []responses.ToolUnionParam
+	Exec         ToolExec
+	// Label : le libellé affiché pendant qu'un outil travaille. Défaut : ceux
+	// de Raoul.
+	Label func(tool string) string
+	// MaxIterations : tours d'outils avant d'abandonner. Défaut : maxIterations.
+	MaxIterations int
+	// ToolTimeout : délai propre à un outil. Défaut : toolTimeout pour tous.
+	ToolTimeout func(tool string) time.Duration
+	CacheKey    string
+}
+
+// ToolExec exécute un appel d'outil. Une erreur portant instruction() n'est
+// pas une panne : c'est une question à poser (voir AmbiguousError).
+type ToolExec func(ctx context.Context, name, args string) (ToolOutput, error)
+
+// ToolOutput est ce qu'un outil rend à la boucle.
+type ToolOutput struct {
+	Payload string
+	Action  *store.Action
+	// Handoff : l'outil passe la parole à cet interlocuteur. Le tour s'arrête
+	// là, sans réponse de l'agent courant : c'est le suivant qui parlera.
+	Handoff string
+}
+
 // AskStream répond à une demande en émettant ses étapes au fur et à mesure.
 func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Emitter) (Result, error) {
-	if emit == nil {
-		emit = func(Event) {}
-	}
-	started := time.Now()
 	loc := time.UTC
 	if req.Timezone != "" {
 		if l, err := time.LoadLocation(req.Timezone); err == nil {
@@ -155,7 +196,56 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 		previous = &history[len(history)-1]
 	}
 	route := e.models().Decide(req.Text, previous)
-	metrics := &Metrics{Tier: string(route.Tier), Model: string(route.Model), Reason: route.Reason}
+
+	spec := Spec{
+		Route:    route,
+		CacheKey: req.CacheKey,
+		Exec: func(ctx context.Context, name, args string) (ToolOutput, error) {
+			return e.raoulTool(ctx, tb, req, now, loc, name, args)
+		},
+	}
+	if route.Tier == TierFast {
+		spec.Instructions = fastPrompt(now, loc.String(), req.UserName)
+	} else {
+		spec.Instructions = systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts)
+		spec.Tools = toolDefinitions(req.Sources)
+	}
+	return e.Run(ctx, spec, history, req.Text, emit)
+}
+
+// raoulTool aiguille un appel d'outil de Raoul. Le débrief et le passage de
+// parole ont leur propre chemin ; tout le reste passe par runTool, avec la
+// boîte mail de l'espace demandé.
+func (e *Engine) raoulTool(ctx context.Context, tb Toolbox, req Request, now time.Time, loc *time.Location, name, args string) (ToolOutput, error) {
+	switch name {
+	case "debriefer":
+		payload, err := e.debrief(ctx, mailToolbox(tb, req.Sources, name, args), req, now, loc, args)
+		return ToolOutput{Payload: payload}, err
+	case "passer_la_parole":
+		return handoff(req.Sources.Equipe, args)
+	case "etat_projets":
+		if req.Perso == nil {
+			return ToolOutput{}, errors.New("aucun projet perso n'est suivi sur ce serveur")
+		}
+		brief, err := req.Perso.ProjectsBrief(ctx)
+		return ToolOutput{Payload: brief}, err
+	}
+	payload, action, err := e.runTool(ctx, mailToolbox(tb, req.Sources, name, args), loc, name, args)
+	return ToolOutput{Payload: payload, Action: action}, err
+}
+
+// Run fait tourner un agent sur une demande, en émettant ses étapes. C'est la
+// boucle de Raoul comme celle de l'équipe : AskStream lui prépare la consigne
+// et les outils de Raoul, l'équipe les siens.
+func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string, emit Emitter) (Result, error) {
+	if emit == nil {
+		emit = func(Event) {}
+	}
+	started := time.Now()
+	history = trimHistory(history)
+	metrics := &Metrics{
+		Agent: spec.Agent, Tier: string(spec.Route.Tier), Model: string(spec.Route.Model), Reason: spec.Route.Reason,
+	}
 
 	items := make([]responses.ResponseInputItemUnionParam, 0, len(history)*2+2)
 	for _, t := range history {
@@ -167,32 +257,34 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 			items = append(items, responses.ResponseInputItemParamOfMessage(t.Assistant, responses.EasyInputMessageRoleAssistant))
 		}
 	}
-	items = append(items, responses.ResponseInputItemParamOfMessage(req.Text, responses.EasyInputMessageRoleUser))
+	items = append(items, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleUser))
 
 	params := responses.ResponseNewParams{
-		Model: route.Model,
+		Model:        spec.Route.Model,
+		Instructions: openai.String(spec.Instructions),
 		// Rien ne doit être conservé côté OpenAI : les objets de mails, les
 		// extraits Slack et l'agenda ne sortent que le temps de la requête.
 		Store: openai.Bool(false),
 	}
-	if route.Effort != "" {
-		params.Reasoning = shared.ReasoningParam{Effort: route.Effort}
+	if spec.Route.Effort != "" {
+		params.Reasoning = shared.ReasoningParam{Effort: spec.Route.Effort}
 	}
-	if req.CacheKey != "" {
+	if spec.CacheKey != "" {
 		// Une même clé par utilisateur : les requêtes d'un même compte
 		// partagent le même préfixe (consigne + outils), et l'API le garde en
 		// cache si elles arrivent sur la même machine.
-		params.PromptCacheKey = openai.String(req.CacheKey)
+		params.PromptCacheKey = openai.String(spec.CacheKey)
 	}
-	if route.Tier == TierFast {
-		params.Instructions = openai.String(fastPrompt(now, loc.String(), req.UserName))
-	} else {
-		params.Instructions = openai.String(systemPrompt(now, loc.String(), req.UserName, req.UserEmail, req.Sources, req.Facts))
-		params.Tools = toolDefinitions(req.Sources)
+	if len(spec.Tools) > 0 {
+		params.Tools = spec.Tools
+	}
+	limit := spec.MaxIterations
+	if limit <= 0 {
+		limit = maxIterations
 	}
 
+	result := Result{Agent: spec.Agent}
 	var (
-		result    Result
 		firstAny  time.Time
 		firstText time.Time
 	)
@@ -202,7 +294,7 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 		}
 	}
 
-	for iteration := 0; iteration < maxIterations; iteration++ {
+	for iteration := 0; iteration < limit; iteration++ {
 		params.Input = responses.ResponseNewParamsInputUnion{OfInputItemList: items}
 		metrics.ModelCalls++
 
@@ -272,10 +364,13 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 			firstText = time.Time{}
 		}
 
-		outputs := e.runCalls(ctx, tb, req, now, loc, calls, emit, markEvent, metrics)
+		outputs := e.runCalls(ctx, spec, calls, emit, markEvent, metrics)
 		for i, call := range calls {
 			if outputs[i].action != nil {
 				result.Actions = append(result.Actions, *outputs[i].action)
+			}
+			if outputs[i].handoff != "" {
+				result.Handoff = outputs[i].handoff
 			}
 			result.Steps = append(result.Steps, call.Name)
 			// L'appel doit être rejoué dans l'entrée avant son résultat, sinon
@@ -285,11 +380,15 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 				responses.ResponseInputItemParamOfFunctionCallOutput(call.CallID, outputs[i].payload),
 			)
 		}
+		// La parole passe : l'agent courant ne conclut pas, c'est le suivant
+		// qui répondra à la même demande. Ce qu'il aurait dit par-dessus
+		// (« je te le passe ») ferait parler deux voix pour une seule réponse.
+		if result.Handoff != "" {
+			result.Reply = ""
+			break
+		}
 	}
 
-	if result.Reply == "" {
-		result.Reply = "Je n'ai pas réussi à conclure, désolé. Tu peux reformuler ?"
-	}
 	if result.Actions == nil {
 		result.Actions = []store.Action{}
 	}
@@ -302,12 +401,25 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 	} else {
 		metrics.FirstTokenMs = metrics.TotalMs
 	}
+	agent := spec.Agent
+	if agent == "" {
+		agent = "raoul"
+	}
 	slog.Info("raoul",
-		"tier", metrics.Tier, "model", metrics.Model, "reason", metrics.Reason,
+		"agent", agent, "tier", metrics.Tier, "model", metrics.Model, "reason", metrics.Reason,
 		"calls", metrics.ModelCalls, "in", metrics.InputTokens, "cached", metrics.CachedTokens,
 		"out", metrics.OutputTokens, "ttft_ms", metrics.FirstTokenMs, "total_ms", metrics.TotalMs,
-		"tools", len(metrics.Tools))
+		"tools", len(metrics.Tools), "handoff", result.Handoff)
 	result.Metrics = metrics
+	if result.Handoff != "" {
+		// Pas de « done » : la demande n'est pas finie, elle change de main.
+		// C'est l'appelant qui annonce le nouvel interlocuteur et le fait
+		// répondre — son « done » à lui fermera le tour.
+		return result, nil
+	}
+	if result.Reply == "" {
+		result.Reply = "Je n'ai pas réussi à conclure, désolé. Tu peux reformuler ?"
+	}
 	emit(Event{Type: "done", Result: &result, Metrics: metrics})
 	return result, nil
 }
@@ -315,16 +427,21 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 type callOutput struct {
 	payload string
 	action  *store.Action
+	handoff string
 }
 
 // runCalls exécute les appels d'un même tour. Plusieurs appels sont
 // indépendants par construction — le modèle les a émis ensemble — donc ils
 // courent en parallèle : chercher un mail et lire un canal ne s'attendent pas.
-func (e *Engine) runCalls(ctx context.Context, tb Toolbox, req Request, now time.Time, loc *time.Location,
-	calls []responses.ResponseFunctionToolCall, emit Emitter, markEvent func(), metrics *Metrics) []callOutput {
+func (e *Engine) runCalls(ctx context.Context, spec Spec, calls []responses.ResponseFunctionToolCall,
+	emit Emitter, markEvent func(), metrics *Metrics) []callOutput {
 
 	outputs := make([]callOutput, len(calls))
 	timings := make([]ToolTiming, len(calls))
+	label := spec.Label
+	if label == nil {
+		label = labelOf
+	}
 
 	var emitMu sync.Mutex
 	safeEmit := func(ev Event) {
@@ -336,21 +453,19 @@ func (e *Engine) runCalls(ctx context.Context, tb Toolbox, req Request, now time
 
 	run := func(i int, call responses.ResponseFunctionToolCall) {
 		started := time.Now()
-		safeEmit(Event{Type: "status", Tool: call.Name, Label: labelOf(call.Name)})
+		safeEmit(Event{Type: "status", Tool: call.Name, Label: label(call.Name)})
 
-		tctx, cancel := context.WithTimeout(ctx, toolTimeout)
+		timeout := toolTimeout
+		if spec.ToolTimeout != nil {
+			if d := spec.ToolTimeout(call.Name); d > 0 {
+				timeout = d
+			}
+		}
+		tctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		var (
-			payload string
-			action  *store.Action
-			err     error
-		)
-		if call.Name == "debriefer" {
-			payload, err = e.debrief(tctx, tb, req, now, loc, call.Arguments)
-		} else {
-			payload, action, err = e.runTool(tctx, tb, loc, call.Name, call.Arguments)
-		}
+		out, err := spec.Exec(tctx, call.Name, call.Arguments)
+		payload := out.Payload
 		failed := false
 		if err != nil {
 			// Ce n'est pas toujours une panne : certains outils font leur
@@ -361,7 +476,7 @@ func (e *Engine) runCalls(ctx context.Context, tb Toolbox, req Request, now time
 				payload = ask.instruction()
 			} else {
 				failed = true
-				slog.Warn("outil en échec", "outil", call.Name, "err", err)
+				slog.Warn("outil en échec", "agent", spec.Agent, "outil", call.Name, "err", err)
 				if errors.Is(err, context.DeadlineExceeded) {
 					payload = "Erreur : la source n'a pas répondu à temps. Dis-le en une clause, n'invente pas ce qu'elle aurait rendu."
 				} else {
@@ -370,9 +485,14 @@ func (e *Engine) runCalls(ctx context.Context, tb Toolbox, req Request, now time
 			}
 		}
 		ms := time.Since(started).Milliseconds()
-		outputs[i] = callOutput{payload: payload, action: action}
+		if ms < 1 {
+			// La fin d'un outil se reconnaît à sa durée : un outil instantané
+			// (un passage de parole) passerait sinon pour un outil qui démarre.
+			ms = 1
+		}
+		outputs[i] = callOutput{payload: payload, action: out.Action, handoff: out.Handoff}
 		timings[i] = ToolTiming{Name: call.Name, Ms: ms, Err: failed}
-		ev := Event{Type: "status", Tool: call.Name, Label: labelOf(call.Name), Ms: ms}
+		ev := Event{Type: "status", Tool: call.Name, Label: label(call.Name), Ms: ms}
 		if failed {
 			ev.Err = err.Error()
 		}

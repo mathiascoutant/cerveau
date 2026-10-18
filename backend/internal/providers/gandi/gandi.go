@@ -17,6 +17,41 @@ import (
 
 const DefaultHost = "mail.gandi.net:993"
 
+// knownHosts : les serveurs IMAP des grandes messageries personnelles. Une
+// boîte perso n'est presque jamais chez Gandi, et faire chercher à quelqu'un
+// l'adresse IMAP d'iCloud pour brancher sa boîte est un pas de trop quand le
+// domaine de l'adresse la donne déjà.
+var knownHosts = map[string]string{
+	"icloud.com":  "imap.mail.me.com:993",
+	"me.com":      "imap.mail.me.com:993",
+	"mac.com":     "imap.mail.me.com:993",
+	"gmail.com":   "imap.gmail.com:993",
+	"outlook.com": "outlook.office365.com:993",
+	"hotmail.com": "outlook.office365.com:993",
+	"hotmail.fr":  "outlook.office365.com:993",
+	"live.com":    "outlook.office365.com:993",
+	"live.fr":     "outlook.office365.com:993",
+	"yahoo.com":   "imap.mail.yahoo.com:993",
+	"yahoo.fr":    "imap.mail.yahoo.com:993",
+	"orange.fr":   "imap.orange.fr:993",
+	"free.fr":     "imap.free.fr:993",
+	"laposte.net": "imap.laposte.net:993",
+}
+
+// GuessHost rend le serveur IMAP probable d'une adresse : celui de sa
+// messagerie quand le domaine est connu, Gandi sinon — c'est l'hébergeur des
+// domaines à soi, le cas de la boîte pro.
+func GuessHost(email string) string {
+	at := strings.LastIndex(email, "@")
+	if at < 0 {
+		return DefaultHost
+	}
+	if host, ok := knownHosts[strings.ToLower(strings.TrimSpace(email[at+1:]))]; ok {
+		return host
+	}
+	return DefaultHost
+}
+
 type Credentials struct {
 	Email    string
 	Password string

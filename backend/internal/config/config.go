@@ -88,6 +88,34 @@ type Config struct {
 	// Prénom utilisé quand l'utilisateur n'en a pas encore enregistré depuis
 	// l'app. Pratique pour un déploiement mono-utilisateur.
 	DefaultUserName string
+
+	// --- L'espace perso : ses projets et l'équipe qui les suit ---------------
+
+	// ProjetsRegistre : le registre de ses projets (projets.json), hors du
+	// dépôt. Vide : aucun projet suivi, ni écran Projets ni équipe technique.
+	ProjetsRegistre string
+	// La sonde du VPS, interrogée en SSH. SondeSSH vide : pas de sonde, donc
+	// ni journaux, ni bases, ni état de la machine.
+	SondeSSH        string
+	SondeCle        string
+	SondeCleHote    string
+	SondeKnownHosts string
+	SondeCommande   string
+	// GitHub : un jeton par défaut, et un jeton par propriétaire
+	// (GITHUB_TOKEN_VISIONSHOWDEV…) — un jeton fin ne vaut que pour un
+	// propriétaire.
+	GitHubToken  string
+	GitHubTokens map[string]string
+	// EquipeAmorce : le dossier des fiches de départ de l'équipe.
+	EquipeAmorce string
+	// Les voix de l'équipe. Vides : celles par défaut (equipe/membres.go).
+	VoixIngenieur   string
+	VoixResponsable string
+	// Le modèle de l'équipe et le raisonnement de chacun. Vides : le modèle
+	// fort, en medium pour l'ingénieur et low pour la responsable.
+	EquipeModele      string
+	EffortIngenieur   string
+	EffortResponsable string
 }
 
 func Load() (Config, error) {
@@ -127,6 +155,20 @@ func Load() (Config, error) {
 		DefaultTimezone:       env("DEFAULT_TIMEZONE", "Europe/Paris"),
 		DefaultUserName:       env("DEFAULT_USER_NAME", ""),
 		AllowSignup:           env("ALLOW_SIGNUP", "") == "true",
+		ProjetsRegistre:       env("PROJETS_REGISTRE", ""),
+		SondeSSH:              env("SONDE_SSH", ""),
+		SondeCle:              env("SONDE_CLE", ""),
+		SondeCleHote:          env("SONDE_CLE_HOTE", ""),
+		SondeKnownHosts:       env("SONDE_KNOWN_HOSTS", ""),
+		SondeCommande:         env("SONDE_COMMANDE", ""),
+		GitHubToken:           env("GITHUB_TOKEN", ""),
+		GitHubTokens:          envPrefixed("GITHUB_TOKEN_"),
+		EquipeAmorce:          env("EQUIPE_AMORCE", ""),
+		VoixIngenieur:         env("ELEVENLABS_VOICE_INGENIEUR", ""),
+		VoixResponsable:       env("ELEVENLABS_VOICE_RESPONSABLE", ""),
+		EquipeModele:          env("OPENAI_EQUIPE_MODEL", ""),
+		EffortIngenieur:       env("OPENAI_INGENIEUR_EFFORT", ""),
+		EffortResponsable:     env("OPENAI_RESPONSABLE_EFFORT", ""),
 	}
 
 	var missing []string
@@ -166,6 +208,22 @@ func (c Config) TuleapEnabled() bool {
 // avec elle au lieu de la sélection « cycles CSP » de PXFeed.
 func (c Config) TuleapGenericQuery() bool {
 	return c.TuleapCSPQuery != "" || c.TuleapCSPExpertQuery != ""
+}
+
+// envPrefixed rend les variables qui commencent par prefix, indexées par ce
+// qui suit : GITHUB_TOKEN_VISIONSHOWDEV donne « VISIONSHOWDEV ».
+func envPrefixed(prefix string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range os.Environ() {
+		key, value, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(key, prefix) || value == "" {
+			continue
+		}
+		if owner := strings.TrimPrefix(key, prefix); owner != "" {
+			out[owner] = value
+		}
+	}
+	return out
 }
 
 func envList(key string) []string {

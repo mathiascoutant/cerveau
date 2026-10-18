@@ -21,7 +21,7 @@ func TestSpeechTicketReusableUntilExpiry(t *testing.T) {
 	tickets := newSpeechTickets()
 	user := bson.NewObjectID()
 
-	id, err := tickets.issue(user, "Trois mails, dont deux qui comptent.")
+	id, err := tickets.issue(user, "Trois mails, dont deux qui comptent.", "")
 	if err != nil {
 		t.Fatalf("issue : %v", err)
 	}
@@ -43,7 +43,7 @@ func TestSpeechTicketReusableUntilExpiry(t *testing.T) {
 // ensuite ne doivent relancer — ni refacturer — aucune synthèse.
 func TestSpeechTicketSynthesizesOnce(t *testing.T) {
 	tickets := newSpeechTickets()
-	id, err := tickets.issue(bson.NewObjectID(), "bonjour")
+	id, err := tickets.issue(bson.NewObjectID(), "bonjour", "")
 	if err != nil {
 		t.Fatalf("issue : %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSpeechTicketSynthesizesOnce(t *testing.T) {
 // elle : c'est ce qui obligeait la requête suivante à tout recommencer.
 func TestSpeechSynthesisSurvivesClientCancel(t *testing.T) {
 	tickets := newSpeechTickets()
-	id, err := tickets.issue(bson.NewObjectID(), "bonjour")
+	id, err := tickets.issue(bson.NewObjectID(), "bonjour", "")
 	if err != nil {
 		t.Fatalf("issue : %v", err)
 	}
@@ -119,7 +119,7 @@ func (c *countingSynth) Speak(ctx context.Context, text string) (io.ReadCloser, 
 
 func TestSpeechTicketExpires(t *testing.T) {
 	tickets := newSpeechTickets()
-	id, err := tickets.issue(bson.NewObjectID(), "bonjour")
+	id, err := tickets.issue(bson.NewObjectID(), "bonjour", "")
 	if err != nil {
 		t.Fatalf("issue : %v", err)
 	}

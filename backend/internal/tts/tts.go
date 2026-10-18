@@ -105,8 +105,17 @@ func (c *Client) forcesLanguage() bool {
 // peut les réémettre tels quels vers le téléphone, qui commence à jouer
 // pendant que la suite se fabrique.
 func (c *Client) Speak(ctx context.Context, text string) (io.ReadCloser, error) {
+	return c.SpeakWith(ctx, "", text)
+}
+
+// SpeakWith fait parler une autre voix que celle de Raoul — celle d'un membre
+// de l'équipe. Vide, c'est la voix configurée.
+func (c *Client) SpeakWith(ctx context.Context, voiceID, text string) (io.ReadCloser, error) {
 	if !c.Enabled() {
 		return nil, ErrDisabled
+	}
+	if voiceID == "" {
+		voiceID = c.voiceID
 	}
 
 	body := map[string]any{
@@ -124,7 +133,7 @@ func (c *Client) Speak(ctx context.Context, text string) (io.ReadCloser, error) 
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", c.baseURL, c.voiceID, outputFormat)
+	url := fmt.Sprintf("%s/text-to-speech/%s/stream?output_format=%s", c.baseURL, voiceID, outputFormat)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err

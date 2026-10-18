@@ -75,6 +75,11 @@ export function patch<T>(key: string, edit: (current: T) => T): void {
   write<T>(key, { data: edit(slot.data as T) });
 }
 
+/** Lit une ressource sans s'y abonner — pour un geste, pas pour un rendu. */
+export function peek<T>(key: string): T | null {
+  return (slots.get(key)?.data as T | undefined) ?? null;
+}
+
 /**
  * Dit si une ressource mérite d'être redemandée.
  *

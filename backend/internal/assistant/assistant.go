@@ -468,16 +468,27 @@ type Request struct {
 	// CacheKey : identifie l'utilisateur auprès du cache de prompts d'OpenAI.
 	// Une valeur stable par compte suffit — jamais un secret.
 	CacheKey string
+	// Perso : l'accès à ses projets perso, quand le serveur en suit. Nil sinon
+	// — et alors l'outil etat_projets n'existe pas.
+	Perso PersoAccess
 }
 
 // Sources dit quels comptes externes sont connectés. Le calendrier n'y figure
 // pas : il est synchronisé par l'app elle-même, il est toujours là.
 type Sources struct {
+	// Mail : la boîte mail PRO (Gandi), celle de toujours.
 	Mail     bool
 	Slack    bool
 	WhatsApp bool
 	// CSP : le tracker Tuleap des tickets est joignable.
 	CSP bool
+	// MailPerso : une boîte mail perso est branchée à côté de la pro.
+	MailPerso bool
+	// Projets : le serveur suit ses projets perso (VPS, déploiements, bases).
+	Projets bool
+	// Equipe : les collègues à qui il peut passer la parole. Vide, l'outil
+	// passer_la_parole n'existe pas.
+	Equipe []Collegue
 }
 
 type Turn struct {
@@ -492,6 +503,12 @@ type Result struct {
 	Steps   []string       `json:"steps,omitempty"`
 	// Metrics : ce que la réponse a coûté. Voir stream.go.
 	Metrics *Metrics `json:"metrics,omitempty"`
+	// Agent : qui a répondu — vide pour Raoul. L'app s'en sert pour dire qui
+	// parle et prendre la bonne voix.
+	Agent string `json:"agent,omitempty"`
+	// Handoff : l'agent a passé la parole à cet interlocuteur au lieu de
+	// répondre. Interne : l'app l'apprend par l'événement « interlocuteur ».
+	Handoff string `json:"-"`
 }
 
 type Engine struct {
@@ -1299,37 +1316,37 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		),
 	}
 
-	if src.Mail {
+	if src.Mail || src.MailPerso {
 		tools = append(tools,
 			tool(
 				"mails_non_lus",
-				"Récupère les mails non lus de la boîte Gandi (expéditeur, objet, date). Chaque entrée porte pour_toi, qui dit sa place parmi les destinataires — seul destinataire, parmi d'autres, simple copie, diffusion, ou réponse à un mail qu'il a envoyé. C'est calculé, pas déduit : recopie-le, ne le recalcule pas. Sert à repérer une urgence ou une contrainte non encore vue.",
-				object(map[string]any{
+				"Récupère les mails non lus de sa boîte mail (expéditeur, objet, date). Chaque entrée porte pour_toi, qui dit sa place parmi les destinataires — seul destinataire, parmi d'autres, simple copie, diffusion, ou réponse à un mail qu'il a envoyé. C'est calculé, pas déduit : recopie-le, ne le recalcule pas. Sert à repérer une urgence ou une contrainte non encore vue.",
+				object(spaceProperty(src, map[string]any{
 					"limite": map[string]any{"type": "integer", "description": "Nombre maximum de mails (défaut 15)"},
-				}),
+				})),
 			),
 			tool(
 				"lire_mail",
 				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, destinataires) et le fil des messages antérieurs de la conversation — ceux écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant dans le fil, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
-				object(map[string]any{
+				object(spaceProperty(src, map[string]any{
 					"recherche":  str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 					"non_lu":     map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
 					"message_id": str("Identifiant exact d'un mail rendu par chercher_mails ou mails_envoyes. Quand tu l'as, passe-le : c'est LE moyen d'ouvrir précisément ce message-là, reçu ou envoyé, et non un homonyme."),
-				}),
+				})),
 			),
 			tool(
 				"mails_envoyes",
 				"Lit la boîte d'ENVOI : les mails que l'utilisateur a lui-même envoyés, du plus récent au plus ancien, avec le corps du plus récent. C'est l'outil de « c'est quoi le dernier mail que j'ai envoyé », « qu'est-ce que j'ai écrit à Hebat », « j'ai répondu quoi à Cyril ». Un mail de cette boîte est un mail qu'IL a écrit : tu ne le présentes jamais comme reçu. Le champ brouillon écarte ce qui n'est jamais parti.",
-				object(map[string]any{
+				object(spaceProperty(src, map[string]any{
 					"recherche": str("Destinataire (nom ou adresse) ou fragment d'objet, facultatif. Vide = ses derniers envois, quels qu'ils soient."),
 					"limite":    map[string]any{"type": "integer", "description": "Nombre de mails (défaut 5)"},
 					"contenu":   map[string]any{"type": "boolean", "description": "Rapatrier le corps du plus récent (défaut vrai). Mets faux pour une simple liste."},
-				}),
+				})),
 			),
 			tool(
 				"chercher_mails",
 				"Cherche des mails par personne et par objet, lus ou non, reçus ou envoyés. C'est l'outil de « qu'est-ce que Hebat m'a dit par mail », « les mails d'Olivier sur le devis », « on s'est dit quoi avec Cyril » (dossier « tous »). Il rend les enveloppes avec leur message_id : pour le contenu d'un mail précis, rappelle lire_mail avec ce message_id. Chaque résultat dit son dossier (reçu ou envoyé) et de_toi quand c'est lui qui l'a écrit : un mail envoyé n'est pas quelque chose qu'on lui a dit.",
-				object(map[string]any{
+				object(spaceProperty(src, map[string]any{
 					"personne": str("La personne, telle qu'il l'a dite (« Hebat », « olivier@x.fr »). Expéditeur pour les mails reçus, destinataire pour les envoyés."),
 					"objet":    str("Fragment d'objet, facultatif (« planning », « devis »)."),
 					"depuis":   str("Ne remonter que depuis cette date, ISO 8601. Facultatif."),
@@ -1339,7 +1356,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 						"description": "Où chercher (défaut « recu »). « tous » pour reconstituer un échange dans les deux sens.",
 					},
 					"limite": map[string]any{"type": "integer", "description": "Nombre de résultats (défaut 10)"},
-				}),
+				})),
 			),
 			tool(
 				"preparer_reponse_mail",
@@ -1422,9 +1439,9 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		)
 	}
 
-	if src.Mail || src.Slack || src.WhatsApp {
+	if src.Mail || src.MailPerso || src.Slack || src.WhatsApp {
 		var sources []string
-		if src.Mail {
+		if src.Mail || src.MailPerso {
 			sources = append(sources, "mail")
 		}
 		if src.Slack {
@@ -1436,7 +1453,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		tools = append(tools, tool(
 			"debriefer",
 			"Fait le débrief approfondi d'un mail ou d'une conversation : lit tout le fil (jusqu'à cent messages, réponses dans les fils et messages cités compris) et le confie à une lecture attentive qui reconstitue le sujet, qui a dit quoi, ce qui est décidé, ce qui reste ouvert et ce qu'on attend de lui. À utiliser dès qu'il demande un débrief, un résumé, une explication, « ce qui se passe », « où ça en est » ou « ce qu'on attend de moi » sur un mail ou une conversation. Le nom se passe comme pour les outils de lecture — tel qu'il l'a dit — et les demandes de confirmation ou d'ambiguïté se traitent de la même façon. Renvoie L'ESSENTIEL à restituer et LES DÉTAILS à garder pour la suite.",
-			object(map[string]any{
+			object(spaceProperty(src, map[string]any{
 				"source": map[string]any{
 					"type":        "string",
 					"enum":        sources,
@@ -1444,7 +1461,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 				},
 				"cible":    str("Pour un mail : expéditeur ou fragment d'objet (vide = le plus récent). Pour une conversation : son nom tel qu'il l'a prononcé — ou, après une demande de confirmation, le nom exact rendu par l'outil."),
 				"question": str("Sa demande telle qu'il l'a formulée, s'il vise quelque chose de précis (« qu'est-ce qu'ils attendent de moi », « on en est où sur le devis »). Vide pour un débrief général."),
-			}, "source", "cible"),
+			}), "source", "cible"),
 		))
 	}
 
@@ -1475,7 +1492,7 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		)
 	}
 
-	return tools
+	return append(tools, persoTools(src)...)
 }
 
 // sourceLines énumère les sources réellement disponibles. Une source absente
@@ -1486,7 +1503,16 @@ func sourceLines(src Sources) string {
 	lines := []string{"- le calendrier du téléphone (consulter_calendrier, creer_evenement) ;"}
 	if src.Mail {
 		lines = append(lines,
-			"- la boîte mail Gandi (mails_non_lus pour ce qui attend, chercher_mails pour retrouver les mails d'une personne, mails_envoyes pour ce qu'il a lui-même envoyé, lire_mail pour ouvrir un message, preparer_reponse_mail pour rédiger une réponse) ;")
+			"- sa boîte mail pro, chez Gandi (mails_non_lus pour ce qui attend, chercher_mails pour retrouver les mails d'une personne, mails_envoyes pour ce qu'il a lui-même envoyé, lire_mail pour ouvrir un message, preparer_reponse_mail pour rédiger une réponse) ;")
+	}
+	if src.MailPerso {
+		if src.Mail {
+			lines = append(lines,
+				"- sa boîte mail perso, avec les mêmes outils et espace=perso ;")
+		} else {
+			lines = append(lines,
+				"- sa boîte mail perso (mails_non_lus, chercher_mails, mails_envoyes, lire_mail, preparer_reponse_mail) ;")
+		}
 	}
 	if src.Slack {
 		lines = append(lines,
@@ -1503,6 +1529,14 @@ func sourceLines(src Sources) string {
 	if src.Mail || src.Slack || src.WhatsApp {
 		lines = append(lines,
 			"- ce qu'il a à traiter, la liste affichée sur son écran d'accueil (point_urgences pour en faire le point, ouvrir_urgence pour entrer dans une ligne, urgence_traitee pour l'en retirer) ;")
+	}
+	if src.Projets {
+		lines = append(lines,
+			"- l'état de ses projets perso et du VPS qui les héberge (etat_projets) ;")
+	}
+	if len(src.Equipe) > 0 {
+		lines = append(lines,
+			"- son équipe technique, à qui tu passes la parole (passer_la_parole) ;")
 	}
 	lines = append(lines,
 		"- sa liste à faire (mes_taches pour la lire, ajouter_tache pour y inscrire, terminer_tache, reprogrammer_tache, supprimer_tache) ;",
@@ -1650,7 +1684,7 @@ func systemPrompt(now time.Time, tz, userName, userEmail string, src Sources, fa
 	if userEmail != "" {
 		identity = fmt.Sprintf("%s, dont l'adresse mail est %s", who, userEmail)
 	}
-	return fmt.Sprintf(`Tu es Raoul, l'assistant personnel de %[1]s. Tu couvres sa vie pro et sa vie perso, sans cloisonner.
+	return fmt.Sprintf(`Tu es Raoul, l'assistant personnel de %[1]s. Tu couvres sa vie pro et sa vie perso, et tu sais toujours de quel côté tu parles.
 
 Tu écris et tu parles pour %[10]s. C'est lui que tu reconnais parmi les destinataires d'un mail, et c'est son nom qui signe ce que tu rédiges.
 
@@ -1899,7 +1933,7 @@ Nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule toujours « demain »
 		urgentRules(src),
 		memoryBlock(facts),
 		memoryRules,
-		only(src.Mail, mailSearchRules)+only(src.Slack, slackSearchRules)+only(src.CSP, cspRules),
+		spaceRules(src)+teamRules(src)+only(src.Mail || src.MailPerso, mailSearchRules)+only(src.Slack, slackSearchRules)+only(src.CSP, cspRules),
 	)
 }
 

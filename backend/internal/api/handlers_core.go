@@ -83,6 +83,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"timezone": user.Timezone,
 		"since":    user.CreatedAt,
 		"voice":    voice,
+		// L'espace perso n'existe que si le serveur suit des projets : l'app
+		// n'affiche pas d'onglet vide.
+		"perso": map[string]bool{"projets": s.projets != nil, "equipe": s.equipe != nil},
 	})
 }
 

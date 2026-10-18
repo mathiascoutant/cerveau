@@ -10,7 +10,11 @@ import { CSPScreen, CSPTicketScreen } from './src/screens/CSPScreen';
 import { DIGEST_KEY, loadDigest, loadUrgent, SuiviScreen, URGENT_KEY } from './src/screens/SuiviScreen';
 import { AccesScreen } from './src/screens/AccesScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { ProjetsScreen } from './src/screens/ProjetsScreen';
+import { EquipeScreen } from './src/screens/EquipeScreen';
 import { NavBar, NavItem } from './src/design/NavBar';
+import { SpaceBar, SpaceTab } from './src/design/SpaceBar';
+import { loadEquipe, parlerA } from './src/lib/equipe';
 import { Button, Notice, T } from './src/design/ui';
 import { tokens } from './src/design/tokens';
 import { loadTodos } from './src/lib/todos';
@@ -19,13 +23,31 @@ import { AuthRequiredError, CSPTicket, getApiUrl, onAuthRequired, openSession } 
 import { clearCache } from './src/lib/cache';
 import { syncCalendar } from './src/lib/calendar';
 
-type Tab = 'raoul' | 'jobs' | 'suivi' | 'acces';
+/**
+ * Quatre entrées : Raoul au centre de tout, puis les deux espaces de sa vie —
+ * le pro (ce qu'il traite, ses outils métier) et le perso (ses projets et
+ * l'équipe qui les suit) —, puis les accès. Pro et Perso ne se mélangent pas :
+ * chacun a sa barre, sa teinte, ses vues.
+ */
+type Tab = 'raoul' | 'pro' | 'perso' | 'acces';
 
 const TABS: readonly NavItem<Tab>[] = [
   { key: 'raoul', label: 'Raoul', icon: 'message-square' },
-  { key: 'jobs', label: 'Jobs', icon: 'briefcase' },
-  { key: 'suivi', label: 'Suivi', icon: 'check-square' },
+  { key: 'pro', label: 'Pro', icon: 'briefcase' },
+  { key: 'perso', label: 'Perso', icon: 'home' },
   { key: 'acces', label: 'Accès', icon: 'sliders' },
+];
+
+type ProView = 'suivi' | 'jobs';
+const PRO_TABS: readonly SpaceTab<ProView>[] = [
+  { key: 'suivi', label: 'Suivi', icon: 'check-square' },
+  { key: 'jobs', label: 'Jobs', icon: 'tag' },
+];
+
+type PersoView = 'projets' | 'equipe';
+const PERSO_TABS: readonly SpaceTab<PersoView>[] = [
+  { key: 'projets', label: 'Projets', icon: 'server' },
+  { key: 'equipe', label: 'Équipe', icon: 'users' },
 ];
 
 /**
@@ -47,6 +69,11 @@ export default function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [listenRequest, setListenRequest] = useState(0);
   const [jobsStack, setJobsStack] = useState<JobsRoute[]>([{ name: 'jobs' }]);
+  const [proView, setProView] = useState<ProView>('suivi');
+  const [persoView, setPersoView] = useState<PersoView>('projets');
+  // Une demande venue d'un autre onglet (« diagnostic par l'ingénieur »),
+  // posée à l'arrivée sur l'écran de conversation.
+  const [pendingAsk, setPendingAsk] = useState<{ id: number; text: string } | null>(null);
   // L'adresse essayée, affichée sur l'écran d'attente après quelques
   // secondes : quand ça tourne, il faut savoir vers quoi.
   const [apiUrl, setApiUrl] = useState('');
@@ -68,6 +95,9 @@ export default function App() {
         void loadDigest().catch(() => undefined);
         void loadUrgent().catch(() => undefined);
         void loadTodos().catch(() => undefined);
+        // L'équipe dit qui a la parole et de quelle couleur peindre ses
+        // réponses : elle doit être là avant la première question.
+        void loadEquipe().catch(() => undefined);
       })
       .catch((err: Error) => {
         if (err instanceof AuthRequiredError) setLogin(err.message);
@@ -163,6 +193,18 @@ export default function App() {
   const push = (r: JobsRoute) => setJobsStack((s) => [...s, r]);
   const pop = () => setJobsStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
 
+  /** Passe à un membre de l'équipe, puis ouvre la conversation. */
+  const talkTo = (agent: string, text?: string) => {
+    void parlerA(agent)
+      .catch(() => undefined)
+      .finally(() => {
+        setTab('raoul');
+        if (text) setPendingAsk({ id: Date.now(), text });
+      });
+  };
+
+  const screenKey = tab === 'pro' ? `pro-${proView}-${proView === 'jobs' ? route.name : ''}` : tab === 'perso' ? `perso-${persoView}` : tab;
+
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
@@ -184,29 +226,41 @@ export default function App() {
               </Notice>
             </View>
           ) : (
-            <Screen key={tab === 'jobs' ? `jobs-${route.name}` : tab}>
-              {tab === 'raoul' ? (
-                <RaoulScreen listenRequest={listenRequest} />
-              ) : tab === 'jobs' ? (
-                route.name === 'ticket' ? (
-                  <CSPTicketScreen ticket={route.ticket} onBack={pop} />
-                ) : route.name === 'csp' ? (
-                  <CSPScreen onBack={pop} onOpen={(ticket) => push({ name: 'ticket', ticket })} onAccess={() => setTab('acces')} />
+            <>
+              {tab === 'pro' ? <SpaceBar space="Pro" tone={tokens.colors.pro} tabs={PRO_TABS} active={proView} onChange={setProView} /> : null}
+              {tab === 'perso' ? <SpaceBar space="Perso" tone={tokens.colors.perso} tabs={PERSO_TABS} active={persoView} onChange={setPersoView} /> : null}
+              <Screen key={screenKey}>
+                {tab === 'raoul' ? (
+                  <RaoulScreen listenRequest={listenRequest} ask={pendingAsk} />
+                ) : tab === 'pro' ? (
+                  proView === 'jobs' ? (
+                    route.name === 'ticket' ? (
+                      <CSPTicketScreen ticket={route.ticket} onBack={pop} />
+                    ) : route.name === 'csp' ? (
+                      <CSPScreen onBack={pop} onOpen={(ticket) => push({ name: 'ticket', ticket })} onAccess={() => setTab('acces')} />
+                    ) : (
+                      <JobsScreen onOpen={(key) => key === 'csp' && push({ name: 'csp' })} />
+                    )
+                  ) : (
+                    <SuiviScreen />
+                  )
+                ) : tab === 'perso' ? (
+                  persoView === 'projets' ? (
+                    <ProjetsScreen onAsk={(text, agent) => talkTo(agent, text)} />
+                  ) : (
+                    <EquipeScreen onTalk={(agent) => talkTo(agent)} />
+                  )
                 ) : (
-                  <JobsScreen onOpen={(key) => key === 'csp' && push({ name: 'csp' })} />
-                )
-              ) : tab === 'suivi' ? (
-                <SuiviScreen />
-              ) : (
-                <AccesScreen
-                  onLoggedOut={() => {
-                    clearCache();
-                    setTab('raoul');
-                    setLogin('Déconnecté de cet appareil.');
-                  }}
-                />
-              )}
-            </Screen>
+                  <AccesScreen
+                    onLoggedOut={() => {
+                      clearCache();
+                      setTab('raoul');
+                      setLogin('Déconnecté de cet appareil.');
+                    }}
+                  />
+                )}
+              </Screen>
+            </>
           )}
         </SafeAreaView>
         <Bottom tab={tab} onChange={setTab} />

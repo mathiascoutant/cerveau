@@ -5,6 +5,10 @@
 # Go
 backend/bin/
 
+# Fichiers propres au VPS : la carte de l'infrastructure et le savoir de
+# départ de l'équipe. Le dépôt est public, ils ne doivent jamais y entrer.
+backend/deploy/vps/
+
 # Node / Expo
 node_modules/
 .expo/

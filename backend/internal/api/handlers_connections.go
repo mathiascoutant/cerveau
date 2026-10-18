@@ -30,12 +30,17 @@ func (s *Server) handleListConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleConnectGandi valide les identifiants IMAP avant de les stocker chiffrés.
+//
+// « espace » range la boîte côté pro (défaut, la boîte Gandi de toujours) ou
+// côté perso. Les deux coexistent : brancher une boîte perso ne touche pas à
+// la boîte pro, et Raoul sait de laquelle il parle.
 func (s *Server) handleConnectGandi(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 		Host     string `json:"host"`
+		Espace   string `json:"espace"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
@@ -47,7 +52,7 @@ func (s *Server) handleConnectGandi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Host == "" {
-		req.Host = gandi.DefaultHost
+		req.Host = gandi.GuessHost(req.Email)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
@@ -65,14 +70,17 @@ func (s *Server) handleConnectGandi(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusInternalServerError, "chiffrement du secret impossible")
 		return
 	}
+	space := store.NormalizeSpace(req.Espace)
 	if err := s.store.UpsertConnection(r.Context(), store.Connection{
-		UserID: user.ID, Provider: store.ProviderGandi,
+		UserID: user.ID, Provider: store.ProviderGandi, Space: space,
 		Status: "connected", Label: req.Email, Secret: secret,
 	}); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "enregistrement impossible")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"provider": store.ProviderGandi, "status": "connected", "label": req.Email})
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"provider": store.ProviderGandi, "space": space, "status": "connected", "label": req.Email,
+	})
 }
 
 func (s *Server) handleConnectSlack(w http.ResponseWriter, r *http.Request) {
@@ -178,23 +186,35 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.DeleteConnection(r.Context(), user.ID, provider); err != nil {
+	// ?espace=perso vise la boîte mail perso ; sans paramètre, c'est la
+	// connexion pro, comme avant les espaces.
+	space := store.NormalizeSpace(r.URL.Query().Get("espace"))
+	if err := s.store.DeleteConnectionIn(r.Context(), user.ID, provider, space); err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "déconnexion impossible")
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]string{"provider": provider, "status": "disconnected"})
+	httpx.JSON(w, http.StatusOK, map[string]string{"provider": provider, "space": space, "status": "disconnected"})
 }
 
 // --- lecture des credentials déchiffrés --------------------------------------
 
+// gandiCreds rend la boîte mail PRO : celle du point du jour, des urgences et
+// de l'écran d'accueil, qui sont tous des outils de travail.
 func (s *Server) gandiCreds(ctx context.Context, user *store.User) (gandi.Credentials, error) {
-	conn, err := s.store.Connection(ctx, user.ID, store.ProviderGandi)
+	return s.gandiCredsIn(ctx, user, store.SpacePro)
+}
+
+// gandiCredsIn rend la boîte mail d'un espace. Le fournisseur s'appelle Gandi
+// pour des raisons historiques, mais c'est de l'IMAP : une boîte perso chez
+// iCloud ou ailleurs passe par le même chemin, avec son propre serveur.
+func (s *Server) gandiCredsIn(ctx context.Context, user *store.User, space string) (gandi.Credentials, error) {
+	conn, err := s.store.ConnectionIn(ctx, user.ID, store.ProviderGandi, space)
 	if err != nil {
 		return gandi.Credentials{}, err
 	}
 	var c store.GandiCredentials
 	if err := s.cipher.OpenJSON(conn.Secret, &c); err != nil {
-		return gandi.Credentials{}, errors.New("secret Gandi illisible, reconnecte la boîte mail")
+		return gandi.Credentials{}, errors.New("secret de la boîte mail illisible, reconnecte-la")
 	}
 	return gandi.Credentials{Email: c.Email, Password: c.Password, Host: c.Host}, nil
 }

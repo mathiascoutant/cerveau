@@ -17,13 +17,32 @@ services:
     # Session de l'appareil WhatsApp lié. Sans ce volume, un `docker compose
     # pull` obligerait à refaire la liaison depuis le téléphone à chaque mise
     # à jour. À sauvegarder avec le .env.
+    #
+    # L'espace perso, en lecture seule : le registre des projets, les fiches
+    # de départ de l'équipe, et la clé SSH de la sonde (propriétaire 10001,
+    # l'utilisateur du conteneur, en 600). Aucun de ces fichiers n'est dans
+    # le dépôt, qui est public.
     volumes:
       - whatsapp:/data
+      - ./projets.json:/config/projets.json:ro
+      - ./connaissances:/config/connaissances:ro
+      - ./sonde_ed25519:/config/sonde_ed25519:ro
+
+    # La sonde tourne sur l'hôte : le conteneur la joint en SSH par la
+    # passerelle Docker.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # Sans tzdata et ce fuseau, « demain 10h » serait calculé en UTC et Raoul
     # se tromperait de deux heures l'été.
     environment:
       TZ: Europe/Paris
+      PROJETS_REGISTRE: /config/projets.json
+      EQUIPE_AMORCE: /config/connaissances
+      SONDE_SSH: ubuntu@host.docker.internal:22
+      SONDE_CLE: /config/sonde_ed25519
+      # SONDE_CLE_HOTE (la clé publique ed25519 de l'hôte) et les jetons
+      # GitHub vont dans le .env.
 
     logging:
       driver: json-file

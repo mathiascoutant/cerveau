@@ -17,11 +17,12 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Corners, IconButton, Label, Notice, T } from '../design/ui';
-import { Reactor, REACTOR_COLOR } from '../design/Reactor';
+import { Reactor } from '../design/Reactor';
 import { navBarSpace } from '../design/NavBar';
 import { alpha, tokens } from '../design/tokens';
 import { ChatItem, RaoulState, ToolStep, useRaoul } from '../hooks/useRaoul';
-import { api, AssistantMetrics, SourceStatus } from '../api';
+import { api, AssistantMetrics, Membre, SourceStatus } from '../api';
+import { loadEquipe, membre, parlerA, useEquipe } from '../lib/equipe';
 
 const STATE_LABEL: Record<RaoulState, string> = {
   off: 'Micro coupé',
@@ -46,9 +47,25 @@ const EXAMPLES = [
   'Je peux aller faire du sport à 10h demain ?',
 ];
 
+/** Quand le serveur suit ses projets perso : de quoi découvrir l'équipe. */
+const PERSO_EXAMPLES = ['Mes projets perso tournent bien ?', 'Passe-moi l’ingénieur logiciel'];
+
+/** Quand un collègue a la parole : son métier, pas celui de Raoul. */
+const TEAM_EXAMPLES = [
+  'Où en sont mes projets ?',
+  'Qu’est-ce qui presse côté sécurité du VPS ?',
+  'Le dernier déploiement de VisionShow s’est bien passé ?',
+  'Merci, repasse-moi Raoul',
+];
+
 type Props = {
   /** Incrémenté à chaque appui sur le widget de l'écran d'accueil. */
   listenRequest?: number;
+  /**
+   * Une demande à poser dès l'arrivée sur l'écran — « demander un diagnostic »
+   * depuis l'onglet Perso. L'identifiant change à chaque nouvelle demande.
+   */
+  ask?: { id: number; text: string } | null;
 };
 
 /**
@@ -60,15 +77,30 @@ type Props = {
  * Raoul travailler au lieu d'attendre devant un cercle. En bas, le composeur,
  * avec un bouton stop tant qu'une réponse est en cours.
  */
-export function RaoulScreen({ listenRequest = 0 }: Props) {
+export function RaoulScreen({ listenRequest = 0, ask = null }: Props) {
   const raoul = useRaoul();
   const { state, partial, error, thread, start, startConversation, stop, cancel, pushToTalk, askText, voiceAvailable, inConversation } = raoul;
   const [sources, setSources] = useState<SourceStatus[]>([]);
   const [draft, setDraft] = useState('');
   const insets = useSafeAreaInsets();
   const scroll = useRef<ScrollView>(null);
+  const equipe = useEquipe();
+  // Qui a la parole : c'est lui que l'en-tête montre, et à lui qu'on écrit.
+  const speaker = membre(equipe, equipe?.interlocuteur);
+  const delegated = speaker.id !== 'raoul';
 
   useKeepAwake();
+
+  useEffect(() => {
+    void loadEquipe();
+  }, []);
+
+  // Une demande arrivée d'un autre onglet part tout de suite.
+  useEffect(() => {
+    if (!ask?.text) return;
+    void askText(ask.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ask?.id]);
 
   useEffect(() => {
     let alive = true;
@@ -108,29 +140,52 @@ export function RaoulScreen({ listenRequest = 0 }: Props) {
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      {/* Bandeau : la marque, l'état, les sources branchées. */}
+      {/* Bandeau : qui a la parole, son état, les sources branchées. */}
       <View style={styles.top}>
         <View style={styles.brand}>
-          <View style={styles.mark}>
-            <Corners color={alpha(tokens.colors.accent, 0.8)} size={6} />
-            <T v="label" tone="accent" style={styles.markText}>
-              R
+          <View style={[styles.mark, delegated && { borderColor: alpha(speaker.couleur, 0.5), backgroundColor: alpha(speaker.couleur, 0.1) }]}>
+            <Corners color={alpha(delegated ? speaker.couleur : tokens.colors.accent, 0.8)} size={6} />
+            <T v="label" tone="accent" style={[styles.markText, delegated && { color: speaker.couleur }]}>
+              {speaker.nom.slice(0, 1).toUpperCase()}
             </T>
           </View>
-          <View>
-            <T v="h">Raoul</T>
-            <T v="label" tone={stateTone(state)} style={{ textTransform: 'uppercase' }}>
-              {voiceAvailable ? STATE_LABEL[state] : busy ? STATE_LABEL.thinking : 'Mode texte'}
+          <View style={styles.flexShrink}>
+            <T v="h" numberOfLines={1}>
+              {speaker.nom}
             </T>
+            {delegated && !busy && state !== 'listening' && state !== 'speaking' ? (
+              // Au repos, c'est le rôle qui compte : on sait à qui on parle.
+              <T v="label" numberOfLines={1} style={{ color: speaker.couleur, textTransform: 'uppercase' }}>
+                {speaker.role}
+              </T>
+            ) : (
+              <T v="label" tone={stateTone(state)} style={{ textTransform: 'uppercase' }}>
+                {voiceAvailable ? stateLabel(state, speaker) : busy ? stateLabel('thinking', speaker) : 'Mode texte'}
+              </T>
+            )}
           </View>
         </View>
-        <View style={styles.chips}>
-          {sources
-            .filter((s) => s.connected)
-            .map((s) => (
-              <SourceDot key={s.provider} icon={SOURCES[s.provider]?.icon ?? 'circle'} label={SOURCES[s.provider]?.label ?? s.provider} warn={Boolean(s.error)} />
-            ))}
-        </View>
+        {delegated ? (
+          <Pressable
+            onPress={() => void parlerA('raoul').catch(() => undefined)}
+            accessibilityRole="button"
+            accessibilityLabel="Rendre la parole à Raoul"
+            style={({ pressed }) => [styles.handBack, pressed && styles.pressed]}
+          >
+            <Feather name="corner-up-left" size={12} color={tokens.colors.raoul} />
+            <T v="label" tone="raoul" style={{ textTransform: 'uppercase' }}>
+              Raoul
+            </T>
+          </Pressable>
+        ) : (
+          <View style={styles.chips}>
+            {sources
+              .filter((s) => s.connected)
+              .map((s) => (
+                <SourceDot key={s.provider} icon={SOURCES[s.provider]?.icon ?? 'circle'} label={SOURCES[s.provider]?.label ?? s.provider} warn={Boolean(s.error)} />
+              ))}
+          </View>
+        )}
       </View>
 
       <ScrollView ref={scroll} style={styles.flex} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -170,7 +225,7 @@ export function RaoulScreen({ listenRequest = 0 }: Props) {
         {thread.length === 0 ? (
           <View style={styles.examples}>
             <Label>Essaie</Label>
-            {EXAMPLES.map((e) => (
+            {(delegated ? TEAM_EXAMPLES : equipe ? [...EXAMPLES.slice(0, 2), ...PERSO_EXAMPLES] : EXAMPLES).map((e) => (
               <Pressable key={e} onPress={() => void askText(e)} accessibilityRole="button" accessibilityLabel={`Demander : ${e}`} style={({ pressed }) => [styles.example, pressed && styles.pressed]}>
                 <T v="small" style={styles.flex}>
                   {e}
@@ -181,8 +236,8 @@ export function RaoulScreen({ listenRequest = 0 }: Props) {
           </View>
         ) : (
           <View style={styles.thread}>
-            {thread.map((item) => (
-              <Bubble key={item.id} item={item} />
+            {thread.map((item, i) => (
+              <Bubble key={item.id} item={item} who={item.role === 'raoul' ? membre(equipe, item.agent) : null} showName={item.role === 'raoul' && namesAgent(thread, i)} />
             ))}
           </View>
         )}
@@ -194,11 +249,11 @@ export function RaoulScreen({ listenRequest = 0 }: Props) {
             value={draft}
             onChangeText={setDraft}
             onSubmitEditing={send}
-            placeholder="Demande quelque chose à Raoul"
+            placeholder={`Demande quelque chose à ${speaker.nom}`}
             placeholderTextColor={tokens.colors.text3}
             returnKeyType="send"
             blurOnSubmit={false}
-            accessibilityLabel="Écrire une demande à Raoul"
+            accessibilityLabel={`Écrire une demande à ${speaker.nom}`}
             style={styles.input}
             multiline
           />
@@ -218,6 +273,35 @@ export function RaoulScreen({ listenRequest = 0 }: Props) {
       </View>
     </KeyboardAvoidingView>
   );
+}
+
+/** L'état, dit par celui qui a la parole : c'est Léo qui enquête, pas Raoul. */
+function stateLabel(state: RaoulState, speaker: Membre): string {
+  if (speaker.id === 'raoul') return STATE_LABEL[state];
+  switch (state) {
+    case 'thinking':
+      return `${speaker.nom} travaille`;
+    case 'speaking':
+      return `${speaker.nom} répond`;
+    case 'waiting':
+      return 'Dis « OK Raoul »';
+    default:
+      return STATE_LABEL[state];
+  }
+}
+
+/**
+ * Le nom se met au-dessus d'une réponse quand celui qui parle change, et sur
+ * toute réponse d'un membre de l'équipe : on doit savoir qui parle sans avoir
+ * à remonter le fil.
+ */
+function namesAgent(thread: ChatItem[], index: number): boolean {
+  const agent = thread[index].agent ?? 'raoul';
+  if (agent !== 'raoul') return true;
+  for (let i = index - 1; i >= 0; i--) {
+    if (thread[i].role === 'raoul') return (thread[i].agent ?? 'raoul') !== 'raoul';
+  }
+  return false;
 }
 
 function stateTone(state: RaoulState) {
@@ -250,8 +334,9 @@ function SourceDot({ icon, label, warn }: { icon: React.ComponentProps<typeof Fe
 /* Le fil                                                                      */
 /* -------------------------------------------------------------------------- */
 
-function Bubble({ item }: { item: ChatItem }) {
+function Bubble({ item, who, showName }: { item: ChatItem; who: Membre | null; showName: boolean }) {
   const fade = useRef(new Animated.Value(0)).current;
+  const color = who?.couleur ?? tokens.colors.raoul;
   useEffect(() => {
     Animated.timing(fade, { toValue: 1, duration: tokens.motion.base, easing: Easing.bezier(...tokens.motion.easing), useNativeDriver: true }).start();
   }, [fade]);
@@ -271,6 +356,14 @@ function Bubble({ item }: { item: ChatItem }) {
   const { links, text } = splitLinks(item.text);
   return (
     <Animated.View style={[styles.raoulRow, { opacity: fade, transform: [{ translateY: fade.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) }] }]}>
+      {showName && who ? (
+        <View style={styles.speakerTag} accessibilityLabel={`${who.nom}, ${who.role}`}>
+          <View style={[styles.speakerDot, { backgroundColor: color }]} />
+          <T v="label" style={{ color, textTransform: 'uppercase' }}>
+            {who.id === 'raoul' ? 'Raoul' : `${who.nom} · ${who.role}`}
+          </T>
+        </View>
+      ) : null}
       {item.steps?.length ? (
         <View style={styles.steps}>
           {item.steps.map((step, i) => (
@@ -281,11 +374,11 @@ function Bubble({ item }: { item: ChatItem }) {
 
       {item.text || !item.streaming ? (
         <View style={[styles.raoulBubble, item.error && styles.raoulBubbleError]}>
-          <View style={[styles.raoulRule, { backgroundColor: item.error ? tokens.colors.danger : REACTOR_COLOR.speaking }]} />
+          <View style={[styles.raoulRule, { backgroundColor: item.error ? tokens.colors.danger : color }]} />
           <View style={styles.flex}>
             <T v="body">
               {text}
-              {item.streaming ? <T v="body" tone="raoul">▍</T> : null}
+              {item.streaming ? <T v="body" style={{ color }}>▍</T> : null}
             </T>
             {links.map((url) => (
               <Pressable key={url} onPress={() => void Linking.openURL(url)} accessibilityRole="link" accessibilityLabel={url} style={({ pressed }) => [styles.link, pressed && styles.pressed]}>
@@ -391,8 +484,22 @@ function splitLinks(text: string): { text: string; links: string[] } {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  flexShrink: { flexShrink: 1 },
   centered: { textAlign: 'center' },
   pressed: { opacity: 0.6 },
+  handBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: tokens.space.md,
+    borderRadius: tokens.radius.pill,
+    borderWidth: 1,
+    borderColor: alpha(tokens.colors.raoul, 0.45),
+    backgroundColor: alpha(tokens.colors.raoul, 0.08),
+  },
+  speakerTag: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  speakerDot: { width: 6, height: 6, borderRadius: 3 },
 
   top: {
     flexDirection: 'row',
@@ -402,7 +509,7 @@ const styles = StyleSheet.create({
     paddingVertical: tokens.space.sm,
     gap: tokens.space.md,
   },
-  brand: { flexDirection: 'row', alignItems: 'center', gap: tokens.space.md },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: tokens.space.md, flexShrink: 1 },
   mark: {
     width: 34,
     height: 34,

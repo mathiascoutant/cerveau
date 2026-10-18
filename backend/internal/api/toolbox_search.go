@@ -18,16 +18,16 @@ import (
 // dans les fournisseurs, et ce qui descend au modèle est mis en mots ici.
 
 func (t *userToolbox) SentEmails(ctx context.Context, query string, limit int, withBody bool) ([]assistant.MailHitView, error) {
-	creds, err := t.srv.gandiCreds(ctx, t.user)
+	creds, err := t.mailCreds(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, errors.New("la boîte mail Gandi n'est pas connectée")
+			return nil, t.mailMissing()
 		}
 		return nil, err
 	}
 	found, err := gandi.Sent(ctx, creds, query, "", limit, withBody)
 	if err != nil {
-		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderGandi, err.Error())
+		t.markMailError(ctx, err)
 		return nil, err
 	}
 	out := make([]assistant.MailHitView, 0, len(found))
@@ -38,10 +38,10 @@ func (t *userToolbox) SentEmails(ctx context.Context, query string, limit int, w
 }
 
 func (t *userToolbox) SearchEmails(ctx context.Context, q assistant.MailSearch) ([]assistant.MailHitView, error) {
-	creds, err := t.srv.gandiCreds(ctx, t.user)
+	creds, err := t.mailCreds(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, errors.New("la boîte mail Gandi n'est pas connectée")
+			return nil, t.mailMissing()
 		}
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (t *userToolbox) SearchEmails(ctx context.Context, q assistant.MailSearch) 
 		Sender: q.Person, Subject: q.Subject, Since: q.Since, Folders: folders, Limit: q.Limit,
 	})
 	if err != nil {
-		t.srv.store.MarkConnectionError(ctx, t.user.ID, store.ProviderGandi, err.Error())
+		t.markMailError(ctx, err)
 		return nil, err
 	}
 	out := make([]assistant.MailHitView, 0, len(found))
@@ -69,10 +69,10 @@ func (t *userToolbox) SearchEmails(ctx context.Context, q assistant.MailSearch) 
 }
 
 func (t *userToolbox) ReadEmailByID(ctx context.Context, messageID string) (assistant.EmailContentView, error) {
-	creds, err := t.srv.gandiCreds(ctx, t.user)
+	creds, err := t.mailCreds(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return assistant.EmailContentView{}, errors.New("la boîte mail Gandi n'est pas connectée")
+			return assistant.EmailContentView{}, t.mailMissing()
 		}
 		return assistant.EmailContentView{}, err
 	}

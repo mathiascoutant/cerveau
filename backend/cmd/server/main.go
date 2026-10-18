@@ -17,7 +17,11 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/api"
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
+	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
+	"github.com/mathiascoutant/cerveau/backend/internal/projets"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
+	"github.com/mathiascoutant/cerveau/backend/internal/registre"
+	"github.com/mathiascoutant/cerveau/backend/internal/sonde"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 )
 
@@ -82,9 +86,14 @@ func main() {
 		slog.Info("WhatsApp désactivé (WHATSAPP_SESSION_DB vide)")
 	}
 
+	perso := loadPerso(ctx, cfg, st)
+	if perso != nil && perso.Sonde != nil {
+		defer perso.Sonde.Close()
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, st, cipher, wa).Routes(),
+		Handler:           api.NewServer(cfg, st, cipher, wa).WithPerso(perso).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
@@ -106,4 +115,63 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("arrêt du serveur", "err", err)
 	}
+}
+
+// loadPerso monte le suivi des projets perso : le registre, la sonde du VPS,
+// GitHub, et le savoir de départ de l'équipe. Rien de tout ça n'est vital —
+// un registre illisible ou une sonde mal configurée se signalent dans les
+// journaux, et Raoul démarre sans l'espace perso plutôt que pas du tout.
+func loadPerso(ctx context.Context, cfg config.Config, st *store.Store) *projets.Service {
+	if cfg.ProjetsRegistre == "" {
+		slog.Info("espace perso désactivé (PROJETS_REGISTRE vide)")
+		return nil
+	}
+	reg, err := registre.Charger(cfg.ProjetsRegistre)
+	if err != nil {
+		slog.Error("registre des projets illisible, espace perso désactivé", "err", err)
+		return nil
+	}
+	probe, err := sonde.NewClient(sonde.Config{
+		Cible: cfg.SondeSSH, Cle: cfg.SondeCle, CleHote: cfg.SondeCleHote,
+		KnownHosts: cfg.SondeKnownHosts, Commande: cfg.SondeCommande,
+	})
+	if err != nil {
+		slog.Error("sonde du VPS mal configurée, on s'en passe", "err", err)
+		probe = nil
+	}
+	gh := projets.NewGitHub(cfg.GitHubToken, cfg.GitHubTokens)
+	svc := projets.New(reg, probe, gh)
+
+	if cfg.EquipeAmorce != "" {
+		n, err := equipe.Amorcer(ctx, st, cfg.EquipeAmorce)
+		if err != nil {
+			slog.Error("amorce de l'équipe", "err", err)
+		} else {
+			slog.Info("amorce de l'équipe", "fiches_mises_a_jour", n)
+		}
+	}
+	slog.Info("espace perso actif", "projets", len(reg.Projets), "sonde", probe != nil, "github_authentifie", gh.Authentifie())
+	go checkPerso(svc)
+	return svc
+}
+
+// checkPerso vérifie au démarrage ce qui, sinon, ne se verrait qu'en ouvrant
+// l'écran Projets : la sonde répond-elle, et les jetons GitHub ouvrent-ils
+// chacun des dépôts déclarés. Le résultat va dans les journaux — c'est la
+// première chose à lire après un déploiement.
+func checkPerso(svc *projets.Service) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if svc.Sonde != nil {
+		if sys, err := svc.Sonde.Systeme(ctx); err != nil {
+			slog.Error("sonde du VPS injoignable", "err", err)
+		} else {
+			slog.Info("sonde du VPS joignable", "hote", sys.Hote, "systeme", sys.OS)
+		}
+	}
+	readable, failed := svc.GitHub.Verifier(ctx, svc.Registre.Depots())
+	for repo, reason := range failed {
+		slog.Warn("GitHub : dépôt illisible", "depot", repo, "raison", reason)
+	}
+	slog.Info("GitHub : dépôts vérifiés", "lisibles", len(readable), "illisibles", len(failed))
 }

@@ -506,21 +506,28 @@ Trois conséquences à connaître :
 
 ## L'app
 
-Quatre onglets, et la conversation au centre.
+Quatre onglets, et la conversation au centre. Ta vie y est rangée en deux
+espaces qui ne se mélangent pas : le **pro** et le **perso**.
 
 - **Raoul** — le fil. Le réacteur en haut dit son état (cyan : il écoute,
   violet : il consulte, ambre : il parle) et sert de bouton micro. Chaque
   réponse montre les outils consultés sur une ligne (« Recherche Slack ·
   1,2 s »), puis le texte au fil de l'eau, puis ses mesures. Un bouton stop
   interrompt une réponse en cours — et coupe aussi le modèle côté serveur.
-- **Jobs** — les outils métier. La carte **CSP** ouvre tes tickets Tuleap
-  (recherche, filtres ouverts / tous / assignés à moi, détail avec champs,
-  historique et lien vers Tuleap). La carte **Flight Schedule** est là,
-  désactivée, sans faux écran derrière.
-- **Suivi** — ce que Raoul tient pour toi : à faire, à traiter, le point du
-  jour, les réponses de mail préparées.
-- **Accès** — ce qu'il a le droit de voir : agenda, Gandi, Slack, Tuleap,
-  WhatsApp, et la voix.
+  Quand un membre de l'équipe a la parole, l'en-tête le montre (son nom, sa
+  couleur) et un bouton la rend à Raoul.
+- **Pro** — le travail. **Suivi** : ce que Raoul tient pour toi (à faire, à
+  traiter, le point du jour, les réponses de mail préparées). **Jobs** : les
+  outils métier — la carte **CSP** ouvre tes tickets Tuleap, la carte
+  **Flight Schedule** est là, désactivée, sans faux écran derrière.
+- **Perso** — tes projets. **Projets** : ce qui tourne sur ton VPS, ce qui
+  répond, ce qui est déployé, la CI, les bases, avec les alertes en tête.
+  **Équipe** : l'organigramme (Raoul, Claire la responsable informatique,
+  Léo l'ingénieur logiciel), leurs voix, un bouton pour leur parler, et tout
+  ce que l'équipe a appris sur tes projets.
+- **Accès** — ce qu'il a le droit de voir, par espace : l'agenda (commun),
+  la boîte Gandi, Slack, Tuleap et WhatsApp côté pro ; une boîte mail perso
+  et l'état du suivi des projets côté perso ; la voix.
 
 Le système de design vit dans `mobile/src/design/` : jetons (`tokens.ts`),
 primitives (`ui.tsx`), réacteur, barre de navigation. Aucune couleur ni taille
@@ -611,6 +618,76 @@ Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
 
 ---
 
+## L'espace perso : tes projets et l'équipe qui les suit
+
+> « Passe-moi mon ingénieur. Léo, la connexion sur Neurorun est lente, tu peux
+> regarder pourquoi ? »
+
+Raoul passe la parole (`passer_la_parole`) et c'est **Léo, l'ingénieur
+logiciel**, qui répond — avec sa voix à lui. Il va voir pour de vrai : il
+appelle le site et décompose le temps de réponse (DNS, connexion, TLS,
+attente de l'application), lit les journaux du conteneur, mesure la base
+depuis le VPS et vérifie si une recherche passe par un index, regarde le
+système du VPS, compare ce qui tourne au dernier commit et à la dernière CI,
+et lit le code sur GitHub. Il ne modifie jamais rien : il dit quoi faire,
+précisément. Ce qu'il comprend, il le **note** (`noter`) : la fois suivante,
+il le sait déjà.
+
+**Claire, la responsable informatique**, voit large : l'état des projets, les
+priorités, l'ordre dans lequel faire les choses. Pour creuser, elle confie la
+mission à Léo (`confier_a_l_ingenieur`) — on le voit travailler pour elle
+dans l'app — puis restitue en responsable. « Merci, repasse-moi Raoul » rend
+la parole ; sans échange pendant trente minutes, elle revient seule à Raoul.
+
+Raoul garde pour lui les questions d'état rapides (« mes backs tournent ? »,
+outil `etat_projets`) et passe la parole pour tout ce qui demande de creuser.
+
+### Comment c'est branché
+
+| Pièce | Où | Rôle |
+|---|---|---|
+| Registre des projets | `~/projects/cerveau/projets.json` sur le VPS (modèle : `backend/deploy/projets.example.json`) | les projets, leurs composants (URL vérifiée, conteneur, dépôt et branche), leurs bases |
+| Sonde | `/usr/local/bin/cerveau-sonde` sur l'hôte (`backend/cmd/sonde`) | système, conteneurs, journaux, consommation, sites nginx, bases MongoDB — en lecture seule |
+| Clé de la sonde | `~/projects/cerveau/sonde_ed25519`, montée dans le conteneur | ne peut lancer que la sonde (`command=` dans `authorized_keys`) |
+| Fiches de départ | `~/projects/cerveau/connaissances/*.md` | le savoir initial de l'équipe, relu à chaque démarrage |
+| GitHub | `GITHUB_TOKEN`, `GITHUB_TOKEN_<PROPRIÉTAIRE>` dans `.env` | commits, CI, code — lecture seule |
+
+Le registre et les fiches ne sont **pas dans le dépôt** : il est public, et
+une carte de l'infrastructure n'a rien à y faire. Le registre ne contient
+aucun secret — pour une base, il dit dans quel fichier `.env` du projet et
+sous quelle variable se trouve l'URI ; la sonde l'y lit sur l'hôte, se
+connecte, et ne rend que le diagnostic.
+
+### Installer la sonde
+
+```bash
+cd backend && make sonde-deploy VPS=ubuntu@mon-vps
+```
+
+Puis, sur le VPS, une clé dédiée attachée à la sonde et à rien d'autre :
+
+```bash
+cd ~/projects/cerveau
+ssh-keygen -t ed25519 -N '' -C cerveau-sonde -f sonde_ed25519
+echo "restrict,command=\"/usr/local/bin/cerveau-sonde -registre /home/ubuntu/projects/cerveau/projets.json\" $(cat sonde_ed25519.pub)" >> ~/.ssh/authorized_keys
+sudo chown 10001:10001 sonde_ed25519 && sudo chmod 600 sonde_ed25519
+echo "SONDE_CLE_HOTE=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" >> .env
+```
+
+Le compose de `backend/deploy/` monte le registre, les fiches et la clé, et
+déclare `host.docker.internal` : le conteneur joint la sonde par la
+passerelle Docker. `docker compose up -d`, et l'onglet Perso se remplit.
+
+### Une boîte mail perso
+
+**Accès › Sources perso › Boîte mail perso** : la même lecture IMAP que la
+boîte pro, rangée à côté sans la remplacer. Le serveur IMAP se déduit de
+l'adresse pour iCloud, Gmail, Outlook, Yahoo, Orange, Free et La Poste.
+Raoul sait alors que « mes mails côté pro » ne lit que la boîte Gandi, que
+« mes mails perso » ne lit que l'autre, et que « mes mails » regarde les deux
+en disant d'où vient chaque chose. Le point du jour et la liste à traiter
+restent sur la boîte pro : ce sont des outils de travail.
+
 ## API
 
 | Méthode | Route | Rôle |
@@ -621,7 +698,7 @@ Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
 | `POST` | `/api/v1/auth/logout` | ferme la session de cet appareil |
 | `POST` | `/api/v1/session` | héritage : session par identifiant d'appareil, pour les appareils déjà connus |
 | `GET` | `/api/v1/status` | bilan des quatre sources |
-| `PUT` | `/api/v1/connections/{gandi,slack,whatsapp}` | branche une source (identifiants validés avant stockage) |
+| `PUT` | `/api/v1/connections/{gandi,slack,whatsapp}` | branche une source (identifiants validés avant stockage ; `espace: "perso"` range une boîte mail côté perso) |
 | `POST` | `/api/v1/calendar/sync` | l'app pousse le miroir de l'agenda |
 | `GET` | `/api/v1/drafts` | les réponses de mail préparées |
 | `PATCH` | `/api/v1/drafts/{id}` | retouche une réponse au clavier |
@@ -636,3 +713,9 @@ Raoul ne répond donc plus qu'il ne s'en souvient pas sans avoir cherché.
 | `POST` | `/api/v1/assistant/speech` | prépare la lecture d'un texte, renvoie une URL jetable |
 | `GET` | `/api/v1/speech/{ticket}` | diffuse l'audio ElevenLabs (ticket à usage unique) |
 | `GET/POST` | `/webhooks/whatsapp` | webhook Meta (signature HMAC vérifiée) |
+| `GET` | `/api/v1/perso/projets` | le point sur les projets perso (`?refresh=1` refait les relevés) |
+| `GET` | `/api/v1/equipe` | l'équipe, qui a la parole, ce que le serveur sait interroger |
+| `PUT` | `/api/v1/equipe/interlocuteur` | donne la parole à un membre (`raoul` la lui rend) |
+| `POST` | `/api/v1/equipe/{id}/voix` | une phrase de présentation dans la voix d'un membre |
+| `GET` | `/api/v1/equipe/connaissances` | ce que l'équipe sait de tes projets |
+| `DELETE` | `/api/v1/equipe/connaissances/{id}` | retire une fiche |

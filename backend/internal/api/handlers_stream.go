@@ -64,8 +64,9 @@ func (s *Server) handleAskStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), conversationTimeout)
 	defer cancel()
+	extendWriteDeadline(w, conversationTimeout)
 
 	// Les événements du moteur arrivent sur la goroutine du moteur ; le ping
 	// sur un minuteur. Un seul écrivain sur la réponse : tout passe par ce
@@ -83,9 +84,6 @@ func (s *Server) handleAskStream(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	history := s.history(ctx, user)
-	request := s.request(ctx, user, req.Text, now, tz, history)
-
 	done := make(chan struct{})
 	var (
 		result assistant.Result
@@ -93,7 +91,7 @@ func (s *Server) handleAskStream(w http.ResponseWriter, r *http.Request) {
 	)
 	go func() {
 		defer close(done)
-		result, askErr = s.engine.AskStream(ctx, s.toolbox(user), request, func(ev assistant.Event) {
+		result, askErr = s.converse(ctx, user, req.Text, now, tz, func(ev assistant.Event) {
 			select {
 			case events <- ev:
 			case <-ctx.Done():
@@ -116,7 +114,7 @@ loop:
 				var speech string
 				if ev.Result != nil {
 					ev.Result.Actions = nonNilActions(ev.Result.Actions)
-					speech = s.prepareSpeech(user.ID, ev.Result.Reply)
+					speech = s.prepareSpeechAs(user.ID, ev.Result.Reply, s.voiceOf(ev.Result.Agent))
 				}
 				if !write(doneEvent{Event: ev, SpeechURL: speech}) {
 					alive = false
@@ -145,7 +143,7 @@ loop:
 				var speech string
 				if ev.Result != nil {
 					ev.Result.Actions = nonNilActions(ev.Result.Actions)
-					speech = s.prepareSpeech(user.ID, ev.Result.Reply)
+					speech = s.prepareSpeechAs(user.ID, ev.Result.Reply, s.voiceOf(ev.Result.Agent))
 				}
 				write(doneEvent{Event: ev, SpeechURL: speech})
 			}
@@ -169,6 +167,7 @@ loop:
 			Transcript: req.Text,
 			Reply:      result.Reply,
 			Actions:    result.Actions,
+			Agent:      result.Agent,
 		})
 	}
 }

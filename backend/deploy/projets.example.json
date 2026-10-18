@@ -1,0 +1,20 @@
+{
+  "vps": { "nom": "Mon VPS" },
+  "domaines": ["monprojet.fr"],
+  "projets": [
+    {
+      "id": "monprojet",
+      "nom": "Mon projet",
+      "description": "Une API Go, un site et une app mobile",
+      "composants": [
+        { "id": "back", "nom": "API", "type": "back", "env": "prod", "url": "https://monprojet.fr/api/health", "conteneur": "monprojet-back", "depot": "moi/monprojet-back", "branche": "main", "base": "monprojet" },
+        { "id": "front", "nom": "Site", "type": "front", "env": "prod", "url": "https://monprojet.fr", "conteneur": "monprojet-front", "depot": "moi/monprojet-front" },
+        { "id": "app", "nom": "App iOS", "type": "app", "depot": "moi/monprojet-app" }
+      ],
+      "bases": ["monprojet"]
+    }
+  ],
+  "bases": [
+    { "id": "monprojet", "nom": "Mon projet", "fichier_env": "/home/ubuntu/projects/monprojet/back/.env", "variable": "MONGO_URI", "variable_base": "MONGO_DB" }
+  ]
+}

@@ -84,6 +84,19 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		_ = s.users().Indexes().DropOne(ctx, name)
 	}
 
+	// Les connexions d'avant les espaces sont toutes professionnelles : c'est
+	// ce que Raoul couvrait jusque-là (Gandi, Slack, WhatsApp, Tuleap). On les
+	// range côté pro AVANT de poser l'unicité par espace, et on retire
+	// l'ancienne unicité par fournisseur — elle interdirait une boîte mail
+	// perso à côté de la boîte pro.
+	if _, err := s.connections().UpdateMany(ctx,
+		bson.M{"space": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"space": SpacePro}},
+	); err != nil {
+		return err
+	}
+	_ = s.connections().Indexes().DropOne(ctx, "user_id_1_provider_1")
+
 	specs := []struct {
 		col   *mongo.Collection
 		model mongo.IndexModel
@@ -97,7 +110,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.sessions(), mongo.IndexModel{Keys: bson.D{{Key: "token", Value: 1}}, Options: unique()}},
 		{s.sessions(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}}},
 		{s.connections(), mongo.IndexModel{
-			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "provider", Value: 1}},
+			Keys:    bson.D{{Key: "user_id", Value: 1}, {Key: "provider", Value: 1}, {Key: "space", Value: 1}},
 			Options: unique(),
 		}},
 		{s.events(), mongo.IndexModel{
@@ -141,7 +154,10 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	if err := s.ensureConnaissanceIndexes(ctx); err != nil {
+		return err
+	}
+	return s.ensureInterlocuteurIndexes(ctx)
 }
 
 // --- Utilisateurs -----------------------------------------------------------
@@ -202,10 +218,13 @@ func (s *Store) SetUserName(ctx context.Context, userID bson.ObjectID, name stri
 
 // --- Connexions -------------------------------------------------------------
 
+// UpsertConnection range une connexion dans son espace — pro quand rien n'est
+// précisé, ce qui est le cas de toutes les sources d'avant les espaces.
 func (s *Store) UpsertConnection(ctx context.Context, c Connection) error {
 	c.UpdatedAt = time.Now()
+	c.Space = NormalizeSpace(c.Space)
 	_, err := s.connections().UpdateOne(ctx,
-		bson.M{"user_id": c.UserID, "provider": c.Provider},
+		bson.M{"user_id": c.UserID, "provider": c.Provider, "space": c.Space},
 		bson.M{"$set": bson.M{
 			"status":     c.Status,
 			"label":      c.Label,
@@ -218,9 +237,19 @@ func (s *Store) UpsertConnection(ctx context.Context, c Connection) error {
 	return err
 }
 
+// Connection rend la connexion PRO du fournisseur. C'est la lecture de tout le
+// code d'avant les espaces, et elle le reste : Slack, WhatsApp et Tuleap
+// n'existent que côté pro.
 func (s *Store) Connection(ctx context.Context, userID bson.ObjectID, provider string) (*Connection, error) {
+	return s.ConnectionIn(ctx, userID, provider, SpacePro)
+}
+
+// ConnectionIn rend la connexion d'un fournisseur dans un espace donné.
+func (s *Store) ConnectionIn(ctx context.Context, userID bson.ObjectID, provider, space string) (*Connection, error) {
 	var c Connection
-	err := s.connections().FindOne(ctx, bson.M{"user_id": userID, "provider": provider}).Decode(&c)
+	err := s.connections().FindOne(ctx, bson.M{
+		"user_id": userID, "provider": provider, "space": NormalizeSpace(space),
+	}).Decode(&c)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, ErrNotFound
 	}
@@ -237,13 +266,23 @@ func (s *Store) Connections(ctx context.Context, userID bson.ObjectID) ([]Connec
 }
 
 func (s *Store) DeleteConnection(ctx context.Context, userID bson.ObjectID, provider string) error {
-	_, err := s.connections().DeleteOne(ctx, bson.M{"user_id": userID, "provider": provider})
+	return s.DeleteConnectionIn(ctx, userID, provider, SpacePro)
+}
+
+func (s *Store) DeleteConnectionIn(ctx context.Context, userID bson.ObjectID, provider, space string) error {
+	_, err := s.connections().DeleteOne(ctx, bson.M{
+		"user_id": userID, "provider": provider, "space": NormalizeSpace(space),
+	})
 	return err
 }
 
 func (s *Store) MarkConnectionError(ctx context.Context, userID bson.ObjectID, provider, msg string) {
+	s.MarkConnectionErrorIn(ctx, userID, provider, SpacePro, msg)
+}
+
+func (s *Store) MarkConnectionErrorIn(ctx context.Context, userID bson.ObjectID, provider, space, msg string) {
 	_, _ = s.connections().UpdateOne(ctx,
-		bson.M{"user_id": userID, "provider": provider},
+		bson.M{"user_id": userID, "provider": provider, "space": NormalizeSpace(space)},
 		bson.M{"$set": bson.M{"status": "error", "last_error": msg, "updated_at": time.Now()}},
 	)
 }

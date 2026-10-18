@@ -47,16 +47,41 @@ type Session struct {
 	LastSeen  time.Time     `bson:"last_seen"`
 }
 
+// Les deux espaces de sa vie. Tout ce que Raoul connaissait avant leur
+// apparition — Gandi, Slack, WhatsApp, Tuleap — est professionnel ; ses
+// projets à lui, son VPS et l'équipe technique qui les suit sont personnels.
+//
+// L'espace n'est pas une étiquette d'affichage : c'est lui qui permet de
+// brancher un jour une boîte mail perso à côté de la boîte pro sans que l'une
+// écrase l'autre, et à Raoul d'entendre « mes mails côté pro » comme une
+// consigne de périmètre.
+const (
+	SpacePro   = "pro"
+	SpacePerso = "perso"
+)
+
+// NormalizeSpace ramène un espace inconnu ou absent au pro, qui est l'espace
+// historique de toutes les connexions.
+func NormalizeSpace(space string) string {
+	if space == SpacePerso {
+		return SpacePerso
+	}
+	return SpacePro
+}
+
 // Connection : un compte externe branché par l'utilisateur. Secret est chiffré.
 type Connection struct {
-	ID        bson.ObjectID `bson:"_id,omitempty" json:"-"`
-	UserID    bson.ObjectID `bson:"user_id" json:"-"`
-	Provider  string        `bson:"provider" json:"provider"`
-	Status    string        `bson:"status" json:"status"` // connected | error | disconnected
-	Label     string        `bson:"label,omitempty" json:"label,omitempty"`
-	LastError string        `bson:"last_error,omitempty" json:"last_error,omitempty"`
-	Secret    []byte        `bson:"secret" json:"-"`
-	UpdatedAt time.Time     `bson:"updated_at" json:"updated_at"`
+	ID       bson.ObjectID `bson:"_id,omitempty" json:"-"`
+	UserID   bson.ObjectID `bson:"user_id" json:"-"`
+	Provider string        `bson:"provider" json:"provider"`
+	// Space : « pro » ou « perso ». Un même fournisseur peut être branché dans
+	// les deux — une boîte mail pro et une boîte mail perso.
+	Space     string    `bson:"space" json:"space"`
+	Status    string    `bson:"status" json:"status"` // connected | error | disconnected
+	Label     string    `bson:"label,omitempty" json:"label,omitempty"`
+	LastError string    `bson:"last_error,omitempty" json:"last_error,omitempty"`
+	Secret    []byte    `bson:"secret" json:"-"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // GandiCredentials : IMAP Gandi (mail.gandi.net).
@@ -182,8 +207,10 @@ type Interaction struct {
 	UserID     bson.ObjectID `bson:"user_id" json:"-"`
 	Transcript string        `bson:"transcript" json:"transcript"`
 	Reply      string        `bson:"reply" json:"reply"`
-	Actions    []Action      `bson:"actions,omitempty" json:"actions,omitempty"`
-	CreatedAt  time.Time     `bson:"created_at" json:"created_at"`
+	// Agent : qui a répondu — vide pour Raoul, sinon un membre de l'équipe.
+	Agent     string    `bson:"agent,omitempty" json:"agent,omitempty"`
+	Actions   []Action  `bson:"actions,omitempty" json:"actions,omitempty"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 }
 
 // Digest : synthèse de la journée, mise en cache pour ne pas relancer le

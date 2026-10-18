@@ -19,6 +19,8 @@ export type StreamEvent =
   | { type: 'status'; tool: string; label: string; ms?: number; err?: string }
   | { type: 'delta'; text: string }
   | { type: 'reset' }
+  /** La parole passe à un autre agent : la suite de la réponse est la sienne. */
+  | { type: 'interlocuteur'; agent: string; label?: string }
   | { type: 'done'; result: AssistantAnswer; metrics?: AssistantMetrics; speech_url?: string }
   | { type: 'error'; message: string }
   | { type: 'ping' };

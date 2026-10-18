@@ -1,4 +1,4 @@
-.PHONY: run build vet fmt test gandi-check voices linux deploy
+.PHONY: run build vet fmt test gandi-check voices linux deploy sonde sonde-deploy
 
 run:
 	go run ./cmd/server
@@ -40,3 +40,12 @@ deploy: linux
 		&& chmod 755 $(REMOTE_DIR)/cerveau \
 		&& sudo systemctl restart cerveau \
 		&& sleep 2 && sudo systemctl status cerveau --no-pager | head -12'
+
+# La sonde du VPS (cmd/sonde) : un binaire statique installé sur l'hôte, que
+# Cerveau appelle en SSH. Usage : make sonde-deploy VPS=ubuntu@mon-vps
+sonde:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/cerveau-sonde ./cmd/sonde
+
+sonde-deploy: sonde
+	scp bin/cerveau-sonde $(VPS):/tmp/cerveau-sonde
+	ssh $(VPS) 'sudo install -o root -g root -m 755 /tmp/cerveau-sonde /usr/local/bin/cerveau-sonde && rm /tmp/cerveau-sonde'
