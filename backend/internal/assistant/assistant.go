@@ -99,6 +99,10 @@ type MailHitView struct {
 	ReponseATonMail bool   `json:"reponse_a_ton_mail,omitempty"`
 	// Contenu : le corps, seulement quand il a été demandé.
 	Contenu string `json:"contenu,omitempty"`
+	// Fil et Suite : pour le mail dont on a le corps, ce à quoi il répondait
+	// et ce qu'on lui a répondu depuis — de quoi dire de quoi il s'agissait.
+	Fil   []ThreadView `json:"fil,omitempty"`
+	Suite []ThreadView `json:"suite,omitempty"`
 }
 
 // SlackSearch cadre une recherche Slack.
@@ -2028,7 +2032,15 @@ Si une source de la liste ci-dessus renvoie une erreur, continue avec les autres
 
 DEUX SILENCES QUI NE SE CONFONDENT PAS. « Je n'ai rien trouvé » et « je n'ai pas pu regarder » ne sont pas la même phrase. Quand un outil a répondu et n'a rien rendu, tu dis que tu n'as pas trouvé de message correspondant dans ce que tu as parcouru — et sur quelle période. Quand un outil a échoué, tu dis que tu n'as pas pu interroger la source et que tu ne peux donc pas confirmer. Jamais l'un à la place de l'autre.
 
-TU CITES D'OÙ ÇA VIENT. Quand tu rapportes un message, un mail ou un ticket, tu dis de quoi il s'agit et quand (le canal, l'objet, la date rendue par l'outil), pour qu'il puisse le retrouver. Les liens et identifiants ne se lisent pas à voix haute, mais tu peux terminer par un lien seul sur sa propre ligne : l'app le rend cliquable.
+RACONTER UN MESSAGE — comme un assistant qui l'a lu pour lui, pas comme une fiche. Il doit comprendre en une écoute de quoi il s'agit. L'ordre est toujours le même : DE QUOI ÇA PARLE, en mots simples, puis ce qui est dit ou demandé, puis — seulement si ça aide — qui et quand.
+- Le sujet se dit en clair, jamais recopié. « Re: Atlas 2041 - Acme » ne se prononce pas : tu dis « le dossier Atlas », « les vols Atlas ». Pas de « Objet : », pas de « Re: », pas de guillemets autour d'un intitulé.
+- Ce qui est dit se dit en une phrase concrète qu'un collègue comprendrait sans avoir le mail sous les yeux : ce qui se passe, pourquoi, ce que ça change pour lui. « C'était la liste des doublons à corriger dans l'Excel » ne suffit pas s'il ne sait pas de quel Excel ni pourquoi : dis à quoi il sert et ce qui cloche, avec ce que le mail et son fil en disent. Si le fil explique le contexte, sers-t'en (« Sophie t'avait signalé des titres en double dans le fichier des vols Atlas ; tu lui as renvoyé la liste à corriger »).
+- Les gens par leur prénom quand on se connaît, sans énumérer une liste d'adresses.
+- La date en mots courants (« jeudi après-midi », « hier soir ») ; l'heure à la minute seulement si elle compte.
+- Pas de jargon technique non expliqué, pas de liste de champs, pas de « grosse liste », « en vrac » ou autre approximation : tu dis ce que c'est.
+Exemple — mauvais : « À Sophie Martin et Paul Durand, jeudi dernier à 15h58. Objet : "Re: Atlas 2041 - Acme". C'était la liste des doublons à corriger dans l'Excel. » Bon : « Jeudi, tu as répondu à Sophie et Paul sur le dossier Atlas : tu leur as envoyé la liste des titres en double à corriger dans leur fichier Excel. »
+
+TU DIS OÙ LE RETROUVER sans l'imposer : s'il veut le rouvrir, l'objet et la date exacts sont là, mais ils ne font pas la phrase. Les liens et identifiants ne se lisent pas à voix haute, mais tu peux terminer par un lien seul sur sa propre ligne : l'app le rend cliquable.
 
 %[15]s%[13]sCONTEXTE DU MOMENT
 
@@ -2055,9 +2067,9 @@ Nous sommes le %[2]s, il est %[3]s (fuseau %[4]s). Calcule toujours « demain »
 // confusions qu'elle invite à faire.
 const mailSearchRules = `RETROUVER DES MAILS, ENVOYÉS OU REÇUS
 
-« C'est quoi le dernier mail que j'ai envoyé » : mails_envoyes, sans recherche. Il rend la boîte d'envoi avec le corps du plus récent — tu dis à qui, quand (le champ quand, recopié), l'objet, et ce qu'il disait en deux phrases. Un mail de cette boîte est un mail qu'IL a écrit ; un résultat marqué brouillon n'est jamais parti, tu l'écartes et tu le dis si c'est tout ce qu'il y a.
+« C'est quoi le dernier mail que j'ai envoyé » : mails_envoyes, sans recherche. Il rend la boîte d'envoi avec le corps du plus récent et le fil auquel il répondait — tu racontes ce qu'il a envoyé comme décrit dans RACONTER UN MESSAGE : de quoi il s'agissait, ce qu'il a dit ou envoyé et pourquoi (le fil le dit), à qui et quand en mots courants. Un mail de cette boîte est un mail qu'IL a écrit ; un résultat marqué brouillon n'est jamais parti, tu l'écartes et tu le dis si c'est tout ce qu'il y a.
 
-« Qu'est-ce que Hebat m'a dit par mail » : chercher_mails avec la personne. L'outil rend les enveloppes des mails REÇUS de cette personne, du plus récent au plus ancien, chacune avec son message_id. Tu ouvres ceux qui comptent avec lire_mail et son message_id — pas par le prénom, qui peut désigner deux personnes — puis tu restitues mail par mail : la date, l'objet, ce qu'il dit. Plusieurs mails ne se mélangent pas en un seul résumé : tu les distingues.
+« Qu'est-ce que Hebat m'a dit par mail » : chercher_mails avec la personne. L'outil rend les enveloppes des mails REÇUS de cette personne, du plus récent au plus ancien, chacune avec son message_id. Tu ouvres ceux qui comptent avec lire_mail et son message_id — pas par le prénom, qui peut désigner deux personnes — puis tu restitues mail par mail, chacun raconté en clair : de quoi il parle, ce qu'il dit, quand. Plusieurs mails ne se mélangent pas en un seul résumé : tu les distingues.
 
 « Qu'est-ce que j'ai répondu à Hebat sur le planning » : chercher_mails avec la personne, l'objet, et dossier=envoye — ou tous pour voir les deux sens. Ce qui porte de_toi est ce qu'il a écrit ; le reste est ce qu'on lui a écrit. Tu ne prends jamais l'un pour l'autre.
 

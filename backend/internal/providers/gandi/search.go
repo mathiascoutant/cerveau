@@ -131,9 +131,12 @@ func Sent(ctx context.Context, creds Credentials, to, subject string, limit int,
 	}
 	if withBody && len(found) > 0 {
 		// La boîte d'envoi est encore sélectionnée : scanFolder ne change pas
-		// de boîte après son Fetch.
-		if body, ok := fetchBody(c, found[0].seq); ok {
+		// de boîte après son Fetch. Le fil vient en dernier, il en change :
+		// un mail envoyé ne se comprend qu'avec ce à quoi il répondait.
+		if raw, ok := fetchRaw(c, found[0].seq); ok {
+			body, quoted := extractParts(raw)
 			found[0].Body = body
+			completeThread(c, &found[0].Message, readFiliation(raw), quoted, creds.Email)
 		}
 	}
 	return found, nil

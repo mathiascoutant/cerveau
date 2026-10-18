@@ -294,3 +294,21 @@ func TestNouveauxSinceLastRead(t *testing.T) {
 		t.Errorf("rien de neuf attendu, obtenu %+v", none)
 	}
 }
+
+// Le dernier mail envoyé arrive avec ce à quoi il répondait : sans le fil,
+// « merci, je lance la maquette demain » ne dit pas de quoi il s'agit.
+func TestSentCarriesThread(t *testing.T) {
+	t0 := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	creds := startServer(t, projectThread(t0))
+
+	found, err := Sent(context.Background(), creds, "", "", 5, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) == 0 || found[0].MessageID != "m2@pxcom.aero" || found[0].Body == "" {
+		t.Fatalf("dernier envoi = %+v", found)
+	}
+	if len(found[0].Thread) != 4 || found[0].Thread[0].MessageID != "root@x.fr" {
+		t.Errorf("fil du dernier envoi = %+v", found[0].Thread)
+	}
+}

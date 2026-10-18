@@ -34,6 +34,11 @@ func (t *userToolbox) SentEmails(ctx context.Context, query string, limit int, w
 	for _, f := range found {
 		out = append(out, t.mailHit(f, creds.Email))
 	}
+	if withBody && len(found) > 0 && found[0].Body != "" {
+		out[0].Fil = t.threadViews(ctx, found[0].Thread, creds.Email)
+		out[0].Suite = t.threadViews(ctx, found[0].Followups, creds.Email)
+		t.noteMail(ctx, found[0].Message, assistant.EmailContentView{PourToi: "envoyé par toi"})
+	}
 	return out, nil
 }
 
