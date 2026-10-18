@@ -34,15 +34,16 @@ import (
 type Event struct {
 	// Type : « status » (un outil démarre ou finit), « delta » (du texte),
 	// « reset » (le texte émis jusqu'ici n'était pas la réponse : le modèle a
-	// enchaîné sur des outils), « interlocuteur » (la parole passe à un
-	// autre agent), « done ».
+	// enchaîné sur des outils), « note » (ce texte-là était une annonce — « je
+	// regarde le code du mot de passe oublié » — que l'app garde en tête de la
+	// réponse), « interlocuteur » (la parole passe à un autre agent), « done ».
 	Type string `json:"type"`
 	// Pour status : l'outil, son libellé lisible, et sa durée quand il finit.
 	Tool  string `json:"tool,omitempty"`
 	Label string `json:"label,omitempty"`
 	Ms    int64  `json:"ms,omitempty"`
 	Err   string `json:"err,omitempty"`
-	// Pour delta.
+	// Pour delta et note.
 	Text string `json:"text,omitempty"`
 	// Pour done.
 	Result  *Result  `json:"result,omitempty"`
@@ -161,6 +162,10 @@ type Spec struct {
 	// ToolTimeout : délai propre à un outil. Défaut : toolTimeout pour tous.
 	ToolTimeout func(tool string) time.Duration
 	CacheKey    string
+	// Budget : passé ce délai, l'agent conclut avec ce qu'il a trouvé au lieu
+	// de relancer des outils. Zéro : pas de budget. Une enquête qui ne
+	// conclut jamais finit coupée par le délai de la demande, sans un mot.
+	Budget time.Duration
 }
 
 // ToolExec exécute un appel d'outil. Une erreur portant instruction() n'est
@@ -200,6 +205,9 @@ func (e *Engine) AskStream(ctx context.Context, tb Toolbox, req Request, emit Em
 	spec := Spec{
 		Route:    route,
 		CacheKey: req.CacheKey,
+		// Raoul répond vite d'ordinaire ; ce budget ne sert qu'à garantir une
+		// réponse quand une source traîne.
+		Budget: 100 * time.Second,
 		Exec: func(ctx context.Context, name, args string) (ToolOutput, error) {
 			return e.raoulTool(ctx, tb, req, now, loc, name, args)
 		},
@@ -295,6 +303,17 @@ func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string
 	}
 
 	for iteration := 0; iteration < limit; iteration++ {
+		// Dernier tour, ou budget épuisé : plus d'outils, il conclut. Sans ça,
+		// le dernier tour d'outils s'achevait sans réponse — « je n'ai pas
+		// réussi à conclure » après deux minutes de travail.
+		if len(spec.Tools) > 0 && (iteration == limit-1 || (spec.Budget > 0 && time.Since(started) > spec.Budget)) {
+			params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsNone)}
+			items = append(items, responses.ResponseInputItemParamOfMessage(
+				"Le temps de vérifier est écoulé : conclus maintenant avec ce que tu as trouvé. Dis ce que tu as établi, "+
+					"ce que tu soupçonnes, et ce qui resterait à vérifier — sans relancer d'outil.",
+				responses.EasyInputMessageRoleDeveloper))
+			limit = iteration + 1
+		}
 		params.Input = responses.ResponseNewParamsInputUnion{OfInputItemList: items}
 		metrics.ModelCalls++
 
@@ -358,10 +377,15 @@ func (e *Engine) Run(ctx context.Context, spec Spec, history []Turn, text string
 			break
 		}
 		// Le modèle a parlé puis appelé des outils : ce qu'il a dit n'était
-		// pas la réponse. L'app efface et repart de la suite.
+		// pas la réponse, c'était une annonce (« je regarde le code »). L'app
+		// la garde en tête, efface le texte et repart de la suite.
 		if emitted {
+			if reply != "" {
+				emit(Event{Type: "note", Text: reply})
+			}
 			emit(Event{Type: "reset"})
 			firstText = time.Time{}
+			result.Reply = ""
 		}
 
 		outputs := e.runCalls(ctx, spec, calls, emit, markEvent, metrics)

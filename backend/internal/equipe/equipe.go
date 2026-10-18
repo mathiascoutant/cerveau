@@ -155,7 +155,11 @@ func (e *Equipe) run(ctx context.Context, m Membre, d Demande, emit assistant.Em
 		Label:         labelOf,
 		MaxIterations: 14,
 		ToolTimeout:   toolTimeout,
-		CacheKey:      cacheKey,
+		// Deux minutes et demie d'enquête, puis il conclut : la demande
+		// entière n'a que cinq minutes, et la responsable qui a délégué doit
+		// encore restituer.
+		Budget:   150 * time.Second,
+		CacheKey: cacheKey,
 		Exec: func(ctx context.Context, name, args string) (assistant.ToolOutput, error) {
 			return e.exec(ctx, m, d, emit, name, args)
 		},

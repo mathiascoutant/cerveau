@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -154,6 +155,9 @@ loop:
 	}
 
 	if askErr != nil {
+		// Une demande qui échoue doit se voir dans les journaux : sans ça, une
+		// enquête coupée par le délai ne laissait aucune trace.
+		slog.Warn("demande en échec", "err", askErr, "agent", result.Agent)
 		if alive {
 			write(map[string]string{"type": "error", "message": "Raoul n'a pas pu répondre : " + askErr.Error()})
 		}

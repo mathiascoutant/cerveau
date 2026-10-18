@@ -114,7 +114,8 @@ Raoul t'a passé la parole : c'est toi qui réponds, et tu gardes la parole pour
 	if len(others) > 0 {
 		text += fmt.Sprintf(" S'il demande à parler à %s, tu la lui passes de la même façon.", strings.Join(others, " ou "))
 	}
-	return text + "\n\nDans l'historique, les réponses précédées d'un nom entre crochets sont celles d'un collègue : tu t'en sers, tu ne te les attribues pas.\n\n"
+	return text + "\n\nDans l'historique, les réponses précédées d'un nom entre crochets sont celles d'un collègue : tu t'en sers, tu ne te les attribues pas.\n\n" +
+		"TU ANNONCES CE QUE TU VAS REGARDER. Dès qu'une vérification va te demander des outils, ta réponse commence par UNE phrase courte, avant le premier appel : ce que tu vas regarder et où (« Je regarde le code du mot de passe oublié de Connect et les journaux du back. »). Il attend sinon devant un écran muet, sans savoir si tu as compris. Puis tu enquêtes, et tu reviens avec la conclusion — elle commence par la réponse à sa question (« Oui, c'est cassé : … » / « Non, ça marche : … »).\n\n"
 }
 
 // registryText décrit ses projets tels que le registre les déclare.

@@ -40,6 +40,8 @@ export type ChatItem = {
   agent?: string;
   text: string;
   steps?: ToolStep[];
+  /** Ce que l'agent a annoncé avant d'enquêter, gardé en tête de la réponse. */
+  notes?: string[];
   effects?: string[];
   metrics?: AssistantMetrics;
   streaming?: boolean;
@@ -97,6 +99,11 @@ export function useRaoul() {
   // La demande en cours, pour pouvoir l'interrompre : couper le flux côté
   // client annule aussi le modèle et les outils côté serveur.
   const inflight = useRef<AbortController | null>(null);
+  // Numéro de la demande la plus récente. Une réponse précédente qui finit de
+  // parler pendant qu'une nouvelle tourne ne doit pas remettre l'écran au
+  // repos : c'est ce qui effaçait le « je consulte » et le bouton stop alors
+  // que Léo enquêtait encore.
+  const latest = useRef(0);
 
   const mode = useRef<Mode>('off');
   // running : une session de reconnaissance est ouverte côté natif. iOS ne la
@@ -220,9 +227,13 @@ export function useRaoul() {
   /** Envoie la demande au backend en flux, lit la réponse, applique les actions. */
   const submit = useCallback(
     async (question: string) => {
+      const ticket = ++latest.current;
+      const current = () => latest.current === ticket;
       clearTimers();
       mode.current = 'off';
       SpeechRecognition?.abort();
+      // Une nouvelle question coupe la réponse qu'on était en train d'écouter.
+      stopSpeaking();
       setPartial('');
       setState('thinking');
       setError(null);
@@ -269,6 +280,9 @@ export function useRaoul() {
                 reply += ev.text;
                 patch((item) => ({ ...item, text: item.text + ev.text }));
                 break;
+              case 'note':
+                patch((item) => ({ ...item, notes: [...(item.notes ?? []), ev.text] }));
+                break;
               case 'reset':
                 reply = '';
                 patch((item) => ({ ...item, text: '' }));
@@ -278,7 +292,7 @@ export function useRaoul() {
                 // l'autre, et la conversation continue avec lui.
                 reply = '';
                 noteInterlocuteur(ev.agent);
-                patch((item) => ({ ...item, agent: ev.agent, text: '', steps: [] }));
+                patch((item) => ({ ...item, agent: ev.agent, text: '', steps: [], notes: [] }));
                 break;
               case 'done': {
                 reply = ev.result.reply || reply;
@@ -302,19 +316,20 @@ export function useRaoul() {
         if (inflight.current === controller) inflight.current = null;
         if (err instanceof AbortedError) {
           patch((item) => ({ ...item, streaming: false, text: item.text || 'Interrompu.', error: undefined }));
-          resume();
+          if (current()) resume();
           return;
         }
         const message = (err as Error).message;
-        setError(message);
         patch((item) => ({ ...item, streaming: false, error: message, text: item.text || "Je n'ai pas réussi à joindre le serveur." }));
+        if (!current()) return;
+        setError(message);
         await speakOnDevice("Je n'ai pas réussi à joindre le serveur.");
-        resume();
+        if (current()) resume();
         return;
       }
       if (inflight.current === controller) inflight.current = null;
-      if (controller.signal.aborted) {
-        resume();
+      if (controller.signal.aborted || !current()) {
+        if (current()) resume();
         return;
       }
 
@@ -333,7 +348,7 @@ export function useRaoul() {
       if (effects.length) patch((item) => ({ ...item, effects }));
 
       await spoken;
-      resume();
+      if (current()) resume();
     },
     [clearTimers, resume],
   );

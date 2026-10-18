@@ -364,6 +364,11 @@ function Bubble({ item, who, showName }: { item: ChatItem; who: Membre | null; s
           </T>
         </View>
       ) : null}
+      {item.notes?.map((note, i) => (
+        <T key={`note-${i}`} v="small" tone="muted" style={styles.note}>
+          {note}
+        </T>
+      ))}
       {item.steps?.length ? (
         <View style={styles.steps}>
           {item.steps.map((step, i) => (
@@ -393,11 +398,14 @@ function Bubble({ item, who, showName }: { item: ChatItem; who: Membre | null; s
             ))}
           </View>
         </View>
-      ) : item.streaming && !item.steps?.length ? (
+      ) : item.streaming && (!item.steps?.length || item.steps.every((st) => st.ms !== undefined)) ? (
+        // Entre deux séries d'outils, le modèle réfléchit sans rien émettre :
+        // sans cette ligne, toutes les étapes sont cochées et plus rien ne
+        // bouge, comme si la réponse s'était perdue.
         <View style={styles.waiting}>
           <ActivityIndicator size="small" color={tokens.colors.thinking} />
           <T v="mono" tone="thinking">
-            …
+            {item.steps?.length ? `${who?.id === 'raoul' || !who ? 'Raoul' : who.nom} recoupe ce qu’il a trouvé…` : '…'}
           </T>
         </View>
       ) : null}
@@ -499,6 +507,7 @@ function splitLinks(raw: string): { text: string; links: string[] } {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   flexShrink: { flexShrink: 1 },
+  note: { fontStyle: 'italic', marginBottom: tokens.space.xs },
   centered: { textAlign: 'center' },
   pressed: { opacity: 0.6 },
   handBack: {
