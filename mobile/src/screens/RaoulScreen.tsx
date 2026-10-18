@@ -579,13 +579,15 @@ const styles = StyleSheet.create({
   steps: { alignItems: 'center', gap: 4 },
   step: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   stepSpinner: { transform: [{ scale: 0.6 }] },
+  // Pas de `gap` ici : sur iOS, un texte dans une rangée à `gap` est mesuré
+  // sur une largeur et dessiné sur une autre — le dernier mot sortait de la
+  // bulle, coupé, avec une ligne vide en dessous. Une marge ne le fait pas.
   raoulBubble: {
     flexDirection: 'row',
-    gap: tokens.space.md,
     paddingRight: tokens.space.sm,
   },
   raoulBubbleError: { opacity: 0.85 },
-  raoulRule: { width: 2, borderRadius: 1, marginTop: 4 },
+  raoulRule: { width: 2, borderRadius: 1, marginTop: 4, marginRight: tokens.space.md },
   link: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: tokens.space.sm },
   waiting: { flexDirection: 'row', alignItems: 'center', gap: tokens.space.sm },
   effect: { flexDirection: 'row', alignItems: 'center', gap: tokens.space.sm, paddingLeft: tokens.space.lg },
