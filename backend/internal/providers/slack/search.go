@@ -123,7 +123,10 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) (SearchResult, error
 			return false
 		}
 		if res.MentionedID != "" {
-			cited := false
+			// Quand c'est lui qu'on cherche, son prénom écrit sans @ compte
+			// autant qu'une mention : « Mathias, tu peux regarder ? » lui est
+			// adressé, arobase ou pas.
+			cited := res.MentionedID == c.selfUser(ctx) && m.TeVise == ViseNomme
 			for _, mention := range m.Mentions {
 				if mention.ID == res.MentionedID {
 					cited = true

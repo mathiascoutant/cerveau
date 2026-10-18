@@ -376,7 +376,10 @@ function Bubble({ item, who, showName }: { item: ChatItem; who: Membre | null; s
         <View style={[styles.raoulBubble, item.error && styles.raoulBubbleError]}>
           <View style={[styles.raoulRule, { backgroundColor: item.error ? tokens.colors.danger : color }]} />
           <View style={styles.flex}>
-            <T v="body">
+            {/* Remonté à la fin du flux : sans ça, iOS garde parfois la mise
+                en page d'un texte encore en train d'arriver, et la dernière
+                ligne file hors de la bulle au lieu de passer à la suivante. */}
+            <T v="body" key={item.streaming ? 'live' : 'done'}>
               {text}
               {item.streaming ? <T v="body" style={{ color }}>▍</T> : null}
             </T>
@@ -461,9 +464,20 @@ function shortModel(model: string): string {
   return model.replace(/^gpt-/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
 }
 
+/**
+ * Les espaces insécables que le modèle sème parfois entre les mots d'un
+ * paragraphe entier empêchent toute coupure : la ligne file hors de l'écran
+ * au lieu de passer à la suivante. On n'en garde que devant la ponctuation
+ * haute, où la typographie française les veut.
+ */
+function breakableSpaces(text: string): string {
+  return text.replace(/[\u00A0\u202F\u2007](?![?!:;»%])/g, ' ');
+}
+
 /** Sort les URL posées seules sur leur ligne en fin de réponse : elles se
  *  rendent en lien, pas en texte. */
-function splitLinks(text: string): { text: string; links: string[] } {
+function splitLinks(raw: string): { text: string; links: string[] } {
+  const text = breakableSpaces(raw);
   const lines = text.split('\n');
   const links: string[] = [];
   while (lines.length > 0) {
