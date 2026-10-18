@@ -248,15 +248,16 @@ func Journaux(ctx context.Context, name string, lines int, filter, since string)
 	return out, nil
 }
 
-// parseSince accepte une durée (« 30m », « 2h ») ou un instant RFC 3339.
+// parseSince accepte une durée (« 30m », « 2h », « 7d ») ou un instant RFC 3339.
 func parseSince(s string) (time.Time, error) {
+	s = sonde.DaysToHours(s)
 	if d, err := time.ParseDuration(s); err == nil {
 		return time.Now().Add(-d), nil
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t, nil
 	}
-	return time.Time{}, fmt.Errorf("début des journaux illisible : %q (une durée comme 30m, ou une date RFC 3339)", s)
+	return time.Time{}, fmt.Errorf("début des journaux illisible : %q (une durée comme 30m ou 7d, ou une date RFC 3339)", s)
 }
 
 // splitLogs découpe la réponse de /logs en lignes. Sans terminal, Docker

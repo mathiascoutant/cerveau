@@ -159,12 +159,18 @@ function deliver(frame: string, onEvent: (ev: StreamEvent) => void): void {
     if (!line.startsWith('data:')) continue;
     const raw = line.slice(5).trim();
     if (!raw) continue;
+    let ev: StreamEvent;
     try {
-      const ev = JSON.parse(raw) as StreamEvent;
-      if (ev && typeof ev.type === 'string') onEvent(ev);
+      ev = JSON.parse(raw) as StreamEvent;
     } catch {
       // ligne malformée : on l'ignore, le flux continue
+      continue;
     }
+    // Hors du try : un événement « error » se traduit par une exception
+    // levée ici, et elle doit remonter. Prise pour une ligne malformée,
+    // elle était avalée — l'erreur du serveur n'arrivait jamais, et le
+    // cercle tournait sans fin.
+    if (ev && typeof ev.type === 'string') onEvent(ev);
   }
 }
 

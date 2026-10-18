@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -239,4 +240,24 @@ type Site struct {
 	Noms    []string `json:"noms"`
 	Vers    []string `json:"vers,omitempty"`
 	TLS     bool     `json:"tls,omitempty"`
+}
+
+// DaysToHours traduit une durée en jours (« 7d », « 2j ») en heures, la seule
+// unité longue que time.ParseDuration connaisse. Le modèle dit « depuis 7d »
+// aussi naturellement que « depuis 30m » ; refuser l'un et pas l'autre faisait
+// échouer la lecture des journaux pour une affaire d'unité.
+func DaysToHours(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 {
+		return s
+	}
+	unit := s[len(s)-1]
+	if unit != 'd' && unit != 'j' {
+		return s
+	}
+	n, err := strconv.Atoi(s[:len(s)-1])
+	if err != nil || n < 0 {
+		return s
+	}
+	return strconv.Itoa(n*24) + "h"
 }

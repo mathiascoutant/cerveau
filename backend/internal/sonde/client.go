@@ -288,7 +288,9 @@ func (c *Client) Conteneurs(ctx context.Context) ([]Conteneur, error) {
 
 func (c *Client) Journaux(ctx context.Context, conteneur string, lignes int, filtre, depuis string) (Journaux, error) {
 	var out Journaux
-	args := map[string]string{"conteneur": conteneur, "lignes": strconv.Itoa(lignes), "filtre": filtre, "depuis": depuis}
+	// Traduit ici aussi : la sonde déjà installée sur le VPS ne connaît pas
+	// encore les jours.
+	args := map[string]string{"conteneur": conteneur, "lignes": strconv.Itoa(lignes), "filtre": filtre, "depuis": DaysToHours(depuis)}
 	return out, c.call(ctx, Requete{Commande: CmdJournaux, Args: args}, &out)
 }
 

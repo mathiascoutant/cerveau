@@ -42,3 +42,11 @@ func TestDecodeRefuseLeBruit(t *testing.T) {
 		}
 	}
 }
+
+func TestDaysToHours(t *testing.T) {
+	for in, want := range map[string]string{"7d": "168h", "2j": "48h", "30m": "30m", "2h": "2h", "": "", "d": "d", "xd": "xd", "2026-10-18T10:00:00Z": "2026-10-18T10:00:00Z"} {
+		if got := DaysToHours(in); got != want {
+			t.Errorf("DaysToHours(%q) = %q, attendu %q", in, got, want)
+		}
+	}
+}
