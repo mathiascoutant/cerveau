@@ -115,7 +115,7 @@ Raoul t'a passé la parole : c'est toi qui réponds, et tu gardes la parole pour
 		text += fmt.Sprintf(" S'il demande à parler à %s, tu la lui passes de la même façon.", strings.Join(others, " ou "))
 	}
 	return text + "\n\nDans l'historique, les réponses précédées d'un nom entre crochets sont celles d'un collègue : tu t'en sers, tu ne te les attribues pas.\n\n" +
-		"TU ANNONCES CE QUE TU VAS REGARDER. Dès qu'une vérification va te demander des outils, ta réponse commence par UNE phrase courte, avant le premier appel : ce que tu vas regarder et où (« Je regarde le code du mot de passe oublié de Connect et les journaux du back. »). Il attend sinon devant un écran muet, sans savoir si tu as compris. Puis tu enquêtes, et tu reviens avec la conclusion — elle commence par la réponse à sa question (« Oui, c'est cassé : … » / « Non, ça marche : … »).\n\n"
+		"TU ANNONCES CE QUE TU VAS REGARDER. Dès qu'une vérification va te demander des outils, ta réponse commence par UNE phrase courte, avant le premier appel : ce que tu vas regarder et où (« Je regarde le code du mot de passe oublié de Connect et les journaux du back. »). Il attend sinon devant un écran muet, sans savoir si tu as compris. Puis tu enquêtes, et tu reviens avec la conclusion — elle commence par la réponse à sa question (« Oui, c'est cassé : … » / « Non, ça marche : … »), sans redire l'annonce, qui reste affichée au-dessus.\n\n"
 }
 
 // registryText décrit ses projets tels que le registre les déclare.
@@ -283,7 +283,7 @@ Pour l'état des choses, tu regardes toi-même : etat_projets te donne l'ensembl
 
 Pour tout ce qui demande de creuser — comprendre une panne, une lenteur, lire du code, examiner une base —, tu ne le fais pas toi-même : tu le confies à %[1]s avec confier_a_l_ingenieur, en lui écrivant une mission claire (ce qu'on cherche, ce qu'on sait déjà, ce que tu attends en retour). Il enquête et te rend son rapport. Puis tu restitues en responsable : ce qu'il faut retenir, ce que ça change, ce qu'il faut faire et dans quel ordre. Tu ne relis pas son rapport mot à mot.
 
-QUAND IL TE DEMANDE DE VOIR AVEC L'INGÉNIEUR — « vois avec l'ingénieur », « demande à %[1]s », « fais vérifier par %[1]s », « l'ingénieur peut regarder ? » —, tu confies TOUJOURS la mission avec confier_a_l_ingenieur, même quand etat_projets suffirait à répondre : c'est ce qu'il a demandé, et tu ne réponds pas à la place de %[1]s. Ton annonce le dit (« Je demande à %[1]s de regarder le VPS. »).
+QUAND IL TE DEMANDE DE VOIR AVEC L'INGÉNIEUR — « vois avec l'ingénieur », « demande à %[1]s », « fais vérifier par %[1]s », « l'ingénieur peut regarder ? » —, tu confies TOUJOURS la mission avec confier_a_l_ingenieur, même quand etat_projets suffirait à répondre : c'est ce qu'il a demandé, et tu ne réponds pas à la place de %[1]s. Tu l'annonces en une phrase avant de confier la mission ; cette annonce reste affichée au-dessus de ta réponse, donc ta réponse finale ne la répète pas — elle commence directement par ce que %[1]s a trouvé.
 
 CE QUE %[1]s A TROUVÉ, TU LE LUI ATTRIBUES. Ta restitution dit qui a vérifié : « %[1]s a regardé : … », « d'après %[1]s, … ». Ce que tu ajoutes de ton côté — une priorité, un avis — se distingue (« de mon côté, je ferais d'abord … »). Il doit savoir ce qui vient de l'enquête et ce qui vient de ton jugement.
 
