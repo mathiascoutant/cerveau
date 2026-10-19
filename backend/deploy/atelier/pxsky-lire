@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""pxsky-lire : l'accès de l'atelier à pxsky, en lecture seule.
+
+Les agents de l'atelier (Claude Code, utilisateur « atelier ») l'appellent par
+sudo, sans pouvoir lire les identifiants : ils sont dans /etc/atelier/pxsky.env,
+lisible par root seulement, posé par Mathias lui-même. Ce programme se connecte
+avec, garde le jeton de session en cache, et ne fait QUE des GET sur l'API de
+pxsky (/core/api/v1/…). Il n'affiche jamais ni le mot de passe ni le jeton.
+
+Usage : sudo pxsky-lire <chemin> [clé=valeur ...]
+  ex. : sudo pxsky-lire sky/exec/pools
+        sudo pxsky-lire sky/exec/jobs activity=contentmanager.csp-build
+"""
+
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SECRETS = "/etc/atelier/pxsky.env"
+CACHE = "/var/cache/atelier/pxsky.token"
+API = "/core/api/v1/"
+MAX_SORTIE = 300_000
+CHEMIN_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_.:%-]*$")
+INTERDITS = ("session/login", "session/logout", "logs/")  # connexion, déconnexion, flux sans fin
+
+
+SENSIBLES = re.compile(r"token|password|passwd|secret|api[_-]?key|authorization|cookie", re.I)
+
+
+def masquer(v):
+    """Aucun jeton ni mot de passe ne sort, même si l'API en renvoie."""
+    if isinstance(v, dict):
+        return {k: ("***" if SENSIBLES.search(k) and isinstance(x, str) else masquer(x)) for k, x in v.items()}
+    if isinstance(v, list):
+        return [masquer(x) for x in v]
+    return v
+
+
+def erreur(msg, code=1):
+    print(json.dumps({"erreur": msg}, ensure_ascii=False))
+    sys.exit(code)
+
+
+def secrets():
+    try:
+        vals = {}
+        for ligne in open(SECRETS, encoding="utf-8"):
+            if "=" in ligne and not ligne.lstrip().startswith("#"):
+                k, v = ligne.rstrip("\n").split("=", 1)
+                vals[k.strip()] = v
+        return vals["PXSKY_URL"].rstrip("/"), vals["PXSKY_USER"], vals["PXSKY_PASSWORD"]
+    except FileNotFoundError:
+        erreur("identifiants pxsky absents : Mathias doit les enregistrer (voir la procédure)")
+    except KeyError as e:
+        erreur(f"identifiants pxsky incomplets : {e.args[0]} manquant")
+
+
+def requete(url, data=None, jeton=None):
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    req.add_header("Accept", "application/json")
+    if data:
+        req.add_header("Content-Type", "application/json")
+    if jeton:
+        req.add_header("Authorization", f"Bearer {jeton}")
+    return urllib.request.urlopen(req, timeout=25)
+
+
+def connexion(base, user, mdp):
+    corps = json.dumps({"username": user, "password": mdp}).encode()
+    try:
+        with requete(base + API + "session/login", data=corps) as r:
+            jeton = json.load(r).get("token", "")
+    except urllib.error.HTTPError as e:
+        erreur("connexion à pxsky refusée (identifiants invalides ?)" if e.code == 401 else f"connexion à pxsky : HTTP {e.code}")
+    except urllib.error.URLError as e:
+        erreur(f"pxsky injoignable : {e.reason}")
+    if not jeton:
+        erreur("pxsky n'a pas rendu de jeton")
+    os.makedirs(os.path.dirname(CACHE), mode=0o700, exist_ok=True)
+    fd = os.open(CACHE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(jeton)
+    return jeton
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
+    chemin = sys.argv[1].strip().lstrip("/")
+    if chemin.startswith("core/api/v1/"):
+        chemin = chemin[len("core/api/v1/"):]
+    if not CHEMIN_OK.match(chemin) or ".." in chemin or any(i in chemin for i in INTERDITS):
+        erreur("chemin refusé : uniquement des lectures sur l'API pxsky, ex. sky/exec/pools")
+    params = []
+    for a in sys.argv[2:]:
+        if "=" not in a:
+            erreur(f"paramètre invalide : {a} (attendu clé=valeur)")
+        params.append(tuple(a.split("=", 1)))
+    base, user, mdp = secrets()
+    url = base + API + chemin + ("?" + urllib.parse.urlencode(params) if params else "")
+
+    jeton = None
+    try:
+        jeton = open(CACHE).read().strip() or None
+    except OSError:
+        pass
+    for essai in range(2):
+        if not jeton:
+            jeton = connexion(base, user, mdp)
+        try:
+            with requete(url, jeton=jeton) as r:
+                corps = r.read(MAX_SORTIE + 1).decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and essai == 0:
+                jeton = None  # session expirée : on se reconnecte une fois
+                continue
+            detail = e.read(500).decode("utf-8", "replace")
+            erreur(f"HTTP {e.code} sur {chemin} : {detail}")
+        except urllib.error.URLError as e:
+            erreur(f"pxsky injoignable : {e.reason}")
+    try:
+        corps = json.dumps(masquer(json.loads(corps)), ensure_ascii=False)
+    except json.JSONDecodeError:
+        corps = re.sub(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "***", corps)
+    if len(corps) > MAX_SORTIE:
+        corps = corps[:MAX_SORTIE] + "\n… (réponse tronquée)"
+    print(corps)
+
+
+if __name__ == "__main__":
+    main()

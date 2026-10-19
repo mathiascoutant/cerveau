@@ -115,15 +115,17 @@ def nettoyer():
             pass
 
 
-def consigne(tache, depots, erreurs, regles):
+def consigne(tache, depots, erreurs, regles, cfg_outils=()):
     lignes = "\n".join(f"- ~/depots/{nom(d)} : {url(d)}" for d in depots)
     manquants = ("\nDépôts indisponibles pour l'instant :\n" + "\n".join(f"- {e}" for e in erreurs)) if erreurs else ""
     court = tache["run"][-6:]
+    outils = "\n".join(f"- {o}" for o in cfg_outils)
+    outils = f"\n\nOutils en plus de tes dépôts :\n{outils}" if outils else ""
     return f"""Tu es {tache.get('nom', 'un agent')}, {tache.get('role', '').lower()} dans l'équipe de Mathias. {tache.get('presentation', '')}
 Mathias t'a confié une tâche depuis Cerveau HQ. Tu travailles sur son VPS, sous un utilisateur sans privilèges (pas de sudo, pas de Docker).
 
 Dépôts disponibles (clones à jour, ne les modifie jamais directement) :
-{lignes}{manquants}
+{lignes}{manquants}{outils}
 
 Règles :
 1. Si la tâche demande seulement une information ou un avis, lis et réponds, sans rien modifier.
@@ -181,7 +183,7 @@ def main():
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
         "--add-dir", str(DEPOTS),
-        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg)),
+        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", [])),
     ]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     env["PATH"] = f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
