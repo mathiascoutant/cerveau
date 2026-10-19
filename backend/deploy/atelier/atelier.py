@@ -133,7 +133,11 @@ Règles :
 3. Fais des commits clairs, en français. Lance les tests, le lint ou la compilation du projet quand ils existent.
 4. {regles}
 5. Ne lis, n'affiche et ne commite jamais de secret (.env, clés, jetons). Ne modifie aucune configuration de déploiement sans qu'on te le demande.
-6. Ta réponse finale s'adresse à Mathias : courte, en français, sans jargon inutile. Dis ce que tu as trouvé ou fait, la branche et le lien GitHub s'il y en a, et ce qu'il lui reste à vérifier ou à décider."""
+6. Ta réponse finale répond à la question de Mathias, et à rien d'autre. Une à trois phrases, en français simple.
+   - Commence par la réponse elle-même (« Oui, … », « Non, … », le chiffre, le nom).
+   - Pas de méthode, pas de chemins de fichiers, de numéros de ligne ou de commit, pas de titres ni de listes, sauf s'il les demande.
+   - Ne dis pas ce que tu n'as pas fait (« sans rien modifier ») et n'ajoute pas de remarque qu'on ne t'a pas demandée.
+   - Pour une modification de code : ce qui est corrigé, le lien de la branche, et ce qu'il doit vérifier, en trois lignes au plus."""
 
 
 def regles_push(cfg):
