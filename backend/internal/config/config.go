@@ -73,6 +73,16 @@ type Config struct {
 	// travailler cent.
 	AgentsConcurrence int
 	AgentsBudgetJour  int
+	// Atelier : Claude Code sur le VPS, qui fait le travail des tâches
+	// confiées aux agents depuis Cerveau HQ. AtelierSSH vide : les tâches
+	// restent au moteur habituel. La clé d'hôte est celle de la sonde quand
+	// l'atelier n'en donne pas (c'est la même machine). AtelierDureeMax :
+	// minutes accordées à une tâche (60 par défaut).
+	AtelierSSH        string
+	AtelierCle        string
+	AtelierCleHote    string
+	AtelierKnownHosts string
+	AtelierDureeMax   int
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -165,6 +175,11 @@ func Load() (Config, error) {
 		AgentsConcurrence:     envInt("AGENTS_CONCURRENCE"),
 		AgentsBudgetJour:      envInt("AGENTS_BUDGET_JOUR"),
 		HQDir:                 env("HQ_DIR", ""),
+		AtelierSSH:            env("ATELIER_SSH", ""),
+		AtelierCle:            env("ATELIER_CLE", ""),
+		AtelierCleHote:        env("ATELIER_CLE_HOTE", env("SONDE_CLE_HOTE", "")),
+		AtelierKnownHosts:     env("ATELIER_KNOWN_HOSTS", env("SONDE_KNOWN_HOSTS", "")),
+		AtelierDureeMax:       envInt("ATELIER_DUREE_MAX"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),

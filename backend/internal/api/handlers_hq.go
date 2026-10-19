@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
+	"github.com/mathiascoutant/cerveau/backend/internal/atelier"
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
@@ -52,18 +54,20 @@ type hqTache struct {
 	Etapes  []store.RunStep `json:"etapes,omitempty"`
 	Reponse string          `json:"reponse,omitempty"`
 	Erreur  string          `json:"erreur,omitempty"`
-	Parent  string          `json:"parent,omitempty"`
-	Creee   time.Time       `json:"creee"`
-	Debut   *time.Time      `json:"debut,omitempty"`
-	Fin     *time.Time      `json:"fin,omitempty"`
-	Duree   int64           `json:"duree_ms,omitempty"`
-	Annuler bool            `json:"annulable,omitempty"`
+	// Affectation : pourquoi cet agent, quand on n'a nommé personne.
+	Affectation string     `json:"affectation,omitempty"`
+	Parent      string     `json:"parent,omitempty"`
+	Creee       time.Time  `json:"creee"`
+	Debut       *time.Time `json:"debut,omitempty"`
+	Fin         *time.Time `json:"fin,omitempty"`
+	Duree       int64      `json:"duree_ms,omitempty"`
+	Annuler     bool       `json:"annulable,omitempty"`
 }
 
 func tacheView(r store.AgentRun, etape string, etapes []store.RunStep) hqTache {
 	t := hqTache{
 		ID: r.ID.Hex(), Agent: r.Agent, Source: r.Source, Demande: r.Demande, Statut: r.Statut,
-		Etape: etape, Etapes: r.Etapes, Reponse: r.Reponse, Erreur: r.Erreur,
+		Etape: etape, Etapes: r.Etapes, Reponse: r.Reponse, Erreur: r.Erreur, Affectation: r.Affectation,
 		Creee: r.CreatedAt, Debut: r.StartedAt, Fin: r.FinishedAt,
 	}
 	if len(etapes) > 0 {
@@ -249,6 +253,23 @@ func (s *Server) handleHQAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// lireDemande lit et valide le texte d'une tâche.
+func lireDemande(w http.ResponseWriter, r *http.Request, vide string) (string, bool) {
+	var req struct {
+		Demande string `json:"demande"`
+	}
+	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Demande) == "" {
+		httpx.Error(w, http.StatusBadRequest, vide)
+		return "", false
+	}
+	demande := strings.TrimSpace(req.Demande)
+	if len([]rune(demande)) > 4000 {
+		httpx.Error(w, http.StatusBadRequest, "demande trop longue (4000 caractères au plus)")
+		return "", false
+	}
+	return demande, true
+}
+
 // handleHQLaunch confie une tâche à un agent, par le moteur de l'équipe — la
 // même exécution que lorsqu'on lui parle, avec ses outils et sa mémoire.
 func (s *Server) handleHQLaunch(w http.ResponseWriter, r *http.Request) {
@@ -258,31 +279,91 @@ func (s *Server) handleHQLaunch(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "agent inconnu")
 		return
 	}
-	var req struct {
-		Demande string `json:"demande"`
-	}
-	if err := httpx.Decode(r, &req); err != nil || strings.TrimSpace(req.Demande) == "" {
-		httpx.Error(w, http.StatusBadRequest, "écris ce que l'agent doit faire")
+	demande, ok := lireDemande(w, r, "écris ce que l'agent doit faire")
+	if !ok {
 		return
 	}
-	demande := strings.TrimSpace(req.Demande)
-	if len([]rune(demande)) > 4000 {
-		httpx.Error(w, http.StatusBadRequest, "demande trop longue (4000 caractères au plus)")
+	run, err := s.launchHQ(user, m, demande, "")
+	if err != nil {
+		s.launchError(w, err)
 		return
 	}
+	httpx.JSON(w, http.StatusAccepted, tacheView(run, "", nil))
+}
+
+// handleHQAssign crée une tâche sans nommer d'agent : l'équipe la confie à
+// celui dont les compétences conviennent le mieux, et dit pourquoi.
+func (s *Server) handleHQAssign(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	if s.equipe == nil {
+		httpx.Error(w, http.StatusServiceUnavailable, persoDisabled)
+		return
+	}
+	demande, ok := lireDemande(w, r, "écris ce qu'il faut faire")
+	if !ok {
+		return
+	}
+	a, err := s.equipe.Affecter(r.Context(), demande)
+	if err != nil {
+		httpx.Error(w, http.StatusServiceUnavailable, "aucun agent à qui confier la tâche")
+		return
+	}
+	m, ok := s.hqMember(a.Agent)
+	if !ok {
+		httpx.Error(w, http.StatusInternalServerError, "agent choisi introuvable")
+		return
+	}
+	slog.Info("tâche affectée", "agent", m.ID, "par", a.Par)
+	run, err := s.launchHQ(user, m, demande, a.Raison)
+	if err != nil {
+		s.launchError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusAccepted, map[string]any{
+		"tache":  tacheView(run, "", nil),
+		"agent":  map[string]string{"id": m.ID, "nom": m.Nom, "role": m.Role},
+		"raison": a.Raison,
+		"par":    a.Par,
+	})
+}
+
+func (s *Server) launchError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errBudget) {
+		httpx.Error(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	httpx.Error(w, http.StatusInternalServerError, "la tâche n'a pas pu être lancée")
+}
+
+// launchHQ met une tâche en file pour un agent. Avec l'atelier, c'est Claude
+// Code qui la fait, sur le VPS, avec les dépôts ; sans lui, le moteur de
+// l'équipe, comme en conversation.
+func (s *Server) launchHQ(user *store.User, m equipe.Membre, demande, affectation string) (store.AgentRun, error) {
 	tz := user.Timezone
 	if tz == "" {
 		tz = s.cfg.DefaultTimezone
 	}
-	run, err := s.runs.enqueue(user.ID, m.ID, demande, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
-		res, err := s.equipe.Ask(ctx, m.ID, equipe.Demande{
-			Text: demande, History: s.history(ctx, user, m.ID), Now: time.Now(), Timezone: tz,
-			UserName: s.userName(user), CacheKey: "raoul:" + user.ID.Hex(),
-			// Une tâche du bâtiment est pour cet agent-là : il ne passe pas
-			// la parole, il fait le travail.
-			SansPassage: true,
-			Suivi:       s.runs.suiviPour(user.ID, lr),
-		}, lr.Etape)
+	var limit time.Duration
+	if s.atelier != nil {
+		limit = time.Duration(max(s.cfg.AtelierDureeMax, 60)) * time.Minute
+	}
+	return s.runs.enqueue(user.ID, m.ID, demande, affectation, limit, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
+		var res assistant.Result
+		var err error
+		if s.atelier != nil {
+			res, err = s.atelier.Run(ctx, atelier.Tache{
+				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation, Demande: demande,
+			}, lr.Etape)
+		} else {
+			res, err = s.equipe.Ask(ctx, m.ID, equipe.Demande{
+				Text: demande, History: s.history(ctx, user, m.ID), Now: time.Now(), Timezone: tz,
+				UserName: s.userName(user), CacheKey: "raoul:" + user.ID.Hex(),
+				// Une tâche du bâtiment est pour cet agent-là : il ne passe
+				// pas la parole, il fait le travail.
+				SansPassage: true,
+				Suivi:       s.runs.suiviPour(user.ID, lr),
+			}, lr.Etape)
+		}
 		if err == nil && strings.TrimSpace(res.Reply) != "" {
 			// La tâche rejoint l'historique de l'agent, comme une question
 			// posée en conversation : la suite peut s'y référer.
@@ -292,15 +373,6 @@ func (s *Server) handleHQLaunch(w http.ResponseWriter, r *http.Request) {
 		}
 		return res, err
 	})
-	if err != nil {
-		if errors.Is(err, errBudget) {
-			httpx.Error(w, http.StatusTooManyRequests, err.Error())
-			return
-		}
-		httpx.Error(w, http.StatusInternalServerError, "la tâche n'a pas pu être lancée")
-		return
-	}
-	httpx.JSON(w, http.StatusAccepted, tacheView(run, "", nil))
 }
 
 func (s *Server) handleHQTask(w http.ResponseWriter, r *http.Request) {

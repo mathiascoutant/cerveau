@@ -63,11 +63,11 @@ func TestOrchestreFileParAgent(t *testing.T) {
 		return assistant.Result{Reply: "Tout va bien."}, nil
 	}
 
-	first, err := o.enqueue(user, "ingenieur", "regarde le VPS", exec)
+	first, err := o.enqueue(user, "ingenieur", "regarde le VPS", "", 0, exec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := o.enqueue(user, "ingenieur", "et la base ?", exec)
+	second, err := o.enqueue(user, "ingenieur", "et la base ?", "", 0, exec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,13 +128,13 @@ func TestOrchestreLimiteEtBudget(t *testing.T) {
 		running.Add(-1)
 		return assistant.Result{Reply: "ok"}, nil
 	}
-	if _, err := o.enqueue(user, "ingenieur", "a", exec); err != nil {
+	if _, err := o.enqueue(user, "ingenieur", "a", "", 0, exec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.enqueue(user, "responsable_info", "b", exec); err != nil {
+	if _, err := o.enqueue(user, "responsable_info", "b", "", 0, exec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.enqueue(user, "ingenieur", "c", exec); err != errBudget {
+	if _, err := o.enqueue(user, "ingenieur", "c", "", 0, exec); err != errBudget {
 		t.Fatalf("la troisième tâche dépasse le budget : %v", err)
 	}
 	waitFor(t, "une tâche démarre", func() bool { return running.Load() == 1 })

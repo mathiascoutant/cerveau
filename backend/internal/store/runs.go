@@ -53,6 +53,9 @@ type AgentRun struct {
 	Reponse string        `bson:"reponse,omitempty" json:"reponse,omitempty"`
 	Erreur  string        `bson:"erreur,omitempty" json:"erreur,omitempty"`
 	Etapes  []RunStep     `bson:"etapes,omitempty" json:"etapes,omitempty"`
+	// Affectation : pourquoi cet agent, quand la tâche a été confiée sans
+	// nommer personne.
+	Affectation string `bson:"affectation,omitempty" json:"affectation,omitempty"`
 	// Parent : l'exécution qui a délégué celle-ci (la responsable qui confie
 	// une enquête à l'ingénieur).
 	Parent     *bson.ObjectID `bson:"parent,omitempty" json:"parent,omitempty"`

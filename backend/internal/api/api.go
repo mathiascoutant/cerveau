@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -8,11 +9,13 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
+	"github.com/mathiascoutant/cerveau/backend/internal/atelier"
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/cryptoutil"
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/projets"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
+	"github.com/mathiascoutant/cerveau/backend/internal/sonde"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/stt"
 	"github.com/mathiascoutant/cerveau/backend/internal/tts"
@@ -44,6 +47,9 @@ type Server struct {
 	// runs : le travail réel des agents — suivi, file, limites. Voir
 	// hq_runs.go.
 	runs *orchestre
+	// atelier : Claude Code sur le VPS, pour les tâches confiées aux agents.
+	// Nil : ces tâches passent par le moteur habituel.
+	atelier *atelier.Client
 }
 
 // WithPerso branche le suivi des projets et l'équipe technique qui va avec.
@@ -78,7 +84,20 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		speech:  newSpeechTickets(),
 		confirm: newConfirmations(),
 		runs:    newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
+		atelier: newAtelier(cfg),
 	}
+}
+
+func newAtelier(cfg config.Config) *atelier.Client {
+	c, err := atelier.New(sonde.Config{Cible: cfg.AtelierSSH, Cle: cfg.AtelierCle, CleHote: cfg.AtelierCleHote, KnownHosts: cfg.AtelierKnownHosts})
+	if err != nil {
+		slog.Error("atelier mal configuré : les tâches restent au moteur habituel", "err", err)
+		return nil
+	}
+	if c != nil {
+		slog.Info("atelier actif : les tâches des agents passent par Claude Code")
+	}
+	return c
 }
 
 func (s *Server) Routes() http.Handler {
@@ -189,6 +208,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/hq/agents", s.handleHQAgents)
 			r.Get("/hq/agents/{id}", s.handleHQAgent)
 			r.Post("/hq/agents/{id}/taches", s.handleHQLaunch)
+			r.Post("/hq/taches", s.handleHQAssign)
 			r.Get("/hq/taches/{id}", s.handleHQTask)
 			r.Post("/hq/taches/{id}/annuler", s.handleHQCancel)
 			r.Put("/equipe/interlocuteur", s.handleInterlocuteur)

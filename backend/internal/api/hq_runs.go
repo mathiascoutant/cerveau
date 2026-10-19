@@ -112,6 +112,9 @@ func (o *orchestre) begin(ctx context.Context, user bson.ObjectID, agent, source
 
 // Etape suit les outils : un événement sans durée ouvre une étape, le même
 // avec sa durée la ferme.
+// ID : l'identifiant de l'exécution, celui que le bâtiment affiche.
+func (lr *liveRun) ID() bson.ObjectID { return lr.run.ID }
+
 func (lr *liveRun) Etape(ev assistant.Event) {
 	if ev.Type != "status" {
 		return
@@ -190,7 +193,7 @@ var errBudget = errors.New("budget du jour atteint : plus de nouvelle tâche ava
 
 // enqueue accepte une tâche pour un agent et la met en file. exec la fait
 // travailler une fois sa place obtenue.
-func (o *orchestre) enqueue(user bson.ObjectID, agent, demande string, exec func(ctx context.Context, lr *liveRun) (assistant.Result, error)) (store.AgentRun, error) {
+func (o *orchestre) enqueue(user bson.ObjectID, agent, demande, affectation string, limit time.Duration, exec func(ctx context.Context, lr *liveRun) (assistant.Result, error)) (store.AgentRun, error) {
 	ctx := context.Background()
 	used, err := o.store.CountRunsSince(ctx, user, store.RunSourceHQ, time.Now().Add(-24*time.Hour))
 	if err == nil && int(used) >= o.budget {
@@ -198,12 +201,16 @@ func (o *orchestre) enqueue(user bson.ObjectID, agent, demande string, exec func
 	}
 	run, err := o.store.InsertRun(ctx, store.AgentRun{
 		UserID: user, Agent: agent, Source: store.RunSourceHQ, Demande: strings.TrimSpace(demande),
-		Statut: store.RunEnAttente, CreatedAt: time.Now(),
+		Affectation: affectation, Statut: store.RunEnAttente, CreatedAt: time.Now(),
 	})
 	if err != nil {
 		return store.AgentRun{}, err
 	}
-	runCtx, cancel := context.WithTimeout(context.Background(), hqRunTimeout+10*time.Minute)
+	if limit <= 0 {
+		limit = hqRunTimeout
+	}
+	// Le délai de la tâche, plus celui d'attendre sa place.
+	runCtx, cancel := context.WithTimeout(context.Background(), limit+30*time.Minute)
 	lr := &liveRun{o: o, run: run, cancel: cancel}
 	o.mu.Lock()
 	o.live[run.ID] = lr
@@ -236,7 +243,7 @@ func (o *orchestre) enqueue(user bson.ObjectID, agent, demande string, exec func
 		if err := o.store.StartRun(context.Background(), run.ID); err != nil {
 			slog.Warn("début d'exécution non enregistré", "err", err)
 		}
-		workCtx, stop := context.WithTimeout(runCtx, hqRunTimeout)
+		workCtx, stop := context.WithTimeout(runCtx, limit)
 		defer stop()
 		res, err := exec(workCtx, lr)
 		lr.Fin(res, err)

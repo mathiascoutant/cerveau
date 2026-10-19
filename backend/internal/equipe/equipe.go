@@ -30,6 +30,9 @@ type Equipe struct {
 	memoire Memoire
 	roster  []Membre
 	routes  map[string]assistant.Route
+	// classify : remplace le modèle pour choisir à qui confier une tâche
+	// (tests). Nil : le modèle rapide du moteur.
+	classify Classifier
 }
 
 // Config règle l'équipe.

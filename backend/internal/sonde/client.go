@@ -67,19 +67,7 @@ func NewClient(c Config) (*Client, error) {
 	if strings.TrimSpace(c.Cible) == "" {
 		return nil, nil
 	}
-	user, host, ok := strings.Cut(c.Cible, "@")
-	if !ok || user == "" || host == "" {
-		return nil, fmt.Errorf("SONDE_SSH doit être de la forme utilisateur@hôte[:port], pas %q", c.Cible)
-	}
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		host = net.JoinHostPort(host, "22")
-	}
-
-	auth, err := authMethod(c.Cle)
-	if err != nil {
-		return nil, err
-	}
-	hostKey, algorithms, err := hostKeyCallback(c.CleHote, c.KnownHosts)
+	addr, cfg, err := SSH(c)
 	if err != nil {
 		return nil, err
 	}
@@ -88,16 +76,37 @@ func NewClient(c Config) (*Client, error) {
 		command = "cerveau-sonde"
 	}
 	return &Client{
-		addr:    host,
+		addr:    addr,
 		command: command,
 		slots:   make(chan struct{}, maxSessions),
-		cfg: &ssh.ClientConfig{
-			User:              user,
-			Auth:              []ssh.AuthMethod{auth},
-			HostKeyCallback:   hostKey,
-			HostKeyAlgorithms: algorithms,
-			Timeout:           10 * time.Second,
-		},
+		cfg:     cfg,
+	}, nil
+}
+
+// SSH rend l'adresse et la configuration SSH d'une cible, avec les règles de
+// la sonde : clé dédiée, clé d'hôte vérifiée. L'atelier s'en sert aussi.
+func SSH(c Config) (string, *ssh.ClientConfig, error) {
+	user, host, ok := strings.Cut(c.Cible, "@")
+	if !ok || user == "" || host == "" {
+		return "", nil, fmt.Errorf("la cible SSH doit être de la forme utilisateur@hôte[:port], pas %q", c.Cible)
+	}
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		host = net.JoinHostPort(host, "22")
+	}
+	auth, err := authMethod(c.Cle)
+	if err != nil {
+		return "", nil, err
+	}
+	hostKey, algorithms, err := hostKeyCallback(c.CleHote, c.KnownHosts)
+	if err != nil {
+		return "", nil, err
+	}
+	return host, &ssh.ClientConfig{
+		User:              user,
+		Auth:              []ssh.AuthMethod{auth},
+		HostKeyCallback:   hostKey,
+		HostKeyAlgorithms: algorithms,
+		Timeout:           10 * time.Second,
 	}, nil
 }
 
