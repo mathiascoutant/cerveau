@@ -10,8 +10,15 @@ pxsky (/core/api/v1/…). Il n'affiche jamais ni le mot de passe ni le jeton.
 Usage : sudo pxsky-lire <chemin> [clé=valeur ...]
   ex. : sudo pxsky-lire sky/exec/pools
         sudo pxsky-lire sky/exec/jobs activity=contentmanager.csp-build
+
+Une seule écriture existe, sous un autre nom (le même programme, installé
+deux fois) : relancer un import CSP.
+  sudo pxsky-relancer-import-csp <jobId>
+Elle fait POST /core/api/v1/contentmanager/csp-excel/jobs/<jobId>/relaunch, et
+rien d'autre ; chaque relance est notée dans /var/log/atelier-pxsky.log.
 """
 
+import datetime
 import json
 import os
 import re
@@ -22,8 +29,10 @@ import urllib.request
 
 SECRETS = "/etc/atelier/pxsky.env"
 CACHE = "/var/cache/atelier/pxsky.token"
+JOURNAL = "/var/log/atelier-pxsky.log"
+JOB_OK = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 API = "/core/api/v1/"
-MAX_SORTIE = 300_000
+MAX_SORTIE = 64_000_000  # certaines listes pèsent des dizaines de Mo : mieux vaut filtrer (project=…)
 CHEMIN_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9/_.:%-]*$")
 INTERDITS = ("session/login", "session/logout", "logs/")  # connexion, déconnexion, flux sans fin
 
@@ -59,8 +68,8 @@ def secrets():
         erreur(f"identifiants pxsky incomplets : {e.args[0]} manquant")
 
 
-def requete(url, data=None, jeton=None):
-    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+def requete(url, data=None, jeton=None, methode=None):
+    req = urllib.request.Request(url, data=data, method=methode or ("POST" if data else "GET"))
     req.add_header("Accept", "application/json")
     if data:
         req.add_header("Content-Type", "application/json")
@@ -87,7 +96,64 @@ def connexion(base, user, mdp):
     return jeton
 
 
+def jeton_cache():
+    try:
+        return open(CACHE).read().strip() or None
+    except OSError:
+        return None
+
+
+def appeler(base, user, mdp, url, methode="GET"):
+    """Fait l'appel avec le jeton en cache ; se reconnecte une fois s'il a expiré."""
+    jeton = jeton_cache()
+    for essai in range(2):
+        if not jeton:
+            jeton = connexion(base, user, mdp)
+        try:
+            data = b"" if methode == "POST" else None
+            with requete(url, data=data, jeton=jeton, methode=methode) as r:
+                return r.status, r.read(MAX_SORTIE + 1).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and essai == 0:
+                jeton = None  # session expirée : on se reconnecte une fois
+                continue
+            detail = e.read(500).decode("utf-8", "replace")
+            erreur(f"HTTP {e.code} : {detail}")
+        except urllib.error.URLError as e:
+            erreur(f"pxsky injoignable : {e.reason}")
+    erreur("pxsky refuse la session")
+
+
+def afficher(corps):
+    try:
+        corps = json.dumps(masquer(json.loads(corps)), ensure_ascii=False)
+    except json.JSONDecodeError:
+        corps = re.sub(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "***", corps)
+    if len(corps) > MAX_SORTIE:
+        corps = corps[:MAX_SORTIE] + "\n… (réponse tronquée)"
+    print(corps)
+
+
+def relancer_import(job):
+    """La seule écriture : relancer un import CSP déjà existant."""
+    if not JOB_OK.match(job):
+        erreur("identifiant de job invalide")
+    base, user, mdp = secrets()
+    statut, corps = appeler(base, user, mdp, f"{base}{API}contentmanager/csp-excel/jobs/{job}/relaunch", methode="POST")
+    try:
+        with open(JOURNAL, "a", encoding="utf-8") as j:
+            j.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} relance import CSP {job} -> HTTP {statut}\n")
+    except OSError:
+        pass
+    afficher(corps)
+
+
 def main():
+    if os.path.basename(sys.argv[0]) == "pxsky-relancer-import-csp":
+        if len(sys.argv) != 2:
+            erreur("usage : pxsky-relancer-import-csp <jobId>")
+        relancer_import(sys.argv[1].strip())
+        return
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return
@@ -103,34 +169,7 @@ def main():
         params.append(tuple(a.split("=", 1)))
     base, user, mdp = secrets()
     url = base + API + chemin + ("?" + urllib.parse.urlencode(params) if params else "")
-
-    jeton = None
-    try:
-        jeton = open(CACHE).read().strip() or None
-    except OSError:
-        pass
-    for essai in range(2):
-        if not jeton:
-            jeton = connexion(base, user, mdp)
-        try:
-            with requete(url, jeton=jeton) as r:
-                corps = r.read(MAX_SORTIE + 1).decode("utf-8", "replace")
-            break
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and essai == 0:
-                jeton = None  # session expirée : on se reconnecte une fois
-                continue
-            detail = e.read(500).decode("utf-8", "replace")
-            erreur(f"HTTP {e.code} sur {chemin} : {detail}")
-        except urllib.error.URLError as e:
-            erreur(f"pxsky injoignable : {e.reason}")
-    try:
-        corps = json.dumps(masquer(json.loads(corps)), ensure_ascii=False)
-    except json.JSONDecodeError:
-        corps = re.sub(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "***", corps)
-    if len(corps) > MAX_SORTIE:
-        corps = corps[:MAX_SORTIE] + "\n… (réponse tronquée)"
-    print(corps)
+    afficher(appeler(base, user, mdp, url)[1])
 
 
 if __name__ == "__main__":
