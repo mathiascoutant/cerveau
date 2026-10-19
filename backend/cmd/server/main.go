@@ -58,6 +58,13 @@ func main() {
 		slog.Error("connexion MongoDB impossible", "err", err)
 		os.Exit(1)
 	}
+	// Une exécution d'agent restée ouverte au dernier arrêt ne finira jamais :
+	// on la clôt, sinon son personnage resterait « au travail » pour toujours.
+	if n, err := st.AbandonStaleRuns(ctx); err != nil {
+		slog.Warn("exécutions d'agents non closes", "err", err)
+	} else if n > 0 {
+		slog.Info("exécutions d'agents interrompues par le redémarrage", "nombre", n)
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

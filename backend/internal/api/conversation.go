@@ -68,7 +68,7 @@ func (s *Server) converse(ctx context.Context, user *store.User, text string, no
 				tb.closeTurn(context.WithoutCancel(ctx), res.Reply)
 			}
 		} else {
-			res, err = s.equipe.Ask(ctx, agent, equipe.Demande{
+			res, err = s.askMember(ctx, user, agent, text, equipe.Demande{
 				Text: ask, History: history, Now: now, Timezone: tz,
 				UserName: s.userName(user), CacheKey: "raoul:" + user.ID.Hex(),
 				SansPassage: arrived && hop == maxHops,
@@ -93,7 +93,7 @@ func (s *Server) converse(ctx context.Context, user *store.User, text string, no
 		// demande, c'est une partie de ping-pong : on la laisse à celui qui
 		// la tient, et il répond, sans pouvoir la repasser.
 		if visited[next] && agent != "" {
-			res, err = s.equipe.Ask(ctx, agent, equipe.Demande{
+			res, err = s.askMember(ctx, user, agent, text, equipe.Demande{
 				Text: arrivalNote(text), History: history, Now: now, Timezone: tz,
 				UserName: s.userName(user), CacheKey: "raoul:" + user.ID.Hex(), SansPassage: true,
 			}, forward)
@@ -117,6 +117,20 @@ func (s *Server) converse(ctx context.Context, user *store.User, text string, no
 	}
 	last.Handoff = ""
 	return last, errors.New("la parole a changé de main trop de fois pour une seule demande")
+}
+
+// askMember fait répondre un membre de l'équipe en conversation, et suit ce
+// travail : le bâtiment de Cerveau HQ montre l'agent au travail tant qu'il
+// l'est vraiment, et l'enquête qu'il confie à l'ingénieur aussi.
+func (s *Server) askMember(ctx context.Context, user *store.User, agent, text string, d equipe.Demande, emit assistant.Emitter) (assistant.Result, error) {
+	run := s.runs.begin(ctx, user.ID, agent, store.RunSourceConversation, text, nil)
+	d.Suivi = s.runs.suiviPour(user.ID, run)
+	res, err := s.equipe.Ask(ctx, agent, d, func(ev assistant.Event) {
+		run.Etape(ev)
+		emit(ev)
+	})
+	run.Fin(res, err)
+	return res, err
 }
 
 // arrivalNote : la demande telle que la reçoit celui à qui l'on vient de

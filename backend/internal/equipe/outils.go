@@ -43,6 +43,54 @@ var toolLabels = map[string]string{
 	"rendre_la_parole":      "Passage de parole",
 }
 
+// Outil : un outil d'un membre, tel que le bâtiment l'affiche.
+type Outil struct {
+	Nom     string `json:"nom"`
+	Libelle string `json:"libelle"`
+}
+
+// Outils rend les outils réellement disponibles pour un membre, avec ce que le
+// serveur sait interroger en ce moment — ceux qu'il a en main, pas une liste
+// de principe.
+func (e *Equipe) Outils(m Membre) []Outil {
+	if m.ID == IDRaoul {
+		return nil
+	}
+	raw, err := json.Marshal(e.toolsFor(m, e.capacites(), false))
+	if err != nil {
+		return nil
+	}
+	var defs []struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(raw, &defs)
+	out := make([]Outil, 0, len(defs))
+	for _, d := range defs {
+		if d.Name != "" {
+			out = append(out, Outil{Nom: d.Name, Libelle: labelOf(d.Name)})
+		}
+	}
+	return out
+}
+
+// Connecteur : une source que l'équipe interroge, et si elle répond.
+type Connecteur struct {
+	Nom    string `json:"nom"`
+	Actif  bool   `json:"actif"`
+	Detail string `json:"detail"`
+}
+
+// Connecteurs rend les sources de l'équipe et leur état.
+func (e *Equipe) Connecteurs() []Connecteur {
+	c := e.capacites()
+	return []Connecteur{
+		{Nom: "Registre des projets", Actif: c.projets, Detail: "ce qui tourne, ce qui est déployé, la CI"},
+		{Nom: "Sonde du VPS", Actif: c.sonde, Detail: "système, conteneurs, journaux, bases MongoDB"},
+		{Nom: "GitHub", Actif: c.github, Detail: "commits, CI, code des dépôts"},
+		{Nom: "Mémoire de l'équipe", Actif: e.memoire != nil, Detail: "les fiches que l'équipe a écrites"},
+	}
+}
+
 func labelOf(tool string) string {
 	if l, ok := toolLabels[tool]; ok {
 		return l
@@ -446,7 +494,19 @@ func (e *Equipe) delegate(ctx context.Context, from Membre, d Demande, emit assi
 	// qu'il faut savoir, et l'ingénieur ne doit pas répondre à une question
 	// qu'on ne lui a pas posée.
 	sub.History = nil
+	var travail Travail
+	if d.Suivi != nil {
+		travail = d.Suivi.Debut(IDIngenieur, "delegation", mission)
+		inner := forward
+		forward = func(ev assistant.Event) {
+			travail.Etape(ev)
+			inner(ev)
+		}
+	}
 	res, err := e.run(ctx, ing, sub, forward)
+	if travail != nil {
+		travail.Fin(res, err)
+	}
 	if err != nil {
 		return assistant.ToolOutput{}, fmt.Errorf("l'enquête de %s n'a pas abouti : %w", ing.Nom, err)
 	}

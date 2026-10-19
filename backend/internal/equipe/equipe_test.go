@@ -174,3 +174,35 @@ func TestConsigneResponsableDelegueQuandOnLeDemande(t *testing.T) {
 		}
 	}
 }
+
+// Le bâtiment montre les outils réels de chaque agent, avec leur libellé, et
+// rien pour Raoul : c'est l'application, pas un agent du bâtiment.
+func TestOutilsExposes(t *testing.T) {
+	reg := &registre.Registre{Projets: []registre.Projet{{ID: "p", Nom: "P", Composants: []registre.Composant{{ID: "c", Depot: "o/r"}}}}}
+	e := New(assistant.New("cle", "", ""), projets.New(reg, &sonde.Client{}, projets.NewGitHub("jeton", nil)), nil, Config{})
+	ing, _ := e.Membre(IDIngenieur)
+	outils := e.Outils(ing)
+	byName := map[string]string{}
+	for _, o := range outils {
+		byName[o.Nom] = o.Libelle
+	}
+	if byName["journaux"] != "Journaux" || byName["code_lire"] != "Lecture du code" {
+		t.Errorf("outils de l'ingénieur : %+v", outils)
+	}
+	if byName["rendre_la_parole"] == "" {
+		t.Error("le passage de parole fait partie de ses outils")
+	}
+	raoul, _ := e.Membre(IDRaoul)
+	if got := e.Outils(raoul); len(got) != 0 {
+		t.Errorf("Raoul n'a pas d'outils d'équipe : %+v", got)
+	}
+	var sonde bool
+	for _, c := range e.Connecteurs() {
+		if c.Nom == "Sonde du VPS" {
+			sonde = c.Actif
+		}
+	}
+	if !sonde {
+		t.Error("la sonde est configurée : son connecteur doit être actif")
+	}
+}

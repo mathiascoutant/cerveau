@@ -160,6 +160,9 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	if err := s.ensureEchangeIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureRunIndexes(ctx); err != nil {
+		return err
+	}
 	return s.ensureInterlocuteurIndexes(ctx)
 }
 

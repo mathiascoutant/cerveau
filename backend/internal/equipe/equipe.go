@@ -100,6 +100,22 @@ type Demande struct {
 	// SansPassage : le membre répond lui-même, sans pouvoir passer la
 	// parole — il vient de la recevoir, et la repasser ferait boucler.
 	SansPassage bool
+	// Suivi : qui veut savoir quand un membre travaille pour un autre — la
+	// responsable qui confie une enquête à l'ingénieur. Nil : personne.
+	Suivi Suivi
+}
+
+// Suivi est prévenu quand un membre se met au travail pour un collègue. Le
+// bâtiment de Cerveau HQ s'en sert : l'ingénieur qui enquête pour la
+// responsable est au travail, et doit l'être aussi à l'écran.
+type Suivi interface {
+	Debut(agent, source, demande string) Travail
+}
+
+// Travail : une exécution en cours, qu'on informe de ses étapes et de sa fin.
+type Travail interface {
+	Etape(ev assistant.Event)
+	Fin(res assistant.Result, err error)
 }
 
 // Ask fait répondre un membre de l'équipe, en flux.

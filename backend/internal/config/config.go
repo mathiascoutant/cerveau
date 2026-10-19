@@ -67,6 +67,15 @@ type Config struct {
 	// Langue imposée à la synthèse. Sans elle le modèle devine, et un seul mot
 	// anglais dans une phrase française lui fait prendre l'accent.
 	ElevenLabsLanguage string
+	// AgentsConcurrence : tâches d'agents exécutées en même temps depuis
+	// Cerveau HQ (défaut 2). AgentsBudgetJour : tâches qu'on peut y lancer
+	// sur 24 heures (défaut 100). Afficher cent agents n'est pas en faire
+	// travailler cent.
+	AgentsConcurrence int
+	AgentsBudgetJour  int
+	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
+	// Vide : le serveur ne le sert pas.
+	HQDir string
 	// Voix : « appareil » fait parler l'équipe avec les voix gratuites du
 	// téléphone, ElevenLabs n'est alors plus appelé du tout — même avec une
 	// clé. Vide : ElevenLabs quand une clé est donnée.
@@ -153,6 +162,9 @@ func Load() (Config, error) {
 		ElevenLabsModel:       env("ELEVENLABS_MODEL", ""),
 		ElevenLabsLanguage:    env("ELEVENLABS_LANGUAGE", ""),
 		Voix:                  strings.ToLower(strings.TrimSpace(env("VOIX", ""))),
+		AgentsConcurrence:     envInt("AGENTS_CONCURRENCE"),
+		AgentsBudgetJour:      envInt("AGENTS_BUDGET_JOUR"),
+		HQDir:                 env("HQ_DIR", ""),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),

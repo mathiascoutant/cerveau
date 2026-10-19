@@ -41,6 +41,9 @@ type Server struct {
 	// passage de parole.
 	projets *projets.Service
 	equipe  *equipe.Equipe
+	// runs : le travail réel des agents — suivi, file, limites. Voir
+	// hq_runs.go.
+	runs *orchestre
 }
 
 // WithPerso branche le suivi des projets et l'équipe technique qui va avec.
@@ -74,6 +77,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),
 		confirm: newConfirmations(),
+		runs:    newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
 	}
 }
 
@@ -101,6 +105,13 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// Cerveau HQ, le bâtiment des agents : servi par le même serveur que
+	// l'API, pour qu'il n'y ait ni CORS ni second domaine à gérer.
+	if s.cfg.HQDir != "" {
+		r.Handle("/hq", http.RedirectHandler("/hq/", http.StatusMovedPermanently))
+		r.Handle("/hq/*", http.StripPrefix("/hq", spa(s.cfg.HQDir)))
+	}
 
 	// Retour d'autorisation Slack : c'est le navigateur qui arrive, l'identité
 	// vient du paramètre state, pas d'un token d'appareil.
@@ -173,6 +184,13 @@ func (s *Server) Routes() http.Handler {
 			// L'espace perso : ses projets, et l'équipe qui les suit.
 			r.Get("/perso/projets", s.handleProjets)
 			r.Get("/equipe", s.handleEquipe)
+
+			// Cerveau HQ : les agents réels, leur état et leurs tâches.
+			r.Get("/hq/agents", s.handleHQAgents)
+			r.Get("/hq/agents/{id}", s.handleHQAgent)
+			r.Post("/hq/agents/{id}/taches", s.handleHQLaunch)
+			r.Get("/hq/taches/{id}", s.handleHQTask)
+			r.Post("/hq/taches/{id}/annuler", s.handleHQCancel)
 			r.Put("/equipe/interlocuteur", s.handleInterlocuteur)
 			r.Post("/equipe/{id}/voix", s.handleVoixMembre)
 			r.Get("/equipe/connaissances", s.handleConnaissances)
