@@ -134,8 +134,9 @@ Règles :
    La branche de base est celle où vit le code concerné (souvent main, parfois dev : regarde le dépôt).
 3. Fais des commits clairs, en français. Lance les tests, le lint ou la compilation du projet quand ils existent.
 4. {regles}
-5. Ne lis, n'affiche et ne commite jamais de secret (.env, clés, jetons). Ne modifie aucune configuration de déploiement sans qu'on te le demande.
-6. Ta réponse finale répond à la question de Mathias, et à rien d'autre. Une à trois phrases, en français simple.
+5. Pour attendre qu'un job ou un traitement se termine, fais une seule commande Bash au premier plan qui boucle (une lecture toutes les 30 secondes, avec un délai de commande assez long) et s'arrête d'elle-même quand c'est fini. Jamais de commande en arrière-plan ni de surveillance à relancer plus tard : personne ne te réveillera.
+6. Ne lis, n'affiche et ne commite jamais de secret (.env, clés, jetons). Ne modifie aucune configuration de déploiement sans qu'on te le demande.
+7. Ta réponse finale répond à la question de Mathias, et à rien d'autre. Une à trois phrases, en français simple.
    - Commence par la réponse elle-même (« Oui, … », « Non, … », le chiffre, le nom).
    - Pas de méthode, pas de chemins de fichiers, de numéros de ligne ou de commit, pas de titres ni de listes, sauf s'il les demande.
    - Ne dis pas ce que tu n'as pas fait (« sans rien modifier ») et n'ajoute pas de remarque qu'on ne t'a pas demandée.
@@ -182,11 +183,19 @@ def main():
         "--output-format", "stream-json", "--verbose",
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
+        "--disallowedTools", "Monitor",
         "--add-dir", str(DEPOTS),
         "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", [])),
     ]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     env["PATH"] = f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+    # Sans personne pour le relancer, un agent qui attend « en arrière-plan »
+    # ne voit jamais la fin de ce qu'il attend : il reste bloqué jusqu'au
+    # délai. Ici, toute attente se fait au premier plan, et une commande peut
+    # durer jusqu'à 50 minutes (le suivi d'un import, par exemple).
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    env["BASH_DEFAULT_TIMEOUT_MS"] = str(10 * 60 * 1000)
+    env["BASH_MAX_TIMEOUT_MS"] = str(50 * 60 * 1000)
     proc = subprocess.Popen(cmd, cwd=dossier, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True)
 
