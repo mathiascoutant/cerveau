@@ -37,8 +37,12 @@ import (
 
 const (
 	veilleDefautMinutes = 1
-	veilleTimeout       = 3 * time.Minute
-	veilleMaxMessages   = 25
+	// Slack limite les lectures d'historique par minute, pour tout le jeton :
+	// relever chaque minute le faisait refuser (« ratelimited »), et Raoul
+	// avec. Slack est donc relevé moins souvent que les mails et WhatsApp.
+	veilleSlackMinutes = 3
+	veilleTimeout      = 3 * time.Minute
+	veilleMaxMessages  = 25
 )
 
 // veilleSources : ce que chaque agent relève.
@@ -88,6 +92,11 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 }
 
 func (s *Server) veilleTour(ctx context.Context) {
+	slackEvery := time.Duration(max(s.cfg.VeilleMinutesSlack, veilleSlackMinutes)) * time.Minute
+	slackDue := time.Since(s.veilleSlackAt) >= slackEvery-10*time.Second
+	if slackDue {
+		s.veilleSlackAt = time.Now()
+	}
 	for _, email := range s.cfg.VeilleComptes {
 		user, err := s.store.UserByEmail(ctx, email)
 		if err != nil {
@@ -98,7 +107,7 @@ func (s *Server) veilleTour(ctx context.Context) {
 		for _, v := range veilleSources {
 			connected := (v.Source == "mail" && src.Mail) || (v.Source == "slack" && src.Slack) || (v.Source == "whatsapp" && src.WhatsApp)
 			agent, ok := equipe.VeilleDe(s.equipe.Roster(), v.Source)
-			if !connected || !ok {
+			if !connected || !ok || (v.Source == "slack" && !slackDue) {
 				continue
 			}
 			vctx, cancel := context.WithTimeout(ctx, veilleTimeout)

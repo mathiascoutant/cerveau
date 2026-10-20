@@ -93,6 +93,9 @@ type Config struct {
 	// combien de minutes (1 par défaut).
 	VeilleComptes []string
 	VeilleMinutes int
+	// VeilleMinutesSlack : Slack limite ses lectures par minute ; il est
+	// relevé au plus souvent toutes les 3 minutes.
+	VeilleMinutesSlack int
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -194,6 +197,7 @@ func Load() (Config, error) {
 		AtelierMCPEmail:       env("ATELIER_MCP_EMAIL", ""),
 		VeilleComptes:         splitList(env("VEILLE_COMPTES", "")),
 		VeilleMinutes:         envInt("VEILLE_MINUTES"),
+		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),

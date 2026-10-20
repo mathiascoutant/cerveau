@@ -125,7 +125,7 @@ func Roster(v Voix) []Membre {
 			ID: IDVeilleSlack, Nom: "Sacha", Role: "Veille Slack",
 			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "slack",
 			Couleur:      "#C4B5FD",
-			Presentation: "Sacha suit tes canaux et messages privés Slack et te prévient dès qu'on te mentionne ou qu'une info compte.",
+			Presentation: "Sacha suit tes canaux et messages privés Slack toutes les trois minutes et te prévient dès qu'on te mentionne ou qu'une info compte.",
 			Quand:        "ce qui se passe sur Slack : les mentions, les messages privés, ce qui s'est dit dans un canal",
 		},
 		{

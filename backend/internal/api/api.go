@@ -50,6 +50,8 @@ type Server struct {
 	// atelier : Claude Code sur le VPS, pour les tâches confiées aux agents.
 	// Nil : ces tâches passent par le moteur habituel.
 	atelier *atelier.Client
+	// veilleSlackAt : la dernière relève Slack de la veille (voir veille.go).
+	veilleSlackAt time.Time
 }
 
 // WithPerso branche le suivi des projets et l'équipe technique qui va avec.
