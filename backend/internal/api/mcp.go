@@ -1,0 +1,122 @@
+package api
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
+	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
+)
+
+// Le serveur MCP de Cerveau : les outils de lecture de Raoul, pour l'atelier.
+//
+// Claude Code, qui fait les tâches des agents sur le VPS, parle MCP. Ce point
+// d'entrée lui prête ce que Raoul sait lire — mails pro et perso, Slack,
+// WhatsApp, agenda, tâches, tickets — pour le compte de Mathias, et rien
+// d'autre : aucun outil n'écrit (voir assistant/lecture.go). Il n'existe que si
+// ATELIER_MCP_TOKEN et ATELIER_MCP_EMAIL sont donnés ; le jeton est propre à
+// l'atelier, distinct de toute session d'appareil.
+//
+// Transport : MCP « streamable HTTP », réduit à l'essentiel — une requête
+// JSON-RPC par POST, une réponse JSON. Pas de flux SSE.
+
+const mcpToolTimeout = 90 * time.Second
+
+type rpcRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type rpcError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if s.cfg.AtelierMCPToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AtelierMCPToken)) != 1 {
+		httpx.Error(w, http.StatusUnauthorized, "jeton MCP invalide")
+		return
+	}
+	user, err := s.store.UserByEmail(r.Context(), s.cfg.AtelierMCPEmail)
+	if err != nil {
+		httpx.Error(w, http.StatusServiceUnavailable, "compte de l'atelier introuvable")
+		return
+	}
+	var req rpcRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeRPC(w, nil, nil, &rpcError{Code: -32700, Message: "requête illisible"})
+		return
+	}
+	// Une notification n'attend pas de réponse.
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	switch req.Method {
+	case "initialize":
+		var p struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		if p.ProtocolVersion == "" {
+			p.ProtocolVersion = "2025-06-18"
+		}
+		writeRPC(w, req.ID, map[string]any{
+			"protocolVersion": p.ProtocolVersion,
+			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+			"serverInfo":      map[string]any{"name": "cerveau", "version": "1"},
+			"instructions": "Les outils de lecture de Raoul, l'assistant de Mathias : ses mails (pro et perso), Slack, WhatsApp, " +
+				"son agenda, ses tâches et ses tickets. Lecture seule : rien n'est envoyé ni modifié.",
+		}, nil)
+	case "ping":
+		writeRPC(w, req.ID, map[string]any{}, nil)
+	case "tools/list":
+		writeRPC(w, req.ID, map[string]any{"tools": assistant.ReadToolSpecs(s.sources(r.Context(), user))}, nil)
+	case "tools/call":
+		var p struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil || p.Name == "" {
+			writeRPC(w, req.ID, nil, &rpcError{Code: -32602, Message: "outil manquant"})
+			return
+		}
+		args := string(p.Arguments)
+		if args == "" || args == "null" {
+			args = "{}"
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), mcpToolTimeout)
+		defer cancel()
+		out, err := s.engine.RunReadTool(ctx, s.toolbox(user), s.sources(ctx, user), s.location(user), p.Name, args)
+		if err != nil {
+			slog.Warn("outil MCP en échec", "outil", p.Name, "err", err)
+			writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil)
+			return
+		}
+		writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": out}}, "isError": false}, nil)
+	default:
+		writeRPC(w, req.ID, nil, &rpcError{Code: -32601, Message: "méthode inconnue : " + req.Method})
+	}
+}
+
+func writeRPC(w http.ResponseWriter, id json.RawMessage, result any, rpcErr *rpcError) {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	resp := map[string]any{"jsonrpc": "2.0", "id": id}
+	if rpcErr != nil {
+		resp["error"] = rpcErr
+	} else {
+		resp["result"] = result
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

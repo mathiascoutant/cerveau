@@ -83,6 +83,11 @@ type Config struct {
 	AtelierCleHote    string
 	AtelierKnownHosts string
 	AtelierDureeMax   int
+	// AtelierMCPToken et AtelierMCPEmail : le serveur MCP (/mcp) qui prête
+	// à l'atelier les outils de lecture de Raoul, pour ce compte-là. Vides :
+	// pas de serveur MCP.
+	AtelierMCPToken string
+	AtelierMCPEmail string
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -180,6 +185,8 @@ func Load() (Config, error) {
 		AtelierCleHote:        env("ATELIER_CLE_HOTE", env("SONDE_CLE_HOTE", "")),
 		AtelierKnownHosts:     env("ATELIER_KNOWN_HOSTS", env("SONDE_KNOWN_HOSTS", "")),
 		AtelierDureeMax:       envInt("ATELIER_DUREE_MAX"),
+		AtelierMCPToken:       env("ATELIER_MCP_TOKEN", ""),
+		AtelierMCPEmail:       env("ATELIER_MCP_EMAIL", ""),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),

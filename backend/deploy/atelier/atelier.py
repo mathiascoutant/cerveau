@@ -38,6 +38,8 @@ CONFIG = HOME / "atelier" / "config.json"
 DEPOTS = HOME / "depots"
 TRAVAIL = HOME / "travail"
 CLAUDE = HOME / ".local" / "bin" / "claude"
+SECRETS = HOME / "atelier" / "secrets.env"  # jetons des outils (600), jamais dans la consigne
+MCP = HOME / "atelier" / "mcp.json"
 GARDER_JOURS = 7
 
 
@@ -185,10 +187,20 @@ def main():
         "--no-session-persistence",
         "--disallowedTools", "Monitor",
         "--add-dir", str(DEPOTS),
+        *(["--mcp-config", str(MCP)] if MCP.exists() else []),
         "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", [])),
     ]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     env["PATH"] = f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+    # Les jetons des outils (le serveur MCP de Cerveau) : Claude Code les lit
+    # dans son environnement, la consigne n'en contient aucun.
+    try:
+        for ligne in SECRETS.read_text().splitlines():
+            if "=" in ligne and not ligne.lstrip().startswith("#"):
+                k, v = ligne.split("=", 1)
+                env[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
     # Sans personne pour le relancer, un agent qui attend « en arrière-plan »
     # ne voit jamais la fin de ce qu'il attend : il reste bloqué jusqu'au
     # délai. Ici, toute attente se fait au premier plan, et une commande peut

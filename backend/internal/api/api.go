@@ -132,6 +132,14 @@ func (s *Server) Routes() http.Handler {
 		r.Handle("/hq/*", http.StripPrefix("/hq", spa(s.cfg.HQDir)))
 	}
 
+	// Le serveur MCP de l'atelier : les outils de lecture de Raoul, avec son
+	// propre jeton (voir mcp.go).
+	if s.cfg.AtelierMCPToken != "" && s.cfg.AtelierMCPEmail != "" {
+		r.Post("/mcp", s.handleMCP)
+		r.Get("/mcp", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusMethodNotAllowed) })
+		r.Delete("/mcp", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusMethodNotAllowed) })
+	}
+
 	// Retour d'autorisation Slack : c'est le navigateur qui arrive, l'identité
 	// vient du paramètre state, pas d'un token d'appareil.
 	r.Get("/oauth/slack/callback", s.handleSlackOAuthCallback)

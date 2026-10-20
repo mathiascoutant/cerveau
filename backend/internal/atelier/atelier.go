@@ -274,6 +274,10 @@ func (r *reader) closeOpen() {
 
 // Label : l'étape telle qu'on la lit dans le bâtiment.
 func Label(tool string, input json.RawMessage) string {
+	// Les outils de Raoul prêtés par le serveur MCP de Cerveau.
+	if name, ok := strings.CutPrefix(tool, "mcp__cerveau__"); ok {
+		return assistant.ToolLabel(name)
+	}
 	switch tool {
 	case "Read", "NotebookRead":
 		return "Lecture du code"
