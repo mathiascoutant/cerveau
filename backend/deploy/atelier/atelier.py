@@ -154,6 +154,49 @@ def regles_push(cfg):
             "pour GitHub, ou https://<hôte>/<propriétaire>/<dépôt>/compare/<base>...<branche> pour Gitea.")
 
 
+def juger(tache, cfg):
+    """Un jugement court pour la veille : lire des messages, dire ce qui
+    compte. Ni dépôts, ni outils, ni serveur MCP : un modèle plus léger
+    répond directement, sur l'abonnement Claude."""
+    dossier = TRAVAIL / "veille"
+    dossier.mkdir(parents=True, exist_ok=True)
+    emit({"type": "atelier", "event": "pret", "depots": [], "erreurs": [],
+          "modele": cfg.get("modele_veille"), "effort": cfg.get("effort_veille")})
+    cmd = [
+        str(CLAUDE), "-p", tache["demande"],
+        "--model", cfg.get("modele_veille", "claude-sonnet-5-5"),
+        "--effort", cfg.get("effort_veille", "low"),
+        "--output-format", "stream-json", "--verbose",
+        "--no-session-persistence",
+        "--disallowedTools", "Bash,Edit,MultiEdit,Write,Read,Glob,Grep,LS,WebFetch,WebSearch,Task,Agent,NotebookEdit,TodoWrite,Monitor",
+        "--append-system-prompt", str(tache.get("consigne", "")) + "\nRéponds directement, sans utiliser d'outil.",
+    ]
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    env["PATH"] = f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    proc = subprocess.Popen(cmd, cwd=dossier, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True)
+
+    def surveiller_entree():
+        sys.stdin.read()
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    threading.Thread(target=surveiller_entree, daemon=True).start()
+    erreurs_claude = []
+    threading.Thread(target=lambda: erreurs_claude.extend(proc.stderr.readlines()[-20:]), daemon=True).start()
+    for out in proc.stdout:
+        sys.stdout.write(out)
+        sys.stdout.flush()
+    code = proc.wait()
+    if code != 0:
+        emit({"type": "atelier", "event": "fin", "code": code, "stderr": "".join(erreurs_claude)[-2000:]})
+    os._exit(code)
+
+
 def main():
     ligne = sys.stdin.readline()
     if not ligne:
@@ -171,6 +214,9 @@ def main():
     cfg = config()
     if not CLAUDE.exists():
         fail("Claude Code n'est pas installé pour l'utilisateur atelier")
+    if tache.get("mode") == "jugement":
+        juger(tache, cfg)
+        return
     nettoyer()
     depots, erreurs = synchroniser(cfg.get("depots", []))
     dossier = TRAVAIL / run

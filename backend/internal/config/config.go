@@ -90,7 +90,7 @@ type Config struct {
 	AtelierMCPEmail string
 	// VeilleComptes : les comptes (emails) dont la veille relève les mails
 	// pro, Slack et WhatsApp ; vide, pas de veille. VeilleMinutes : tous les
-	// combien (10 par défaut).
+	// combien de minutes (1 par défaut).
 	VeilleComptes []string
 	VeilleMinutes int
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.

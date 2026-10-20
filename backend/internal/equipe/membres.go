@@ -118,7 +118,7 @@ func Roster(v Voix) []Membre {
 			ID: IDVeilleMail, Nom: "Inès", Role: "Veille des mails pro",
 			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "mail",
 			Couleur:      "#93C5FD",
-			Presentation: "Elle relève tes mails pro toutes les dix minutes et te prévient dès qu'un message demande ton attention.",
+			Presentation: "Elle relève tes mails pro chaque minute et te prévient dès qu'un message demande ton attention.",
 			Quand:        "ce qui se passe dans ses mails pro : qui lui a écrit, ce qu'on attend de lui, un mail précis à retrouver",
 		},
 		{

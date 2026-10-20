@@ -29,14 +29,14 @@ import (
 // ce qui s'adresse vraiment à Mathias (le même tri que les urgences de l'app :
 // adressé à lui, mention, message privé — des règles, pas de modèle), et on
 // écarte ce que l'agent a déjà regardé. Ce n'est que s'il reste du neuf que
-// l'agent se met au travail — et le bâtiment le montre — pour juger, avec le
-// modèle rapide, ce qui mérite une notification.
+// l'agent se met au travail — et le bâtiment le montre — pour juger, avec
+// Claude (par l'atelier), ce qui mérite une notification.
 //
 // La toute première relève d'un agent ne signale rien : elle note ce qui est
 // déjà là, pour ne pas réveiller Mathias avec trois jours de messages.
 
 const (
-	veilleDefautMinutes = 10
+	veilleDefautMinutes = 1
 	veilleTimeout       = 3 * time.Minute
 	veilleMaxMessages   = 25
 )
@@ -221,7 +221,13 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 			fmt.Fprintf(&b, "    extrait : %s\n", truncateRunes(it.Apercu, 600))
 		}
 	}
-	out, err := s.engine.Classify(ctx, fmt.Sprintf(veilleConsigne, label), b.String())
+	// Le jugement passe par Claude (l'atelier, sur l'abonnement) ; le modèle
+	// rapide du moteur ne sert que si l'atelier n'est pas configuré.
+	judge := s.engine.Classify
+	if s.atelier != nil {
+		judge = s.atelier.Classify
+	}
+	out, err := judge(ctx, fmt.Sprintf(veilleConsigne, label), b.String())
 	run.Etape(assistant.Event{Type: "status", Tool: "veille", Ms: max(1, time.Since(started).Milliseconds())})
 	if err != nil {
 		run.Fin(assistant.Result{}, err)

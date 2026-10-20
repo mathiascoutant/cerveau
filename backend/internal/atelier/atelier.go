@@ -36,6 +36,10 @@ type Tache struct {
 	Role         string `json:"role"`
 	Presentation string `json:"presentation"`
 	Demande      string `json:"demande"`
+	// Mode « jugement » : une réponse courte, sans dépôts ni outils (la
+	// veille). Consigne : ce qu'on attend, ajouté aux instructions.
+	Mode     string `json:"mode,omitempty"`
+	Consigne string `json:"consigne,omitempty"`
 }
 
 // Client joint l'atelier. Une connexion par tâche : elles durent des minutes,
@@ -128,6 +132,19 @@ func (c *Client) Run(ctx context.Context, t Tache, emit assistant.Emitter) (assi
 		return assistant.Result{}, fmt.Errorf("atelier : %s", msg)
 	}
 	return *r.result, nil
+}
+
+// Classify : un jugement court par Claude, sur l'abonnement — même forme que
+// le classement du moteur, pour pouvoir le remplacer.
+func (c *Client) Classify(ctx context.Context, instructions, input string) (string, error) {
+	res, err := c.Run(ctx, Tache{
+		Run: fmt.Sprintf("jugement%d", time.Now().UnixNano()), Mode: "jugement",
+		Consigne: instructions, Demande: input,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	return res.Reply, nil
 }
 
 type limited struct {
