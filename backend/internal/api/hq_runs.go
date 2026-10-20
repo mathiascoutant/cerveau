@@ -191,17 +191,36 @@ func (o *orchestre) suiviPour(user bson.ObjectID, parent *liveRun) equipe.Suivi 
 // atteint.
 var errBudget = errors.New("budget du jour atteint : plus de nouvelle tâche avant demain")
 
-// enqueue accepte une tâche pour un agent et la met en file. exec la fait
-// travailler une fois sa place obtenue.
+// runOpts : d'où vient une tâche mise en file. Source vide : le bâtiment.
+// Parent : la tâche qui l'a confiée (le responsable qui délègue).
+type runOpts struct {
+	Source      string
+	Parent      *bson.ObjectID
+	Affectation string
+	Limit       time.Duration
+}
+
+// enqueue accepte une tâche du bâtiment pour un agent et la met en file.
 func (o *orchestre) enqueue(user bson.ObjectID, agent, demande, affectation string, limit time.Duration, exec func(ctx context.Context, lr *liveRun) (assistant.Result, error)) (store.AgentRun, error) {
+	return o.enqueueRun(user, agent, demande, runOpts{Affectation: affectation, Limit: limit}, exec)
+}
+
+// enqueueRun accepte une tâche pour un agent et la met en file. exec la fait
+// travailler une fois sa place obtenue.
+func (o *orchestre) enqueueRun(user bson.ObjectID, agent, demande string, opts runOpts, exec func(ctx context.Context, lr *liveRun) (assistant.Result, error)) (store.AgentRun, error) {
 	ctx := context.Background()
+	source := opts.Source
+	if source == "" {
+		source = store.RunSourceHQ
+	}
+	limit := opts.Limit
 	used, err := o.store.CountRunsSince(ctx, user, store.RunSourceHQ, time.Now().Add(-24*time.Hour))
 	if err == nil && int(used) >= o.budget {
 		return store.AgentRun{}, errBudget
 	}
 	run, err := o.store.InsertRun(ctx, store.AgentRun{
-		UserID: user, Agent: agent, Source: store.RunSourceHQ, Demande: strings.TrimSpace(demande),
-		Affectation: affectation, Statut: store.RunEnAttente, CreatedAt: time.Now(),
+		UserID: user, Agent: agent, Source: source, Demande: strings.TrimSpace(demande),
+		Affectation: opts.Affectation, Parent: opts.Parent, Statut: store.RunEnAttente, CreatedAt: time.Now(),
 	})
 	if err != nil {
 		return store.AgentRun{}, err

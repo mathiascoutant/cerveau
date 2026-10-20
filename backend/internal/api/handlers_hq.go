@@ -335,24 +335,33 @@ func (s *Server) launchError(w http.ResponseWriter, err error) {
 	httpx.Error(w, http.StatusInternalServerError, "la tâche n'a pas pu être lancée")
 }
 
-// launchHQ met une tâche en file pour un agent. Avec l'atelier, c'est Claude
-// Code qui la fait, sur le VPS, avec les dépôts ; sans lui, le moteur de
-// l'équipe, comme en conversation.
+// launchHQ met une tâche du bâtiment en file pour un agent.
 func (s *Server) launchHQ(user *store.User, m equipe.Membre, demande, affectation string) (store.AgentRun, error) {
+	consigne := ""
+	if m.Pilote {
+		consigne = s.consignePilote(m)
+	}
+	return s.launchRun(user, m, demande, runOpts{Affectation: affectation}, consigne)
+}
+
+// launchRun met une tâche en file pour un agent. Avec l'atelier, c'est Claude
+// Code qui la fait, sur le VPS, avec les dépôts ; sans lui, le moteur de
+// l'équipe, comme en conversation. consigne s'ajoute à ses instructions.
+func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, opts runOpts, consigne string) (store.AgentRun, error) {
 	tz := user.Timezone
 	if tz == "" {
 		tz = s.cfg.DefaultTimezone
 	}
-	var limit time.Duration
-	if s.atelier != nil {
-		limit = time.Duration(max(s.cfg.AtelierDureeMax, 60)) * time.Minute
+	if s.atelier != nil && opts.Limit == 0 {
+		opts.Limit = time.Duration(max(s.cfg.AtelierDureeMax, 60)) * time.Minute
 	}
-	return s.runs.enqueue(user.ID, m.ID, demande, affectation, limit, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
+	return s.runs.enqueueRun(user.ID, m.ID, demande, opts, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
 		var res assistant.Result
 		var err error
 		if s.atelier != nil {
 			res, err = s.atelier.Run(ctx, atelier.Tache{
-				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation, Demande: demande,
+				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation,
+				Demande: demande, Consigne: consigne,
 			}, lr.Etape)
 		} else {
 			res, err = s.equipe.Ask(ctx, m.ID, equipe.Demande{
@@ -364,7 +373,7 @@ func (s *Server) launchHQ(user *store.User, m equipe.Membre, demande, affectatio
 				Suivi:       s.runs.suiviPour(user.ID, lr),
 			}, lr.Etape)
 		}
-		if err == nil && strings.TrimSpace(res.Reply) != "" {
+		if err == nil && strings.TrimSpace(res.Reply) != "" && opts.Source == "" {
 			// La tâche rejoint l'historique de l'agent, comme une question
 			// posée en conversation : la suite peut s'y référer.
 			_ = s.store.SaveInteraction(context.WithoutCancel(ctx), store.Interaction{

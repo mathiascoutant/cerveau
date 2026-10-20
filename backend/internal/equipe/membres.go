@@ -19,11 +19,16 @@ const (
 	IDRaoul       = "raoul"
 	IDResponsable = "responsable_info"
 	IDIngenieur   = "ingenieur"
+	// Le responsable qui pilote tous les agents depuis Cerveau HQ.
+	IDPilote = "responsable"
 	// La veille : un agent par messagerie.
 	IDVeilleMail     = "veille_mail"
 	IDVeilleSlack    = "veille_slack"
 	IDVeilleWhatsApp = "veille_whatsapp"
 )
+
+// EquipeDirection : le responsable qui pilote l'équipe.
+const EquipeDirection = "direction"
 
 // EquipeVeille : les agents qui surveillent les messageries.
 const EquipeVeille = "veille"
@@ -54,6 +59,9 @@ type Membre struct {
 	// Veille : la messagerie que surveille un agent de veille (« mail »,
 	// « slack », « whatsapp ») ; vide pour les autres.
 	Veille string `json:"veille,omitempty"`
+	// Pilote : il répartit le travail entre les agents, depuis Cerveau HQ.
+	// Il ne prend pas la parole en conversation.
+	Pilote bool `json:"pilote,omitempty"`
 	// Bonjour : ce qu'il dit pour se présenter, dans sa voix et à la première
 	// personne — l'écran Équipe le fait entendre.
 	Bonjour string `json:"-"`
@@ -97,8 +105,15 @@ func Roster(v Voix) []Membre {
 			Bonjour:      "Salut, c'est Raoul. Je m'occupe de tout, ton agenda, tes mails, tes messages, et quand il faut un spécialiste pour tes projets, je te passe l'équipe.",
 		},
 		{
+			ID: IDPilote, Nom: "Hugo", Role: "Responsable de l'équipe",
+			Equipe: EquipeDirection, Superieur: IDRaoul, Pilote: true,
+			Couleur:      "#FFD166",
+			Presentation: "Il pilote toute l'équipe : il répartit ton travail entre les agents, fait circuler l'information de l'un à l'autre et te rend compte.",
+			Quand:        "les demandes qui touchent plusieurs sujets ou plusieurs agents, l'avancement d'une fonctionnalité ou d'un projet, tout ce qu'il faut coordonner",
+		},
+		{
 			ID: IDResponsable, Nom: "Claire", Role: "Responsable informatique",
-			Equipe: EquipeInformatique, Superieur: IDRaoul, Espace: "perso",
+			Equipe: EquipeInformatique, Superieur: IDPilote, Espace: "perso",
 			Couleur:      "#F39BD0",
 			Voix:         pick(v.Responsable, VoixResponsable),
 			Presentation: "Elle a la vue d'ensemble de tes projets perso, arbitre les priorités et confie les enquêtes à l'ingénieur.",
@@ -116,21 +131,21 @@ func Roster(v Voix) []Membre {
 		},
 		{
 			ID: IDVeilleMail, Nom: "Inès", Role: "Veille des mails pro",
-			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "mail",
+			Equipe: EquipeVeille, Superieur: IDPilote, Espace: "pro", Veille: "mail",
 			Couleur:      "#93C5FD",
 			Presentation: "Elle relève tes mails pro chaque minute et te prévient dès qu'un message demande ton attention.",
 			Quand:        "ce qui se passe dans ses mails pro : qui lui a écrit, ce qu'on attend de lui, un mail précis à retrouver",
 		},
 		{
 			ID: IDVeilleSlack, Nom: "Sacha", Role: "Veille Slack",
-			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "slack",
+			Equipe: EquipeVeille, Superieur: IDPilote, Espace: "pro", Veille: "slack",
 			Couleur:      "#C4B5FD",
 			Presentation: "Sacha suit tes canaux et messages privés Slack toutes les trois minutes et te prévient dès qu'on te mentionne ou qu'une info compte.",
 			Quand:        "ce qui se passe sur Slack : les mentions, les messages privés, ce qui s'est dit dans un canal",
 		},
 		{
 			ID: IDVeilleWhatsApp, Nom: "Nora", Role: "Veille WhatsApp",
-			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "whatsapp",
+			Equipe: EquipeVeille, Superieur: IDPilote, Espace: "pro", Veille: "whatsapp",
 			Couleur:      "#A3E635",
 			Presentation: "Elle lit tes conversations WhatsApp et te prévient dès qu'un message important t'attend.",
 			Quand:        "ce qui se passe sur WhatsApp : qui lui a écrit, une conversation à résumer",
@@ -153,8 +168,9 @@ func VeilleDe(roster []Membre, source string) (Membre, bool) {
 func Collegues(roster []Membre, from string) []assistant.Collegue {
 	var out []assistant.Collegue
 	for _, m := range roster {
-		// Les agents de veille surveillent ; on ne leur passe pas la parole.
-		if m.ID == from || m.Veille != "" {
+		// La veille surveille et le responsable pilote depuis le bâtiment : on
+		// ne leur passe pas la parole en conversation.
+		if m.ID == from || m.Veille != "" || m.Pilote {
 			continue
 		}
 		quand := m.Quand

@@ -79,7 +79,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "ping":
 		writeRPC(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		writeRPC(w, req.ID, map[string]any{"tools": assistant.ReadToolSpecs(s.sources(r.Context(), user))}, nil)
+		tools := assistant.ReadToolSpecs(s.sources(r.Context(), user))
+		// Le responsable, en plein travail, a aussi de quoi déléguer.
+		if _, moi, ok := s.pilote(r, user); ok {
+			tools = append(tools, s.piloteTools(moi)...)
+		}
+		writeRPC(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -93,9 +98,20 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		if args == "" || args == "null" {
 			args = "{}"
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), mcpToolTimeout)
-		defer cancel()
-		out, err := s.engine.RunReadTool(ctx, s.toolbox(user), s.sources(ctx, user), s.location(user), p.Name, args)
+		var out string
+		var err error
+		if p.Name == "confier_a_un_agent" || p.Name == "suivre_tache" {
+			caller, moi, ok := s.pilote(r, user)
+			if !ok {
+				writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "seul le responsable de l'équipe délègue"}}, "isError": true}, nil)
+				return
+			}
+			out, err = s.piloteCall(r.Context(), user, caller, moi, p.Name, args)
+		} else {
+			ctx, cancel := context.WithTimeout(r.Context(), mcpToolTimeout)
+			defer cancel()
+			out, err = s.engine.RunReadTool(ctx, s.toolbox(user), s.sources(ctx, user), s.location(user), p.Name, args)
+		}
 		if err != nil {
 			slog.Warn("outil MCP en échec", "outil", p.Name, "err", err)
 			writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil)

@@ -80,7 +80,7 @@ func TestCollegues(t *testing.T) {
 	}
 	// Ceux qui parlent ont une voix ; la veille ne parle pas, elle prévient.
 	for _, m := range roster {
-		if m.ID != IDRaoul && m.Veille == "" && m.Voix == "" {
+		if m.ID != IDRaoul && m.Veille == "" && !m.Pilote && m.Voix == "" {
 			t.Errorf("%s n'a pas de voix", m.ID)
 		}
 	}
@@ -142,7 +142,7 @@ func TestOutilsSelonLesCapacites(t *testing.T) {
 func TestConsigneIngenieur(t *testing.T) {
 	roster := Roster(Voix{})
 	c := contexte{
-		moi: roster[2], roster: roster, userName: "Mathias", now: time.Date(2026, 10, 18, 18, 0, 0, 0, time.UTC), tz: "Europe/Paris",
+		moi: membreDe(roster, IDIngenieur), roster: roster, userName: "Mathias", now: time.Date(2026, 10, 18, 18, 0, 0, 0, time.UTC), tz: "Europe/Paris",
 		capacites: capacites{projets: true, sonde: true, github: true, code: true},
 		fiches:    []store.Connaissance{{Projet: "neurorun", Sujet: "Vue d'ensemble", Contenu: "Coach de course.", UpdatedAt: time.Now()}},
 		index:     []store.Connaissance{{Projet: "neurorun", Sujet: "Connexion et authentification"}},
@@ -170,7 +170,7 @@ func TestConsigneIngenieur(t *testing.T) {
 func TestConsigneResponsableDelegueQuandOnLeDemande(t *testing.T) {
 	roster := Roster(Voix{})
 	c := contexte{
-		moi: roster[1], roster: roster, userName: "Mathias", now: time.Date(2026, 10, 18, 18, 0, 0, 0, time.UTC), tz: "Europe/Paris",
+		moi: membreDe(roster, IDResponsable), roster: roster, userName: "Mathias", now: time.Date(2026, 10, 18, 18, 0, 0, 0, time.UTC), tz: "Europe/Paris",
 		capacites: capacites{projets: true, sonde: true, github: true, code: true},
 	}
 	prompt := consigneResponsable(c)
@@ -211,4 +211,13 @@ func TestOutilsExposes(t *testing.T) {
 	if !sonde {
 		t.Error("la sonde est configurée : son connecteur doit être actif")
 	}
+}
+
+func membreDe(roster []Membre, id string) Membre {
+	for _, m := range roster {
+		if m.ID == id {
+			return m
+		}
+	}
+	return Membre{}
 }

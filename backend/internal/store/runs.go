@@ -208,3 +208,8 @@ func (s *Store) DropForTests(ctx context.Context) error {
 	}
 	return s.Close(ctx)
 }
+
+// CountChildren : combien de tâches une exécution a confiées à d'autres.
+func (s *Store) CountChildren(ctx context.Context, parent bson.ObjectID) (int64, error) {
+	return s.agentRuns().CountDocuments(ctx, bson.M{"parent": parent})
+}

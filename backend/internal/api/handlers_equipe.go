@@ -51,7 +51,7 @@ func (s *Server) handleEquipe(w http.ResponseWriter, r *http.Request) {
 	// parle pas, n'y figure pas (elle est dans Cerveau HQ).
 	var membres []equipe.Membre
 	for _, m := range s.equipe.Roster() {
-		if m.Veille == "" {
+		if m.Veille == "" && !m.Pilote {
 			membres = append(membres, m)
 		}
 	}

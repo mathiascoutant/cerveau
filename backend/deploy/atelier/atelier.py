@@ -234,7 +234,8 @@ def main():
         "--disallowedTools", "Monitor",
         "--add-dir", str(DEPOTS),
         *(["--mcp-config", str(MCP)] if MCP.exists() else []),
-        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", [])),
+        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", []))
+        + (("\n\n" + str(tache["consigne"])) if tache.get("consigne") else ""),
     ]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
     env["PATH"] = f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
@@ -247,6 +248,11 @@ def main():
                 env[k.strip()] = v.strip()
     except FileNotFoundError:
         pass
+    # Le serveur MCP de Cerveau reconnaît la tâche en cours (le responsable
+    # y trouve ses outils de délégation) ; une attente de suivi dure jusqu'à
+    # 90 secondes.
+    env["CERVEAU_RUN"] = tache["run"]
+    env["MCP_TOOL_TIMEOUT"] = str(150 * 1000)
     # Sans personne pour le relancer, un agent qui attend « en arrière-plan »
     # ne voit jamais la fin de ce qu'il attend : il reste bloqué jusqu'au
     # délai. Ici, toute attente se fait au premier plan, et une commande peut
