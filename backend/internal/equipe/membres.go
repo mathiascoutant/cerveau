@@ -19,7 +19,14 @@ const (
 	IDRaoul       = "raoul"
 	IDResponsable = "responsable_info"
 	IDIngenieur   = "ingenieur"
+	// La veille : un agent par messagerie.
+	IDVeilleMail     = "veille_mail"
+	IDVeilleSlack    = "veille_slack"
+	IDVeilleWhatsApp = "veille_whatsapp"
 )
+
+// EquipeVeille : les agents qui surveillent les messageries.
+const EquipeVeille = "veille"
 
 // EquipeInformatique : l'équipe technique des projets perso.
 const EquipeInformatique = "informatique"
@@ -44,6 +51,9 @@ type Membre struct {
 	// Quand : ce pour quoi on le fait venir. C'est ce qui apprend à Raoul à
 	// qui passer quoi.
 	Quand string `json:"-"`
+	// Veille : la messagerie que surveille un agent de veille (« mail »,
+	// « slack », « whatsapp ») ; vide pour les autres.
+	Veille string `json:"veille,omitempty"`
 	// Bonjour : ce qu'il dit pour se présenter, dans sa voix et à la première
 	// personne — l'écran Équipe le fait entendre.
 	Bonjour string `json:"-"`
@@ -104,7 +114,38 @@ func Roster(v Voix) []Membre {
 			Quand:        "tout ce qui demande de creuser : une panne, une lenteur, un déploiement raté, une question sur le code, une base de données, le VPS",
 			Bonjour:      "Salut, c'est Léo, ton ingénieur logiciel. Je connais le code, le VPS, les bases et la CI de tes projets : quand quelque chose cloche, c'est moi qui regarde.",
 		},
+		{
+			ID: IDVeilleMail, Nom: "Inès", Role: "Veille des mails pro",
+			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "mail",
+			Couleur:      "#93C5FD",
+			Presentation: "Elle relève tes mails pro toutes les dix minutes et te prévient dès qu'un message demande ton attention.",
+			Quand:        "ce qui se passe dans ses mails pro : qui lui a écrit, ce qu'on attend de lui, un mail précis à retrouver",
+		},
+		{
+			ID: IDVeilleSlack, Nom: "Sacha", Role: "Veille Slack",
+			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "slack",
+			Couleur:      "#C4B5FD",
+			Presentation: "Sacha suit tes canaux et messages privés Slack et te prévient dès qu'on te mentionne ou qu'une info compte.",
+			Quand:        "ce qui se passe sur Slack : les mentions, les messages privés, ce qui s'est dit dans un canal",
+		},
+		{
+			ID: IDVeilleWhatsApp, Nom: "Nora", Role: "Veille WhatsApp",
+			Equipe: EquipeVeille, Superieur: IDRaoul, Espace: "pro", Veille: "whatsapp",
+			Couleur:      "#A3E635",
+			Presentation: "Elle lit tes conversations WhatsApp et te prévient dès qu'un message important t'attend.",
+			Quand:        "ce qui se passe sur WhatsApp : qui lui a écrit, une conversation à résumer",
+		},
 	}
+}
+
+// VeilleDe rend l'agent de veille d'une messagerie.
+func VeilleDe(roster []Membre, source string) (Membre, bool) {
+	for _, m := range roster {
+		if m.Veille == source {
+			return m, true
+		}
+	}
+	return Membre{}, false
 }
 
 // Collegues rend, pour un membre, ceux à qui il peut passer la parole : tous
@@ -112,7 +153,8 @@ func Roster(v Voix) []Membre {
 func Collegues(roster []Membre, from string) []assistant.Collegue {
 	var out []assistant.Collegue
 	for _, m := range roster {
-		if m.ID == from {
+		// Les agents de veille surveillent ; on ne leur passe pas la parole.
+		if m.ID == from || m.Veille != "" {
 			continue
 		}
 		quand := m.Quand

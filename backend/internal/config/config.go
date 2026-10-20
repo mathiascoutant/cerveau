@@ -88,6 +88,11 @@ type Config struct {
 	// pas de serveur MCP.
 	AtelierMCPToken string
 	AtelierMCPEmail string
+	// VeilleComptes : les comptes (emails) dont la veille relève les mails
+	// pro, Slack et WhatsApp ; vide, pas de veille. VeilleMinutes : tous les
+	// combien (10 par défaut).
+	VeilleComptes []string
+	VeilleMinutes int
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -187,6 +192,8 @@ func Load() (Config, error) {
 		AtelierDureeMax:       envInt("ATELIER_DUREE_MAX"),
 		AtelierMCPToken:       env("ATELIER_MCP_TOKEN", ""),
 		AtelierMCPEmail:       env("ATELIER_MCP_EMAIL", ""),
+		VeilleComptes:         splitList(env("VEILLE_COMPTES", "")),
+		VeilleMinutes:         envInt("VEILLE_MINUTES"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),
 		SlackClientSecret:     env("SLACK_CLIENT_SECRET", ""),
@@ -288,4 +295,15 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList lit une liste séparée par des virgules, sans les vides.
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

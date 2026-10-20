@@ -98,9 +98,12 @@ func main() {
 		defer perso.Sonde.Close()
 	}
 
+	app := api.NewServer(cfg, st, cipher, wa).WithPerso(perso)
+	// La veille des messageries tourne en fond, tant que le serveur vit.
+	app.StartVeille(ctx)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, st, cipher, wa).WithPerso(perso).Routes(),
+		Handler:           app.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,

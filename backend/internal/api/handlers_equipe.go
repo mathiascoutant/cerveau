@@ -47,8 +47,16 @@ func (s *Server) handleEquipe(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = equipe.IDRaoul
 	}
+	// L'écran Équipe de l'app sert à parler aux membres : la veille, qui ne
+	// parle pas, n'y figure pas (elle est dans Cerveau HQ).
+	var membres []equipe.Membre
+	for _, m := range s.equipe.Roster() {
+		if m.Veille == "" {
+			membres = append(membres, m)
+		}
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"membres":       s.equipe.Roster(),
+		"membres":       membres,
 		"interlocuteur": agent,
 		"capacites":     s.projets.Capacites(),
 	})
