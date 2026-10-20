@@ -548,15 +548,33 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 		params = url.Values{}
 	}
 	endpoint := apiBase + method + "?" + params.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("slack %s : %w", method, err)
+	var resp *http.Response
+	// Slack limite les appels par méthode et par minute : quand il refuse
+	// (429), il dit combien attendre. On attend, puis on réessaie, deux fois
+	// au plus — la veille et Raoul lisent avec le même jeton.
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		resp, err = c.http.Do(req)
+		if err != nil {
+			return fmt.Errorf("slack %s : %w", method, err)
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= 2 {
+			break
+		}
+		wait := 2 * time.Second
+		if sec, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && sec > 0 {
+			wait = time.Duration(min(sec, 15)) * time.Second
+		}
+		resp.Body.Close()
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return fmt.Errorf("slack %s : %w", method, ctx.Err())
+		}
 	}
 	defer resp.Body.Close()
 
