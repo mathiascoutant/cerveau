@@ -154,6 +154,7 @@ func veilleCle(it triage.Item) string {
 
 const veilleConsigne = `Tu fais la veille %s de Mathias. Voici les NOUVEAUX messages qui lui sont adressés depuis ta dernière relève.
 Signale seulement ce qui demande vraiment son attention : une question ou une demande qui attend sa réponse, une décision à prendre, un problème, une échéance proche, ou un message d'une personne importante pour lui (direction, client).
+Un message privé (motif : message privé) est TOUJOURS à signaler : quelqu'un lui écrit directement et attend sa réponse.
 Ignore les remerciements, les « ok », les informations de routine, les notifications automatiques et ce qui ne lui demande rien.
 Réponds UNIQUEMENT par un objet JSON : {"importants": [{"messages": [numéros], "titre": "<qui et quoi, 8 mots au plus>", "resume": "<une phrase : ce qu'il se passe et ce qu'on attend de lui>", "importance": "haute" ou "moyenne"}]}.
 Regroupe dans une même entrée les messages qui parlent de la même chose. Liste vide si rien n'est important. En français.`
@@ -255,6 +256,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		slog.Warn("veille : messages vus non notés", "err", err)
 	}
 	var titres []string
+	couverts := map[int]bool{}
 	for _, imp := range j.Importants {
 		titre := strings.TrimSpace(imp.Titre)
 		if titre == "" {
@@ -267,6 +269,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		var refs []string
 		for _, n := range imp.Messages {
 			if n >= 1 && n <= len(neufs) {
+				couverts[n-1] = true
 				it := neufs[n-1]
 				ref := origin(it) + " · " + it.De
 				if it.Titre != "" {
@@ -284,12 +287,40 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		}
 		titres = append(titres, titre)
 	}
+	// Un message privé non lu est toujours signalé, même si le jugement l'a
+	// laissé de côté : quelqu'un attend une réponse de Mathias.
+	for _, it := range privesOublies(neufs, couverts) {
+		titre := "Message privé de " + it.De
+		resume := strings.TrimSpace(it.Apercu)
+		if resume == "" {
+			resume = "Nouveau message privé non lu."
+		}
+		if _, err := s.store.InsertNotification(ctx, store.Notification{
+			UserID: user.ID, Agent: agent.ID, Source: source, Titre: titre,
+			Resume: truncateRunes(resume, 220), Importance: "moyenne", Messages: []string{origin(it) + " · " + it.De}, Run: run.ID().Hex(),
+		}); err != nil {
+			slog.Warn("veille : notification non enregistrée", "err", err)
+			continue
+		}
+		titres = append(titres, titre)
+	}
 	reply := "Rien d'important."
 	if len(titres) > 0 {
 		reply = fmt.Sprintf("%d information%s importante%s : %s.", len(titres), plural(len(titres), "s", ""), plural(len(titres), "s", ""), strings.Join(titres, " ; "))
 	}
 	run.Fin(assistant.Result{Reply: reply}, nil)
 	return nil
+}
+
+// privesOublies : les messages privés que le jugement n'a pas retenus.
+func privesOublies(neufs []triage.Item, couverts map[int]bool) []triage.Item {
+	var out []triage.Item
+	for i, it := range neufs {
+		if !couverts[i] && it.Motif == triage.ReasonDM {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func plural(n int, many, one string) string {

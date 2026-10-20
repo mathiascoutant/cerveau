@@ -76,3 +76,17 @@ func TestVeilleCle(t *testing.T) {
 		t.Fatal("nouveau message, nouvelle clé")
 	}
 }
+
+// Un message privé non retenu par le jugement est signalé quand même ; une
+// mention dans un canal reste au jugement.
+func TestPrivesOublies(t *testing.T) {
+	neufs := []triage.Item{
+		{Source: "slack", De: "Xavier", Motif: triage.ReasonDM},
+		{Source: "slack", De: "Cyril", Motif: triage.ReasonMention},
+		{Source: "slack", De: "Inès", Motif: triage.ReasonDM},
+	}
+	got := privesOublies(neufs, map[int]bool{2: true})
+	if len(got) != 1 || got[0].De != "Xavier" {
+		t.Fatalf("seul le message privé de Xavier, non retenu, doit ressortir : %+v", got)
+	}
+}
