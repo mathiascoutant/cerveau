@@ -181,14 +181,9 @@ func Ranger(ctx context.Context, creds Credentials, validity uint32, parDossier 
 		if len(uids) == 0 {
 			continue
 		}
-		nom, ok := noms[strings.ToLower(dossier)]
-		if !ok {
-			if err := c.Create(dossier, nil).Wait(); err != nil {
-				return fmt.Errorf("création du dossier %s : %w", dossier, err)
-			}
-			_ = c.Subscribe(dossier).Wait()
-			nom = dossier
-			noms[strings.ToLower(dossier)] = dossier
+		nom, err := assurerDossier(c, noms, dossier)
+		if err != nil {
+			return err
 		}
 		var set imap.UIDSet
 		for _, u := range uids {
@@ -196,6 +191,44 @@ func Ranger(ctx context.Context, creds Credentials, validity uint32, parDossier 
 		}
 		if _, err := c.Move(set, nom).Wait(); err != nil {
 			return fmt.Errorf("déplacement vers %s : %w", nom, err)
+		}
+	}
+	return nil
+}
+
+// assurerDossier rend le nom exact du dossier sur le serveur, en le créant —
+// et en l'abonnant, pour que Thunderbird le montre — s'il n'existe pas.
+func assurerDossier(c *imapclient.Client, noms map[string]string, dossier string) (string, error) {
+	if nom, ok := noms[strings.ToLower(dossier)]; ok {
+		return nom, nil
+	}
+	if err := c.Create(dossier, nil).Wait(); err != nil {
+		return "", fmt.Errorf("création du dossier %s : %w", dossier, err)
+	}
+	_ = c.Subscribe(dossier).Wait()
+	noms[strings.ToLower(dossier)] = dossier
+	return dossier, nil
+}
+
+// CreerDossiers crée les dossiers qui manquent, vides : ils sont là dans
+// Thunderbird avant même le premier mail à y ranger.
+func CreerDossiers(ctx context.Context, creds Credentials, dossiers []string) error {
+	c, err := dial(ctx, creds)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Logout().Wait(); _ = c.Close() }()
+	boxes, err := c.List("", "*", nil).Collect()
+	if err != nil {
+		return fmt.Errorf("liste des dossiers : %w", err)
+	}
+	noms := map[string]string{}
+	for _, b := range boxes {
+		noms[strings.ToLower(b.Mailbox)] = b.Mailbox
+	}
+	for _, d := range dossiers {
+		if _, err := assurerDossier(c, noms, d); err != nil {
+			return err
 		}
 	}
 	return nil

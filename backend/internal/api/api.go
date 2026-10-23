@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,9 @@ type Server struct {
 	atelier *atelier.Client
 	// trieur : Claude par l'API, qui range les mails pro qui arrivent.
 	trieur *tri.Trieur
+	// triDossiers : les comptes dont les dossiers du tri ont été vérifiés
+	// depuis le lancement.
+	triDossiers sync.Map
 	// veilleSlackAt : la dernière relève Slack de la veille (voir veille.go).
 	veilleSlackAt time.Time
 }

@@ -413,6 +413,17 @@ func candidateNames(ctx context.Context, c *Client, convs []conversation) [][]st
 // Lire le mauvais canal donne une réponse fausse énoncée avec l'aplomb d'une
 // vraie, et personne ne va vérifier.
 func matchConversation(ctx context.Context, c *Client, convs []conversation, query string) (conversation, []string, bool) {
+	// Le nom exact, tel que Slack l'écrit, l'emporte : le rapprochement
+	// tolérant ramène « #__csp » et « DM CSP » au même « csp », alors que
+	// l'un des deux a été désigné à la lettre.
+	if q := strings.TrimSpace(query); q != "" {
+		for _, conv := range convs {
+			label := c.label(ctx, conv)
+			if strings.EqualFold(label, q) || (strings.HasPrefix(q, "#") && strings.EqualFold(conv.Name, q[1:])) {
+				return conv, nil, true
+			}
+		}
+	}
 	winner, tied := fuzzy.Resolve(query, candidateNames(ctx, c, convs))
 	if winner >= 0 {
 		return convs[winner], nil, true

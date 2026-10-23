@@ -36,6 +36,14 @@ func (s *Server) trier(ctx context.Context, user *store.User, agent equipe.Membr
 	if err != nil {
 		return err
 	}
+	// Les dossiers du tri existent dès le départ, une fois par lancement du
+	// serveur : Mathias les voit dans Thunderbird sans attendre un mail.
+	if _, deja := s.triDossiers.LoadOrStore(user.ID.Hex(), true); !deja {
+		if err := gandi.CreerDossiers(ctx, creds, tri.Dossiers); err != nil {
+			s.triDossiers.Delete(user.ID.Hex())
+			slog.Warn("tri : dossiers non créés", "err", err)
+		}
+	}
 	etat, ok, err := s.store.TriEtat(ctx, user.ID)
 	if err != nil {
 		return err
@@ -63,7 +71,7 @@ func (s *Server) trier(ctx context.Context, user *store.User, agent equipe.Membr
 		if a.FromAddr != "" && !strings.EqualFold(a.From, a.FromAddr) {
 			de += " <" + a.FromAddr + ">"
 		}
-		mails[i] = tri.Mail{De: de, Objet: a.Subject, A: a.To, PiecesJointes: a.PiecesJointes, Masse: a.Bulk, Texte: a.Body}
+		mails[i] = tri.Mail{Adresse: a.FromAddr, De: de, Objet: a.Subject, A: a.To, PiecesJointes: a.PiecesJointes, Masse: a.Bulk, Texte: a.Body}
 	}
 	decisions, err := s.trieur.Classer(ctx, mails)
 	run.Etape(assistant.Event{Type: "status", Tool: "tri", Ms: max(1, time.Since(started).Milliseconds())})

@@ -25,16 +25,48 @@ import (
 
 // Les dossiers. Reception veut dire : on n'y touche pas.
 const (
-	CSP       = "CSP"
-	Autres    = "Autres"
-	Reception = "Reception"
+	CSP                   = "CSP"
+	Autres                = "Autres"
+	ProcessFlightSchedule = "ProcessFlightSchedule"
+	Reception             = "Reception"
 )
+
+// Dossiers : ceux que le tri peut remplir, créés dès son démarrage.
+var Dossiers = []string{CSP, Autres, ProcessFlightSchedule}
+
+// reglesFixes : les règles voulues par Mathias, qui passent avant le
+// jugement de Claude — un envoi automatique se reconnaît à son expéditeur
+// (et, pour une adresse qui envoie aussi autre chose, à son objet), sans
+// hésitation ni coût.
+var reglesFixes = []struct {
+	adresse, objet, dossier string
+}{
+	{"pxalert@pxcom.aero", "", Autres},
+	{"processflightschedule@pxcom.aero", "", ProcessFlightSchedule},
+	// contact@ reçoit aussi de vrais messages : seules les inscriptions.
+	{"contact@pxcom.aero", "new user registration", Autres},
+}
+
+// Regle rend le dossier imposé à un mail par son expéditeur et son objet,
+// s'il y en a un.
+func Regle(adresse, objet string) (string, bool) {
+	adresse = strings.ToLower(strings.TrimSpace(adresse))
+	objet = strings.ToLower(objet)
+	for _, r := range reglesFixes {
+		if r.adresse == adresse && strings.Contains(objet, r.objet) {
+			return r.dossier, true
+		}
+	}
+	return "", false
+}
 
 // ModeleDefaut : le modèle du tri quand TRI_MODELE n'en donne pas.
 const ModeleDefaut = "claude-haiku-5-5"
 
 // Mail : ce que le tri voit d'un mail.
 type Mail struct {
+	// Adresse : celle de l'expéditeur, pour les règles fixes.
+	Adresse       string
 	De            string
 	Objet         string
 	A             []string
@@ -121,9 +153,22 @@ func (t *Trieur) Classer(ctx context.Context, mails []Mail) ([]Decision, error) 
 	if len(mails) == 0 {
 		return out, nil
 	}
-	var b strings.Builder
+	// Les règles fixes d'abord ; seul le reste va à Claude.
+	var reste []int
 	for i, m := range mails {
-		fmt.Fprintf(&b, "[%d]\nDe : %s\nObjet : %s\n", i+1, m.De, m.Objet)
+		if d, ok := Regle(m.Adresse, m.Objet); ok {
+			out[i] = Decision{Dossier: d, Raison: "règle fixe : " + m.Adresse}
+			continue
+		}
+		reste = append(reste, i)
+	}
+	if len(reste) == 0 {
+		return out, nil
+	}
+	var b strings.Builder
+	for n, i := range reste {
+		m := mails[i]
+		fmt.Fprintf(&b, "[%d]\nDe : %s\nObjet : %s\n", n+1, m.De, m.Objet)
 		if len(m.A) > 0 {
 			fmt.Fprintf(&b, "À : %s\n", strings.Join(m.A, ", "))
 		}
@@ -174,12 +219,12 @@ func (t *Trieur) Classer(ctx context.Context, mails []Mail) ([]Decision, error) 
 		return nil, fmt.Errorf("tri par Claude : réponse illisible : %w", err)
 	}
 	for _, d := range rep.Tri {
-		if d.Mail < 1 || d.Mail > len(mails) {
+		if d.Mail < 1 || d.Mail > len(reste) {
 			continue
 		}
 		switch d.Dossier {
 		case CSP, Autres, Reception:
-			out[d.Mail-1] = Decision{Dossier: d.Dossier, Raison: strings.TrimSpace(d.Raison)}
+			out[reste[d.Mail-1]] = Decision{Dossier: d.Dossier, Raison: strings.TrimSpace(d.Raison)}
 		}
 	}
 	return out, nil
