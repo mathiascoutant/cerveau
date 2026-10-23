@@ -48,7 +48,7 @@ type Notification struct {
 	// Echanges : qui a dit quoi, du plus ancien au plus récent.
 	Echanges  []PriseDeParole `bson:"echanges,omitempty" json:"echanges,omitempty"`
 	CreatedAt time.Time       `bson:"created_at" json:"creee"`
-	MisAJour  time.Time       `bson:"maj,omitempty" json:"maj,omitempty"`
+	MisAJour  time.Time       `bson:"maj,omitempty" json:"maj,omitzero"`
 	LueAt     *time.Time      `bson:"lue_at,omitempty" json:"lue,omitempty"`
 }
 

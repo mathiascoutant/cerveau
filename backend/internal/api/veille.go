@@ -19,6 +19,8 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/slack"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/whatsapp"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/triage"
 )
@@ -175,7 +177,7 @@ Une affaire = UN sujet, un seul bloc que tu fais vivre : tu ne signales jamais d
 
 Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne"}]}.
 "resume" : va droit au fond — ce qui est dit, demandé, décidé, livré, les chiffres, les dates, les noms de fichiers. Mathias voit déjà le titre et le lieu : ne redis jamais qui écrit, que c'est une réponse, ni l'objet du mail. Bon : « La v7.2 corrige les deux doublons ; Jonata attend la validation pour lancer l'import vendredi. » Mauvais : « Olivier répond sur le sujet Condor 1126 ; c'est une réponse à un échange en cours. » Si tu n'as vraiment que l'objet, dis en quelques mots ce qu'il annonce — jamais que le contenu manque.
-Une réponse se résume PAR RAPPORT à ce à quoi elle répond (« il répond à ce message de… », les messages d'avant) : la question, la demande, la proposition, et ce qu'on y répond. Bon : « Il répond oui à ta demande : il est dispo samedi matin. » ; « Elle refuse le devis que tu lui as envoyé : trop cher de 15 %%, elle attend une nouvelle offre. » Ce que Mathias a écrit lui-même est marqué « toi ».
+Une réponse se résume PAR RAPPORT à ce à quoi elle répond (« il répond à ce message de… », les messages d'avant) : la question, la demande, la proposition, et ce qu'on y répond. Bon : « Il répond oui à ta demande : il est dispo samedi matin. » ; « Elle refuse le devis que tu lui as envoyé : trop cher de 15 %%, elle attend une nouvelle offre. » Ce que Mathias a écrit lui-même est marqué « toi ». Si c'est lui qui a écrit en dernier, il a déjà répondu : rien n'est à faire (a_faire vide), dis seulement où en est l'échange.
 "echanges" : qui a dit quoi dans les NOUVEAUX messages, une ligne par prise de parole qui compte, dans l'ordre — par exemple Adélaïde dit à Sarah que le chiffre est faux, puis Sarah lui répond qu'elle a raison. L'essentiel, pas une recopie. Mathias s'écrit « toi ».
 Regroupe dans un même sujet les messages qui parlent de la même chose. Liste vide si rien n'est important et que rien ne continue un sujet ouvert. En français.`
 
@@ -255,6 +257,8 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	// qui le précède dans le fil.
 	if source == "mail" {
 		s.lireMailsNeufs(ctx, user, neufs)
+	} else {
+		s.lireConversationsNeuves(ctx, user, source, neufs)
 	}
 
 	// Il y a du neuf : l'agent se met au travail, et le bâtiment le voit.
@@ -489,6 +493,93 @@ func (s *Server) lireMailsNeufs(ctx context.Context, user *store.User, neufs []t
 		if apercu := strings.TrimSpace(b.String()); apercu != "" {
 			neufs[i].Apercu = apercu
 		}
+	}
+}
+
+// veilleConversationsLues : les conversations Slack ou WhatsApp que la veille
+// relit à chaque relève, et combien de leurs derniers messages.
+const (
+	veilleConversationsLues = 6
+	veilleMessagesLus       = 12
+)
+
+// lireConversationsNeuves remplace l'extrait d'une conversation par ses
+// derniers messages, ceux de Mathias marqués « toi ». Un « Sur la clé secrète
+// d'Olivier » ne veut rien dire seul ; à la suite de la question qu'il
+// répond, si — et on voit aussi quand Mathias a déjà répondu.
+func (s *Server) lireConversationsNeuves(ctx context.Context, user *store.User, source string, neufs []triage.Item) {
+	// Lecture directe, pas par les outils de Raoul : eux notent ce qu'ils
+	// lisent dans sa mémoire des échanges, et la veille ne doit pas lui faire
+	// croire qu'il a déjà lu une conversation.
+	type ligne struct {
+		qui, texte string
+		toi        bool
+	}
+	lire := func(titre string) ([]ligne, error) {
+		var out []ligne
+		switch source {
+		case "slack":
+			creds, err := s.slackCreds(ctx, user)
+			if err != nil {
+				return nil, err
+			}
+			_, msgs, err := slack.New(creds.UserToken).ReadConversation(ctx, titre, veilleMessagesLus)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range msgs {
+				out = append(out, ligne{qui: m.Auteur, texte: m.Texte, toi: m.DeToi})
+			}
+		case "whatsapp":
+			stored, err := s.store.WhatsAppChats(ctx, user.ID)
+			if err != nil {
+				return nil, err
+			}
+			chats := make([]whatsapp.Chat, 0, len(stored))
+			for _, c := range stored {
+				chats = append(chats, whatsapp.Chat{JID: c.JID, Name: c.Name, IsGroup: c.IsGroup, LastAt: c.LastAt, LastReadAt: c.LastReadAt})
+			}
+			chat, _, ok := whatsapp.MatchChat(chats, titre)
+			if !ok {
+				return nil, fmt.Errorf("conversation introuvable : %s", titre)
+			}
+			msgs, err := s.store.WhatsAppMessages(ctx, user.ID, chat.JID, time.Time{}, veilleMessagesLus)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range msgs {
+				out = append(out, ligne{qui: m.Sender, texte: m.Body, toi: m.FromMe})
+			}
+		}
+		return out, nil
+	}
+	lues := 0
+	for i := range neufs {
+		if lues >= veilleConversationsLues || strings.TrimSpace(neufs[i].Titre) == "" {
+			continue
+		}
+		lues++
+		lignes, err := lire(neufs[i].Titre)
+		if err != nil {
+			slog.Warn("veille : conversation illisible", "source", source, "conversation", neufs[i].Titre, "err", err)
+			continue
+		}
+		if len(lignes) == 0 {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("derniers messages de la conversation :")
+		for _, l := range lignes {
+			qui := l.qui
+			if l.toi {
+				qui = "toi (Mathias)"
+			}
+			fmt.Fprintf(&b, "\n      %s : %s", qui, truncateRunes(strings.TrimSpace(l.texte), 300))
+		}
+		if lignes[len(lignes)-1].toi {
+			b.WriteString("\n      (le dernier message est de toi : tu as déjà répondu)")
+		}
+		neufs[i].Apercu = b.String()
 	}
 }
 
