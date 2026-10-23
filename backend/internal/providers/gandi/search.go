@@ -43,7 +43,9 @@ type SearchQuery struct {
 	Subject string
 	// Since : ne garder que ce qui est postérieur. Zéro = pas de borne.
 	Since time.Time
-	// Folders : FolderInbox, FolderSent, ou les deux. Vide = INBOX seule.
+	// Folders : FolderInbox (la réception ET les dossiers de mails reçus :
+	// CSP, archives…), FolderSent, ou le nom d'un dossier précis (« CSP »).
+	// Vide = FolderInbox.
 	Folders []string
 	Limit   int
 }
@@ -82,18 +84,35 @@ func Search(ctx context.Context, creds Credentials, q SearchQuery) ([]Found, err
 
 	var out []Found
 	for _, folder := range q.Folders {
-		name := "INBOX"
-		if folder == FolderSent {
-			name = sentMailbox(c)
-			if name == "" {
+		var targets []boite
+		switch folder {
+		case FolderInbox:
+			targets = boitesRecues(c)
+		case FolderSent:
+			if name := sentMailbox(c); name != "" {
+				targets = []boite{{serveur: name, label: FolderSent, role: RoleEnvoyes}}
+			}
+		default:
+			b, _, err := trouverBoite(c, folder)
+			if err != nil {
+				return nil, err
+			}
+			targets = []boite{b}
+		}
+		for _, b := range targets {
+			label := b.label
+			if b.role == RoleEnvoyes {
+				label = FolderSent
+			}
+			found, err := scanFolder(c, b.serveur, label, q)
+			if err != nil {
+				if b.serveur == "INBOX" || len(targets) == 1 {
+					return nil, err
+				}
 				continue
 			}
+			out = append(out, found...)
 		}
-		found, err := scanFolder(c, name, folder, q)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, found...)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
 	if len(out) > q.Limit {
@@ -159,7 +178,10 @@ func ReadByID(ctx context.Context, creds Credentials, messageID string) (Found, 
 	}
 	defer func() { _ = c.Logout().Wait(); _ = c.Close() }()
 
-	folders := []struct{ box, label string }{{"INBOX", FolderInbox}}
+	folders := []struct{ box, label string }{}
+	for _, b := range boitesRecues(c) {
+		folders = append(folders, struct{ box, label string }{b.serveur, b.label})
+	}
 	if sent := sentMailbox(c); sent != "" {
 		folders = append(folders, struct{ box, label string }{sent, FolderSent})
 	}

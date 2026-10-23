@@ -90,3 +90,18 @@ func TestPrivesOublies(t *testing.T) {
 		t.Fatalf("seul le message privé de Xavier, non retenu, doit ressortir : %+v", got)
 	}
 }
+
+// Les messages d'une même discussion se rangent sous un même fil : la réponse
+// à un mail rejoint son sujet, un nouveau message Slack aussi.
+func TestFilDe(t *testing.T) {
+	a := triage.Item{Source: "mail", Titre: "APEX - WestIQ - PXCom"}
+	b := triage.Item{Source: "mail", Titre: "RE: TR: APEX - WestIQ - PXCom"}
+	if filDe(a) != filDe(b) || lieuDe(b) != "APEX - WestIQ - PXCom" {
+		t.Fatalf("même fil de mail attendu : %q %q", filDe(a), filDe(b))
+	}
+	s1 := triage.Item{Source: "slack", Titre: "#apex", Apercu: "un"}
+	s2 := triage.Item{Source: "slack", Titre: "#APEX", Apercu: "deux"}
+	if filDe(s1) != filDe(s2) || filDe(s1) == filDe(a) {
+		t.Fatal("même canal, même fil ; une autre messagerie, un autre fil")
+	}
+}

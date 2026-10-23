@@ -166,6 +166,9 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	if err := s.ensureVeilleIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureTriIndexes(ctx); err != nil {
+		return err
+	}
 	return s.ensureInterlocuteurIndexes(ctx)
 }
 

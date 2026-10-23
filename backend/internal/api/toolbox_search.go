@@ -56,8 +56,11 @@ func (t *userToolbox) SearchEmails(ctx context.Context, q assistant.MailSearch) 
 		folders = []string{gandi.FolderSent}
 	case "tous", "all", "both":
 		folders = []string{gandi.FolderInbox, gandi.FolderSent}
-	default:
+	case "", "recu", "reçu", "recus", "reçus", "inbox":
 		folders = []string{gandi.FolderInbox}
+	default:
+		// Un dossier précis : « CSP », « Autres »…
+		folders = []string{strings.TrimSpace(q.Folder)}
 	}
 	found, err := gandi.Search(ctx, creds, gandi.SearchQuery{
 		Sender: q.Person, Subject: q.Subject, Since: q.Since, Folders: folders, Limit: q.Limit,
@@ -88,6 +91,45 @@ func (t *userToolbox) ReadEmailByID(ctx context.Context, messageID string) (assi
 	view := t.mailContent(ctx, f.Message, creds.Email, f.Folder)
 	t.noteMail(ctx, f.Message, view)
 	return view, nil
+}
+
+func (t *userToolbox) MailFolders(ctx context.Context) ([]assistant.MailFolderView, error) {
+	creds, err := t.mailCreds(ctx)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, t.mailMissing()
+		}
+		return nil, err
+	}
+	list, err := gandi.Dossiers(ctx, creds)
+	if err != nil {
+		t.markMailError(ctx, err)
+		return nil, err
+	}
+	out := make([]assistant.MailFolderView, 0, len(list))
+	for _, d := range list {
+		out = append(out, assistant.MailFolderView{Nom: d.Nom, Role: d.Role, Messages: d.Messages, NonLus: d.NonLus})
+	}
+	return out, nil
+}
+
+func (t *userToolbox) BrowseMailFolder(ctx context.Context, folder string, limit int, unreadOnly bool) ([]assistant.MailHitView, error) {
+	creds, err := t.mailCreds(ctx)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, t.mailMissing()
+		}
+		return nil, err
+	}
+	found, err := gandi.Parcourir(ctx, creds, folder, limit, unreadOnly)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]assistant.MailHitView, 0, len(found))
+	for _, f := range found {
+		out = append(out, t.mailHit(f, creds.Email))
+	}
+	return out, nil
 }
 
 func (t *userToolbox) mailHit(f gandi.Found, mine string) assistant.MailHitView {

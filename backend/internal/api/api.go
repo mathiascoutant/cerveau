@@ -18,6 +18,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/sonde"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/stt"
+	"github.com/mathiascoutant/cerveau/backend/internal/tri"
 	"github.com/mathiascoutant/cerveau/backend/internal/tts"
 )
 
@@ -50,6 +51,8 @@ type Server struct {
 	// atelier : Claude Code sur le VPS, pour les tâches confiées aux agents.
 	// Nil : ces tâches passent par le moteur habituel.
 	atelier *atelier.Client
+	// trieur : Claude par l'API, qui range les mails pro qui arrivent.
+	trieur *tri.Trieur
 	// veilleSlackAt : la dernière relève Slack de la veille (voir veille.go).
 	veilleSlackAt time.Time
 }
@@ -87,6 +90,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		confirm: newConfirmations(),
 		runs:    newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
 		atelier: newAtelier(cfg),
+		trieur:  tri.New(cfg.AnthropicAPIKey, cfg.TriModele),
 	}
 }
 

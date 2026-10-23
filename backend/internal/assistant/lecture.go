@@ -23,6 +23,8 @@ var outilsDeLecture = map[string]bool{
 	"lire_mail":                  true,
 	"mails_envoyes":              true,
 	"chercher_mails":             true,
+	"dossiers_mail":              true,
+	"parcourir_dossier":          true,
 	"slack_non_lus":              true,
 	"lire_canal_slack":           true,
 	"chercher_slack":             true,

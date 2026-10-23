@@ -115,6 +115,7 @@ func (t *userToolbox) UnreadEmails(ctx context.Context, limit int) ([]assistant.
 			Identite: t.mailAuthor(ctx, m.From, m.FromAddr, moi, m.Bulk),
 			Objet:    m.Subject,
 			Recu:     t.when(m.Date),
+			Dossier:  m.Dossier,
 			// Sa place parmi les destinataires est tranchée ici, pas par le
 			// modèle : « suis-je dans ce champ À ? » est une comparaison de
 			// chaînes, et une comparaison de chaînes ne se confie pas à
@@ -146,7 +147,11 @@ func (t *userToolbox) ReadEmail(ctx context.Context, query string, unreadOnly bo
 		}
 		return assistant.EmailContentView{}, err
 	}
-	view := t.mailContent(ctx, msg, creds.Email, gandi.FolderInbox)
+	folder := gandi.FolderInbox
+	if msg.Dossier != "" {
+		folder = msg.Dossier
+	}
+	view := t.mailContent(ctx, msg, creds.Email, folder)
 	t.noteMail(ctx, msg, view)
 	return view, nil
 }
@@ -169,6 +174,9 @@ func (t *userToolbox) mailContent(ctx context.Context, msg gandi.Message, email,
 		Tronque:       strings.HasSuffix(msg.Body, "…"),
 		Destinataires: len(msg.To) + len(msg.Cc),
 		MessageID:     msg.MessageID,
+	}
+	if folder != gandi.FolderInbox && folder != gandi.FolderSent {
+		view.Dossier = folder
 	}
 	if folder == gandi.FolderSent || writtenBy(msg.FromAddr, email) {
 		// Un mail de sa boîte d'envoi : c'est lui qui l'a écrit. Le champ

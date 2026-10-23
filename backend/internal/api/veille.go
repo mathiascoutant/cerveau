@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/assistant"
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
+	"github.com/mathiascoutant/cerveau/backend/internal/providers/gandi"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
 	"github.com/mathiascoutant/cerveau/backend/internal/triage"
 )
@@ -115,6 +117,14 @@ func (s *Server) veilleTour(ctx context.Context) {
 				slog.Warn("veille : relève en échec", "agent", agent.ID, "err", err)
 			}
 			cancel()
+			// Après le jugement : un mail rangé quitte la réception.
+			if v.Source == "mail" && s.trieur != nil {
+				tctx, cancel := context.WithTimeout(ctx, triTimeout)
+				if err := s.trier(tctx, user, agent); err != nil {
+					slog.Warn("tri : relève en échec", "agent", agent.ID, "err", err)
+				}
+				cancel()
+			}
 		}
 	}
 }
@@ -152,20 +162,56 @@ func veilleCle(it triage.Item) string {
 	return hex.EncodeToString(h[:12])
 }
 
-const veilleConsigne = `Tu fais la veille %s de Mathias. Voici les NOUVEAUX messages qui lui sont adressés depuis ta dernière relève.
+// veilleSujetDuree : combien de temps un sujet reste ouvert aux nouveaux
+// messages de sa discussion. Au-delà, une reprise est un nouveau sujet.
+const veilleSujetDuree = 3 * 24 * time.Hour
+
+const veilleConsigne = `Tu fais la veille %s de Mathias. Voici les NOUVEAUX messages qui lui sont adressés depuis ta dernière relève, et les sujets que tu lui as déjà signalés ces derniers jours.
 Signale seulement ce qui demande vraiment son attention : une question ou une demande qui attend sa réponse, une décision à prendre, un problème, une échéance proche, ou un message d'une personne importante pour lui (direction, client).
 Un message privé (motif : message privé) est TOUJOURS à signaler : quelqu'un lui écrit directement et attend sa réponse.
 Ignore les remerciements, les « ok », les informations de routine, les notifications automatiques et ce qui ne lui demande rien.
-Réponds UNIQUEMENT par un objet JSON : {"importants": [{"messages": [numéros], "titre": "<qui et quoi, 8 mots au plus>", "resume": "<une phrase : ce qu'il se passe et ce qu'on attend de lui>", "importance": "haute" ou "moyenne"}]}.
-Regroupe dans une même entrée les messages qui parlent de la même chose. Liste vide si rien n'est important. En français.`
+
+Une affaire = UN sujet, un seul bloc que tu fais vivre : tu ne signales jamais deux fois la même discussion. Un nouveau message qui continue un sujet déjà ouvert (S1, S2…) s'y rattache — champ "sujet" — même s'il ne demande rien de plus : il fait avancer l'affaire. Le titre et le résumé que tu rends alors REMPLACENT les anciens : ils disent où en est TOUTE l'affaire, ce qu'on savait déjà compris.
+
+Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne"}]}.
+"resume" : va droit au fond — ce qui est dit, demandé, décidé, livré, les chiffres, les dates, les noms de fichiers. Mathias voit déjà le titre et le lieu : ne redis jamais qui écrit, que c'est une réponse, ni l'objet du mail. Bon : « La v7.2 corrige les deux doublons ; Jonata attend la validation pour lancer l'import vendredi. » Mauvais : « Olivier répond sur le sujet Condor 1126 ; c'est une réponse à un échange en cours. » Si tu n'as vraiment que l'objet, dis en quelques mots ce qu'il annonce — jamais que le contenu manque.
+Une réponse se résume PAR RAPPORT à ce à quoi elle répond (« il répond à ce message de… », les messages d'avant) : la question, la demande, la proposition, et ce qu'on y répond. Bon : « Il répond oui à ta demande : il est dispo samedi matin. » ; « Elle refuse le devis que tu lui as envoyé : trop cher de 15 %%, elle attend une nouvelle offre. » Ce que Mathias a écrit lui-même est marqué « toi ».
+"echanges" : qui a dit quoi dans les NOUVEAUX messages, une ligne par prise de parole qui compte, dans l'ordre — par exemple Adélaïde dit à Sarah que le chiffre est faux, puis Sarah lui répond qu'elle a raison. L'essentiel, pas une recopie. Mathias s'écrit « toi ».
+Regroupe dans un même sujet les messages qui parlent de la même chose. Liste vide si rien n'est important et que rien ne continue un sujet ouvert. En français.`
 
 type jugement struct {
-	Importants []struct {
-		Messages   []int  `json:"messages"`
-		Titre      string `json:"titre"`
-		Resume     string `json:"resume"`
-		Importance string `json:"importance"`
-	} `json:"importants"`
+	Sujets []struct {
+		Sujet      string   `json:"sujet"`
+		Messages   []int    `json:"messages"`
+		Titre      string   `json:"titre"`
+		Resume     string   `json:"resume"`
+		AFaire     string   `json:"a_faire"`
+		Echanges   []parole `json:"echanges"`
+		Importance string   `json:"importance"`
+	} `json:"sujets"`
+}
+
+type parole struct {
+	Qui  string `json:"qui"`
+	AQui string `json:"a_qui"`
+	Quoi string `json:"quoi"`
+}
+
+// filDe : la clé de la discussion d'un message. Un mail se range sous son
+// objet nu, une conversation Slack ou WhatsApp sous son nom.
+func filDe(it triage.Item) string {
+	if it.Source == "mail" {
+		return "mail:" + strings.ToLower(gandi.CleanSubject(it.Titre))
+	}
+	return it.Source + ":" + strings.ToLower(strings.TrimSpace(it.Titre))
+}
+
+// lieuDe : où se tient la discussion, tel qu'on le dit.
+func lieuDe(it triage.Item) string {
+	if it.Source == "mail" {
+		return gandi.CleanSubject(it.Titre)
+	}
+	return strings.TrimSpace(it.Titre)
 }
 
 func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Membre, source, label string) error {
@@ -205,15 +251,52 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		neufs = neufs[:veilleMaxMessages]
 	}
 
+	// Un mail ne se juge pas sur son objet : on en lit le contenu, et ce
+	// qui le précède dans le fil.
+	if source == "mail" {
+		s.lireMailsNeufs(ctx, user, neufs)
+	}
+
 	// Il y a du neuf : l'agent se met au travail, et le bâtiment le voit.
 	demande := fmt.Sprintf("Relève %s : %d nouveau%s message%s à juger", label, len(neufs), plural(len(neufs), "x", ""), plural(len(neufs), "s", ""))
 	run := s.runs.begin(ctx, user.ID, agent.ID, store.RunSourceVeille, demande, nil)
 	run.Etape(assistant.Event{Type: "status", Tool: "veille", Label: "Lecture des nouveaux messages"})
 	started := time.Now()
 
+	// Les sujets déjà signalés : un message qui continue l'un d'eux le fait
+	// avancer au lieu d'en ouvrir un autre.
+	ouverts, err := s.store.SujetsOuverts(ctx, user.ID, agent.ID, time.Now().Add(-veilleSujetDuree))
+	if err != nil {
+		slog.Warn("veille : sujets ouverts illisibles", "err", err)
+	}
+	parFil := map[string]int{}
+	for i := len(ouverts) - 1; i >= 0; i-- {
+		if ouverts[i].Fil != "" {
+			parFil[ouverts[i].Fil] = i
+		}
+	}
+
 	tb := s.toolbox(user)
 	dir := tb.annuaire(ctx)
 	var b strings.Builder
+	if len(ouverts) > 0 {
+		b.WriteString("SUJETS DÉJÀ OUVERTS :\n")
+		for i, o := range ouverts {
+			fmt.Fprintf(&b, "[S%d] %s", i+1, o.Titre)
+			if o.Lieu != "" {
+				fmt.Fprintf(&b, " · %s", o.Lieu)
+			}
+			fmt.Fprintf(&b, "\n    où on en est : %s\n", o.Resume)
+			if n := len(o.Echanges); n > 0 {
+				var lignes []string
+				for _, e := range o.Echanges[max(0, n-4):] {
+					lignes = append(lignes, e.Qui+" : "+e.Quoi)
+				}
+				fmt.Fprintf(&b, "    derniers échanges : %s\n", strings.Join(lignes, " ; "))
+			}
+		}
+		b.WriteString("\nNOUVEAUX MESSAGES :\n")
+	}
 	for i, it := range neufs {
 		id := itemIdentity(dir, it)
 		fmt.Fprintf(&b, "[%d] %s · de %s", i+1, origin(it), it.De)
@@ -224,11 +307,14 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 			fmt.Fprintf(&b, " · importance de la personne : %s", id.Importance)
 		}
 		fmt.Fprintf(&b, " · %s · %s\n", tb.when(it.Quand), motif(it.Motif))
+		if i, ok := parFil[filDe(it)]; ok {
+			fmt.Fprintf(&b, "    même discussion que le sujet S%d\n", i+1)
+		}
 		if it.Titre != "" {
 			fmt.Fprintf(&b, "    sujet : %s\n", it.Titre)
 		}
 		if it.Apercu != "" {
-			fmt.Fprintf(&b, "    extrait : %s\n", truncateRunes(it.Apercu, 600))
+			fmt.Fprintf(&b, "    contenu : %s\n", truncateRunes(it.Apercu, 1800))
 		}
 	}
 	// Le jugement passe par Claude (l'atelier, sur l'abonnement) ; le modèle
@@ -255,19 +341,45 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	if err := s.store.VeilleMarquerVus(ctx, user.ID, agent.ID, nouvellesCles); err != nil {
 		slog.Warn("veille : messages vus non notés", "err", err)
 	}
+
 	var titres []string
 	couverts := map[int]bool{}
-	for _, imp := range j.Importants {
-		titre := strings.TrimSpace(imp.Titre)
+	// noter range un sujet : il fait avancer un sujet ouvert (même numéro
+	// rendu par le jugement, ou même discussion), ou il en ouvre un.
+	noter := func(cible int, n store.Notification) {
+		if cible >= 0 && cible < len(ouverts) {
+			if err := s.store.MettreAJourSujet(ctx, ouverts[cible].ID, n); err != nil {
+				slog.Warn("veille : sujet non mis à jour", "err", err)
+				return
+			}
+			titres = append(titres, n.Titre+" (mis à jour)")
+			return
+		}
+		ins, err := s.store.InsertNotification(ctx, n)
+		if err != nil {
+			slog.Warn("veille : notification non enregistrée", "err", err)
+			return
+		}
+		ouverts = append(ouverts, ins)
+		if n.Fil != "" {
+			parFil[n.Fil] = len(ouverts) - 1
+		}
+		titres = append(titres, n.Titre)
+	}
+
+	for _, suj := range j.Sujets {
+		titre := strings.TrimSpace(suj.Titre)
 		if titre == "" {
 			continue
 		}
-		importance := imp.Importance
+		importance := suj.Importance
 		if importance != "haute" {
 			importance = "moyenne"
 		}
 		var refs []string
-		for _, n := range imp.Messages {
+		var fil, lieu string
+		var quand time.Time
+		for _, n := range suj.Messages {
 			if n >= 1 && n <= len(neufs) {
 				couverts[n-1] = true
 				it := neufs[n-1]
@@ -276,40 +388,115 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 					ref += " · " + it.Titre
 				}
 				refs = append(refs, ref)
+				if fil == "" {
+					fil, lieu = filDe(it), lieuDe(it)
+				}
+				if it.Quand.After(quand) {
+					quand = it.Quand
+				}
 			}
 		}
-		if _, err := s.store.InsertNotification(ctx, store.Notification{
-			UserID: user.ID, Agent: agent.ID, Source: source, Titre: titre,
-			Resume: strings.TrimSpace(imp.Resume), Importance: importance, Messages: refs, Run: run.ID().Hex(),
-		}); err != nil {
-			slog.Warn("veille : notification non enregistrée", "err", err)
-			continue
+		if quand.IsZero() {
+			quand = time.Now()
 		}
-		titres = append(titres, titre)
+		var echanges []store.PriseDeParole
+		for _, p := range suj.Echanges {
+			if quoi := strings.TrimSpace(p.Quoi); quoi != "" {
+				echanges = append(echanges, store.PriseDeParole{Qui: strings.TrimSpace(p.Qui), AQui: strings.TrimSpace(p.AQui), Quoi: quoi, Quand: quand})
+			}
+		}
+		cible := -1
+		if k, err := strconv.Atoi(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(suj.Sujet)), "S")); err == nil && k >= 1 && k <= len(ouverts) {
+			cible = k - 1
+		} else if k, ok := parFil[fil]; ok {
+			cible = k
+		}
+		noter(cible, store.Notification{
+			UserID: user.ID, Agent: agent.ID, Source: source, Titre: titre,
+			Resume: strings.TrimSpace(suj.Resume), AFaire: strings.TrimSpace(suj.AFaire), Importance: importance,
+			Messages: refs, Run: run.ID().Hex(), Fil: fil, Lieu: lieu, Echanges: echanges,
+		})
 	}
 	// Un message privé non lu est toujours signalé, même si le jugement l'a
 	// laissé de côté : quelqu'un attend une réponse de Mathias.
 	for _, it := range privesOublies(neufs, couverts) {
-		titre := "Message privé de " + it.De
-		resume := strings.TrimSpace(it.Apercu)
-		if resume == "" {
-			resume = "Nouveau message privé non lu."
+		apercu := strings.TrimSpace(it.Apercu)
+		if apercu == "" {
+			apercu = "Nouveau message privé non lu."
 		}
-		if _, err := s.store.InsertNotification(ctx, store.Notification{
-			UserID: user.ID, Agent: agent.ID, Source: source, Titre: titre,
-			Resume: truncateRunes(resume, 220), Importance: "moyenne", Messages: []string{origin(it) + " · " + it.De}, Run: run.ID().Hex(),
-		}); err != nil {
-			slog.Warn("veille : notification non enregistrée", "err", err)
-			continue
+		n := store.Notification{
+			UserID: user.ID, Agent: agent.ID, Source: source, Titre: "Message privé de " + it.De,
+			Resume: truncateRunes(apercu, 220), Importance: "moyenne", Messages: []string{origin(it) + " · " + it.De},
+			Run: run.ID().Hex(), Fil: filDe(it), Lieu: lieuDe(it),
+			Echanges: []store.PriseDeParole{{Qui: it.De, AQui: "toi", Quoi: truncateRunes(apercu, 220), Quand: it.Quand}},
 		}
-		titres = append(titres, titre)
+		cible := -1
+		if k, ok := parFil[n.Fil]; ok {
+			// La discussion a déjà son sujet : il garde son titre et son
+			// résumé, le message s'ajoute à ses échanges.
+			cible = k
+			n.Titre, n.Resume, n.AFaire, n.Importance = ouverts[k].Titre, ouverts[k].Resume, ouverts[k].AFaire, ouverts[k].Importance
+		}
+		noter(cible, n)
 	}
 	reply := "Rien d'important."
 	if len(titres) > 0 {
-		reply = fmt.Sprintf("%d information%s importante%s : %s.", len(titres), plural(len(titres), "s", ""), plural(len(titres), "s", ""), strings.Join(titres, " ; "))
+		reply = fmt.Sprintf("%d sujet%s : %s.", len(titres), plural(len(titres), "s", ""), strings.Join(titres, " ; "))
 	}
 	run.Fin(assistant.Result{Reply: reply}, nil)
 	return nil
+}
+
+// veilleMailsLus : les nouveaux mails dont la veille lit le contenu à chaque
+// relève. Au-delà, ils sont jugés sur leur objet.
+const veilleMailsLus = 8
+
+// lireMailsNeufs met le contenu des nouveaux mails — et les derniers messages
+// de leur fil — dans leur aperçu, pour que le jugement dise l'essentiel au
+// lieu de deviner d'après l'objet. Le mail est lu sans être marqué comme lu.
+func (s *Server) lireMailsNeufs(ctx context.Context, user *store.User, neufs []triage.Item) {
+	creds, err := s.gandiCreds(ctx, user)
+	if err != nil {
+		return
+	}
+	lus := 0
+	for i := range neufs {
+		if neufs[i].Ref == "" || lus >= veilleMailsLus {
+			continue
+		}
+		lus++
+		f, err := gandi.ReadByID(ctx, creds, neufs[i].Ref)
+		if err != nil {
+			slog.Warn("veille : mail illisible", "err", err)
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(strings.TrimSpace(f.Body))
+		// Une réponse ne se comprend qu'avec ce à quoi elle répond : le
+		// message juste avant est donné plus largement, et ce que Mathias a
+		// écrit lui-même est marqué « toi » — « il répond oui à ta question »
+		// n'existe que si l'on sait qui a posé la question.
+		if n := len(f.Thread); n > 0 {
+			if n > 1 {
+				b.WriteString("\n    plus tôt dans le fil :")
+				for _, t := range f.Thread[max(0, n-3) : n-1] {
+					fmt.Fprintf(&b, "\n      %s : %s", auteurDuFil(t), truncateRunes(strings.TrimSpace(t.Excerpt), 250))
+				}
+			}
+			t := f.Thread[n-1]
+			fmt.Fprintf(&b, "\n    il répond à ce message de %s : %s", auteurDuFil(t), truncateRunes(strings.TrimSpace(t.Excerpt), 700))
+		}
+		if apercu := strings.TrimSpace(b.String()); apercu != "" {
+			neufs[i].Apercu = apercu
+		}
+	}
+}
+
+func auteurDuFil(t gandi.ThreadMessage) string {
+	if t.Mine {
+		return "toi (Mathias)"
+	}
+	return t.From
 }
 
 // privesOublies : les messages privés que le jugement n'a pas retenus.

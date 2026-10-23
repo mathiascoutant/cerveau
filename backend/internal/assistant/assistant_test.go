@@ -33,7 +33,7 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 	}
 
 	// Les outils qui ne prennent légitimement aucun paramètre.
-	noArgs := map[string]bool{"point_urgences": true}
+	noArgs := map[string]bool{"point_urgences": true, "dossiers_mail": true}
 
 	want := map[string][]string{
 		"consulter_calendrier":       {"debut", "fin"},
@@ -62,6 +62,8 @@ func TestToolDefinitionsSerialization(t *testing.T) {
 		"debriefer":                  {"source", "cible"},
 		"mails_envoyes":              nil,
 		"chercher_mails":             nil,
+		"dossiers_mail":              nil,
+		"parcourir_dossier":          {"dossier"},
 		"chercher_slack":             nil,
 		"tickets_csp":                nil,
 		"memoire_echanges":           nil,

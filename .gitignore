@@ -29,3 +29,7 @@ mobile/android/
 # Réglages Claude Code locaux : contiennent des commandes autorisées,
 # parfois avec des identifiants en clair.
 .claude/settings.local.json
+
+# Contexte métier de Mathias (lu par Claude Code) : hors du dépôt public.
+METIER.md
+CLAUDE.local.md

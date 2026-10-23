@@ -96,6 +96,11 @@ type Config struct {
 	// VeilleMinutesSlack : Slack limite ses lectures par minute ; il est
 	// relevé au plus souvent toutes les 3 minutes.
 	VeilleMinutesSlack int
+	// AnthropicAPIKey : la clé d'API Claude du tri des mails pro (Inès range
+	// chaque mail qui arrive dans CSP, Autres ou la réception). Vide : pas de
+	// tri. TriModele : le modèle du tri (claude-haiku-5-5 par défaut).
+	AnthropicAPIKey string
+	TriModele       string
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -197,6 +202,8 @@ func Load() (Config, error) {
 		AtelierMCPEmail:       env("ATELIER_MCP_EMAIL", ""),
 		VeilleComptes:         splitList(env("VEILLE_COMPTES", "")),
 		VeilleMinutes:         envInt("VEILLE_MINUTES"),
+		AnthropicAPIKey:       env("ANTHROPIC_API_KEY", ""),
+		TriModele:             env("TRI_MODELE", ""),
 		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),

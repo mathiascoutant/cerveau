@@ -53,6 +53,9 @@ type Toolbox interface {
 	SentEmails(ctx context.Context, query string, limit int, withBody bool) ([]MailHitView, error)
 	SearchEmails(ctx context.Context, q MailSearch) ([]MailHitView, error)
 	ReadEmailByID(ctx context.Context, messageID string) (EmailContentView, error)
+	// Les dossiers de la boîte, et ce qu'il y a dans l'un d'eux.
+	MailFolders(ctx context.Context) ([]MailFolderView, error)
+	BrowseMailFolder(ctx context.Context, folder string, limit int, unreadOnly bool) ([]MailHitView, error)
 	// Slack : la recherche transversale, par personne et par période.
 	SearchSlack(ctx context.Context, q SlackSearch) (SlackSearchView, error)
 	// Tickets CSP du tracker Tuleap.
@@ -68,9 +71,20 @@ type MailSearch struct {
 	Person  string
 	Subject string
 	Since   time.Time
-	// Folder : « recu », « envoye » ou « tous ».
+	// Folder : « recu » (la réception et les dossiers où l'on range des mails
+	// reçus), « envoye », « tous », ou le nom d'un dossier précis (« CSP »).
 	Folder string
 	Limit  int
+}
+
+// MailFolderView : un dossier de la boîte mail.
+type MailFolderView struct {
+	Nom string `json:"nom"`
+	// Role : réception, envoyés, brouillons, corbeille, indésirables,
+	// archives — vide pour un dossier de rangement.
+	Role     string `json:"role,omitempty"`
+	Messages uint32 `json:"messages"`
+	NonLus   uint32 `json:"non_lus"`
 }
 
 // MailHitView est un mail retrouvé par une recherche, sans son corps.
@@ -80,7 +94,8 @@ type MailSearch struct {
 // qui n'est jamais parti, message_id permet de rouvrir exactement celui-là.
 type MailHitView struct {
 	MessageID string `json:"message_id"`
-	// Dossier : « reçu » ou « envoyé ».
+	// Dossier : « reçu » (la réception), « envoyé », ou le nom du dossier où
+	// le mail est rangé (« CSP »).
 	Dossier string `json:"dossier"`
 	De      string `json:"de"`
 	Adresse string `json:"adresse,omitempty"`
@@ -170,6 +185,8 @@ type EmailView struct {
 	Identite
 	Objet string `json:"objet"`
 	Recu  string `json:"recu"`
+	// Dossier : où le mail est rangé, quand ce n'est pas la réception (« CSP »).
+	Dossier string `json:"dossier,omitempty"`
 	// PourToi : ce que le mail attend de lui, calculé par le serveur à partir
 	// des champs À et Copie et des en-têtes de filiation. Le modèle ne doit
 	// PAS le redéduire : se chercher parmi quatorze adresses est exactement le
@@ -197,6 +214,9 @@ type EmailContentView struct {
 	Personnes []PersonView `json:"personnes,omitempty"`
 	Objet     string       `json:"objet"`
 	Recu      string       `json:"recu"`
+	// Dossier : où le mail est rangé, quand ce n'est ni la réception ni les
+	// envoyés (« CSP »).
+	Dossier string `json:"dossier,omitempty"`
 	// PourToi : sa place parmi les destinataires, déjà tranchée — destinataire
 	// unique, destinataire parmi d'autres, simple copie, diffusion, ou absent
 	// des champs (copie cachée, alias, liste).
@@ -764,6 +784,34 @@ func (e *Engine) runTool(ctx context.Context, tb Toolbox, loc *time.Location, na
 				return "Aucun mail dans la boîte d'envoi.", nil, nil
 			}
 			return "Aucun mail envoyé ne correspond à « " + in.Recherche + " ».", nil, nil
+		}
+		return encode(hits), nil, nil
+
+	case "dossiers_mail":
+		folders, err := tb.MailFolders(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		return encode(folders), nil, nil
+
+	case "parcourir_dossier":
+		var in struct {
+			Dossier string `json:"dossier"`
+			Limite  int    `json:"limite"`
+			NonLu   bool   `json:"non_lu"`
+		}
+		if err := json.Unmarshal([]byte(rawInput), &in); err != nil {
+			return "", nil, err
+		}
+		hits, err := tb.BrowseMailFolder(ctx, in.Dossier, in.Limite, in.NonLu)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(hits) == 0 {
+			if in.NonLu {
+				return "Aucun mail non lu dans ce dossier.", nil, nil
+			}
+			return "Ce dossier est vide.", nil, nil
 		}
 		return encode(hits), nil, nil
 
@@ -1423,16 +1471,16 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 		tools = append(tools,
 			tool(
 				"mails_non_lus",
-				"Récupère les mails non lus de sa boîte mail (expéditeur, objet, date). Chaque entrée porte pour_toi, qui dit sa place parmi les destinataires — seul destinataire, parmi d'autres, simple copie, diffusion, ou réponse à un mail qu'il a envoyé. C'est calculé, pas déduit : recopie-le, ne le recalcule pas. Sert à repérer une urgence ou une contrainte non encore vue.",
+				"Récupère les mails non lus de sa boîte mail (expéditeur, objet, date) : ceux de la réception et ceux du dossier CSP, où l'agent mail pro range les cycles de contenu — le champ dossier le dit. Pour un autre dossier, c'est parcourir_dossier. Chaque entrée porte pour_toi, qui dit sa place parmi les destinataires — seul destinataire, parmi d'autres, simple copie, diffusion, ou réponse à un mail qu'il a envoyé. C'est calculé, pas déduit : recopie-le, ne le recalcule pas. Sert à repérer une urgence ou une contrainte non encore vue.",
 				object(spaceProperty(src, map[string]any{
 					"limite": map[string]any{"type": "integer", "description": "Nombre maximum de mails (défaut 15)"},
 				})),
 			),
 			tool(
 				"lire_mail",
-				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, te_nomme, destinataires) et TOUTE la conversation, retrouvée dans la réception et dans les envois : fil (ce qui précède, du premier message au dernier) et suite (ce qui est arrivé après, ses propres réponses comprises — deja_repondu le dit). Les messages écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant, où en est l'échange, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
+				"Ouvre UN mail et renvoie son contenu, sa place parmi les destinataires (pour_toi, reponse_a_ton_mail, te_nomme, destinataires) et TOUTE la conversation, retrouvée dans la réception, les dossiers et les envois : fil (ce qui précède, du premier message au dernier) et suite (ce qui est arrivé après, ses propres réponses comprises — deja_repondu le dit). Les messages écrits par l'utilisateur lui-même sont marqués de_toi. C'est le seul outil qui donne le corps d'un message et l'historique d'un échange ; mails_non_lus ne donne que l'expéditeur et l'objet. À utiliser dès qu'on te demande de lire un mail, ce qu'il raconte, ce qui s'est dit avant, où en est l'échange, ce que l'un ou l'autre a répondu, ou ce qu'il faut y répondre. Le mail est lu sans le marquer comme lu.",
 				object(spaceProperty(src, map[string]any{
-					"recherche":  str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet. Vide pour prendre le mail le plus récent. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
+					"recherche":  str("Expéditeur ou fragment d'objet (ex. « Olivier », « le devis »). L'expéditeur prime sur l'objet ; la réception d'abord, puis les dossiers (CSP, archives…) si rien n'y correspond. Vide pour prendre le mail le plus récent de la réception. Si plusieurs personnes correspondent, l'outil le dit au lieu de choisir : demande alors laquelle, puis rappelle avec le nom complet ou l'adresse."),
 					"non_lu":     map[string]any{"type": "boolean", "description": "Ne chercher que parmi les mails non lus (défaut faux)"},
 					"message_id": str("Identifiant exact d'un mail rendu par chercher_mails ou mails_envoyes. Quand tu l'as, passe-le : c'est LE moyen d'ouvrir précisément ce message-là, reçu ou envoyé, et non un homonyme."),
 				})),
@@ -1448,18 +1496,28 @@ func toolDefinitions(src Sources) []responses.ToolUnionParam {
 			),
 			tool(
 				"chercher_mails",
-				"Cherche des mails par personne et par objet, lus ou non, reçus ou envoyés. C'est l'outil de « qu'est-ce que Hebat m'a dit par mail », « les mails d'Olivier sur le devis », « on s'est dit quoi avec Cyril » (dossier « tous »). Il rend les enveloppes avec leur message_id : pour le contenu d'un mail précis, rappelle lire_mail avec ce message_id. Chaque résultat dit son dossier (reçu ou envoyé) et de_toi quand c'est lui qui l'a écrit : un mail envoyé n'est pas quelque chose qu'on lui a dit.",
+				"Cherche des mails par personne et par objet, lus ou non, reçus ou envoyés. C'est l'outil de « qu'est-ce que Hebat m'a dit par mail », « les mails d'Olivier sur le devis », « on s'est dit quoi avec Cyril » (dossier « tous »). Il rend les enveloppes avec leur message_id : pour le contenu d'un mail précis, rappelle lire_mail avec ce message_id. Chaque résultat dit son dossier (reçu pour la réception, envoyé, ou le dossier où il est rangé, comme CSP) et de_toi quand c'est lui qui l'a écrit : un mail envoyé n'est pas quelque chose qu'on lui a dit.",
 				object(spaceProperty(src, map[string]any{
 					"personne": str("La personne, telle qu'il l'a dite (« Hebat », « olivier@x.fr »). Expéditeur pour les mails reçus, destinataire pour les envoyés."),
 					"objet":    str("Fragment d'objet, facultatif (« planning », « devis »)."),
 					"depuis":   str("Ne remonter que depuis cette date, ISO 8601. Facultatif."),
-					"dossier": map[string]any{
-						"type":        "string",
-						"enum":        []string{"recu", "envoye", "tous"},
-						"description": "Où chercher (défaut « recu »). « tous » pour reconstituer un échange dans les deux sens.",
-					},
-					"limite": map[string]any{"type": "integer", "description": "Nombre de résultats (défaut 10)"},
+					"dossier":  str("Où chercher (défaut « recu »). « recu » couvre la réception ET les dossiers où sont rangés des mails reçus (CSP, archives…) ; « envoye » la boîte d'envoi ; « tous » les deux, pour reconstituer un échange dans les deux sens ; ou le nom d'un dossier précis (« CSP »)."),
+					"limite":   map[string]any{"type": "integer", "description": "Nombre de résultats (défaut 10)"},
 				})),
+			),
+			tool(
+				"dossiers_mail",
+				"Liste les dossiers de sa boîte mail — la réception, les dossiers où il range ses mails (par exemple « CSP », où l'agent mail pro range les cycles de contenu des fournisseurs, et « Autres », où il met les mails de marques et de réseaux sociaux), les envoyés, la corbeille… — avec, pour chacun, le nombre de mails et de non-lus. C'est l'outil de « quels dossiers j'ai », « il y a quoi de neuf dans mes dossiers », « combien de mails dans CSP ».",
+				object(spaceProperty(src, map[string]any{})),
+			),
+			tool(
+				"parcourir_dossier",
+				"Parcourt UN dossier de la boîte mail : ses derniers mails, du plus récent au plus ancien (expéditeur, objet, date, lu ou non, message_id), ou seulement ses non-lus. C'est l'outil de « qu'est-ce qu'il y a dans CSP », « les derniers mails rangés dans Autres », « montre-moi la corbeille ». Pour le contenu d'un mail, rappelle lire_mail avec son message_id. Le nom est tolérant (« csp », « la corbeille ») ; s'il n'existe pas, l'outil donne les dossiers qui existent.",
+				object(spaceProperty(src, map[string]any{
+					"dossier": str("Le nom du dossier, tel qu'il l'a dit (« CSP », « Autres », « corbeille », « réception »)."),
+					"limite":  map[string]any{"type": "integer", "description": "Nombre de mails (défaut 15)"},
+					"non_lu":  map[string]any{"type": "boolean", "description": "Seulement les non-lus du dossier (défaut faux)"},
+				}), "dossier"),
 			),
 			tool(
 				"preparer_reponse_mail",
@@ -2074,6 +2132,8 @@ const mailSearchRules = `RETROUVER DES MAILS, ENVOYÉS OU REÇUS
 « Qu'est-ce que Hebat m'a dit par mail » : chercher_mails avec la personne. L'outil rend les enveloppes des mails REÇUS de cette personne, du plus récent au plus ancien, chacune avec son message_id. Tu ouvres ceux qui comptent avec lire_mail et son message_id — pas par le prénom, qui peut désigner deux personnes — puis tu restitues mail par mail, chacun raconté en clair : de quoi il parle, ce qu'il dit, quand. Plusieurs mails ne se mélangent pas en un seul résumé : tu les distingues.
 
 « Qu'est-ce que j'ai répondu à Hebat sur le planning » : chercher_mails avec la personne, l'objet, et dossier=envoye — ou tous pour voir les deux sens. Ce qui porte de_toi est ce qu'il a écrit ; le reste est ce qu'on lui a écrit. Tu ne prends jamais l'un pour l'autre.
+
+Sa boîte a des dossiers. L'agent mail pro range à mesure les cycles de contenu des fournisseurs (CSP) dans « CSP » et les mails de marques et de réseaux sociaux dans « Autres » ; le reste reste dans la réception. Un mail rangé est un mail reçu comme un autre : chercher_mails et lire_mail le trouvent, et quand un mail porte un dossier, tu peux dire où il est (« dans ton dossier CSP »). « Qu'est-ce qu'il y a dans CSP », « mes dossiers » : parcourir_dossier, dossiers_mail.
 
 Si deux personnes portent le même prénom parmi les résultats (adresses différentes), tu ne devines pas : tu demandes laquelle en citant les adresses ou les noms complets.
 

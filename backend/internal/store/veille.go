@@ -35,11 +35,34 @@ type Notification struct {
 	Resume     string        `bson:"resume" json:"resume"`
 	Importance string        `bson:"importance" json:"importance"` // haute, moyenne
 	// Messages : d'où vient l'information (expéditeur, fil, canal…).
-	Messages  []string   `bson:"messages,omitempty" json:"messages,omitempty"`
-	Run       string     `bson:"run,omitempty" json:"run,omitempty"`
-	CreatedAt time.Time  `bson:"created_at" json:"creee"`
-	LueAt     *time.Time `bson:"lue_at,omitempty" json:"lue,omitempty"`
+	Messages []string `bson:"messages,omitempty" json:"messages,omitempty"`
+	Run      string   `bson:"run,omitempty" json:"run,omitempty"`
+	// Une notification est un SUJET : une même discussion ne fait qu'un bloc,
+	// mis à jour à chaque nouveau message au lieu d'être signalée à nouveau.
+	// Fil : la clé de la discussion (« slack:apex », « mail:devis acme »),
+	// Lieu : où elle se tient, tel qu'on le dit (« #apex », « APEX - WestIQ »).
+	Fil  string `bson:"fil,omitempty" json:"-"`
+	Lieu string `bson:"lieu,omitempty" json:"lieu,omitempty"`
+	// AFaire : ce qu'on attend de Mathias, vide si rien.
+	AFaire string `bson:"a_faire,omitempty" json:"a_faire,omitempty"`
+	// Echanges : qui a dit quoi, du plus ancien au plus récent.
+	Echanges  []PriseDeParole `bson:"echanges,omitempty" json:"echanges,omitempty"`
+	CreatedAt time.Time       `bson:"created_at" json:"creee"`
+	MisAJour  time.Time       `bson:"maj,omitempty" json:"maj,omitempty"`
+	LueAt     *time.Time      `bson:"lue_at,omitempty" json:"lue,omitempty"`
 }
+
+// PriseDeParole : qui a dit quoi, dans un sujet de veille.
+type PriseDeParole struct {
+	Qui   string    `bson:"qui" json:"qui"`
+	AQui  string    `bson:"a_qui,omitempty" json:"a_qui,omitempty"`
+	Quoi  string    `bson:"quoi" json:"quoi"`
+	Quand time.Time `bson:"quand" json:"quand"`
+}
+
+// maxEchanges : un sujet garde ses derniers échanges, pas un historique sans
+// fin — au-delà, on lit la discussion elle-même.
+const maxEchanges = 12
 
 func (s *Store) veilleVus() *mongo.Collection     { return s.db.Collection("veille_vus") }
 func (s *Store) notifications() *mongo.Collection { return s.db.Collection("notifications") }
@@ -53,6 +76,7 @@ func (s *Store) ensureVeilleIndexes(ctx context.Context) error {
 	}
 	_, err := s.notifications().Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "maj", Value: -1}}},
 		{Keys: bson.D{{Key: "created_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(int32(notificationTTL / time.Second))},
 	})
 	return err
@@ -112,6 +136,9 @@ func (s *Store) InsertNotification(ctx context.Context, n Notification) (Notific
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now()
 	}
+	if n.MisAJour.IsZero() {
+		n.MisAJour = n.CreatedAt
+	}
 	res, err := s.notifications().InsertOne(ctx, n)
 	if err != nil {
 		return Notification{}, err
@@ -123,7 +150,7 @@ func (s *Store) InsertNotification(ctx context.Context, n Notification) (Notific
 // Notifications rend les dernières notifications, et combien ne sont pas lues.
 func (s *Store) Notifications(ctx context.Context, userID bson.ObjectID) ([]Notification, int64, error) {
 	cur, err := s.notifications().Find(ctx, bson.M{"user_id": userID},
-		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(notificationsLues))
+		options.Find().SetSort(bson.D{{Key: "maj", Value: -1}, {Key: "created_at", Value: -1}}).SetLimit(notificationsLues))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -142,5 +169,45 @@ func (s *Store) MarquerNotificationsLues(ctx context.Context, userID bson.Object
 		filter["_id"] = *id
 	}
 	_, err := s.notifications().UpdateMany(ctx, filter, bson.M{"$set": bson.M{"lue_at": time.Now()}})
+	return err
+}
+
+// SujetsOuverts : les sujets qu'un agent a signalés depuis `depuis`, du plus
+// récent au plus ancien — ceux auxquels un nouveau message peut se rattacher.
+func (s *Store) SujetsOuverts(ctx context.Context, userID bson.ObjectID, agent string, depuis time.Time) ([]Notification, error) {
+	cur, err := s.notifications().Find(ctx, bson.M{
+		"user_id": userID, "agent": agent,
+		"$or": bson.A{bson.M{"maj": bson.M{"$gte": depuis}}, bson.M{"created_at": bson.M{"$gte": depuis}}},
+	}, options.Find().SetSort(bson.D{{Key: "maj", Value: -1}, {Key: "created_at", Value: -1}}).SetLimit(15))
+	if err != nil {
+		return nil, err
+	}
+	var out []Notification
+	err = cur.All(ctx, &out)
+	return out, err
+}
+
+// MettreAJourSujet fait avancer un sujet : nouveau titre et résumé, échanges
+// ajoutés à la suite, et il redevient non lu — il y a du neuf.
+func (s *Store) MettreAJourSujet(ctx context.Context, id bson.ObjectID, n Notification) error {
+	set := bson.M{"titre": n.Titre, "resume": n.Resume, "importance": n.Importance, "a_faire": n.AFaire, "maj": time.Now()}
+	if n.Lieu != "" {
+		set["lieu"] = n.Lieu
+	}
+	if n.Run != "" {
+		set["run"] = n.Run
+	}
+	update := bson.M{"$set": set, "$unset": bson.M{"lue_at": ""}}
+	push := bson.M{}
+	if len(n.Echanges) > 0 {
+		push["echanges"] = bson.M{"$each": n.Echanges, "$slice": -maxEchanges}
+	}
+	if len(n.Messages) > 0 {
+		push["messages"] = bson.M{"$each": n.Messages, "$slice": -maxEchanges}
+	}
+	if len(push) > 0 {
+		update["$push"] = push
+	}
+	_, err := s.notifications().UpdateByID(ctx, id, update)
 	return err
 }

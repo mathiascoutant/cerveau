@@ -219,7 +219,12 @@ func conversation(c *imapclient.Client, f filiation, date time.Time, me string) 
 		name string
 		sent bool
 	}
-	boxes := []box{{"INBOX", false}}
+	// La réception et les dossiers de mails reçus : un fil CSP rangé par le
+	// tri se lit dans « CSP ».
+	var boxes []box
+	for _, b := range boitesRecues(c) {
+		boxes = append(boxes, box{b.serveur, false})
+	}
 	if sent := sentMailbox(c); sent != "" {
 		boxes = append(boxes, box{sent, true})
 	}
@@ -516,7 +521,10 @@ func Nouveaux(ctx context.Context, creds Credentials, root string, from []string
 		name, label string
 		leaves      []imap.SearchCriteria
 	}
-	boxes := []box{{"INBOX", FolderInbox, inbox}}
+	var boxes []box
+	for _, r := range boitesRecues(c) {
+		boxes = append(boxes, box{r.serveur, r.label, inbox})
+	}
 	if sent := sentMailbox(c); sent != "" && len(thread) > 0 {
 		boxes = append(boxes, box{sent, FolderSent, thread})
 	}
@@ -533,6 +541,9 @@ func Nouveaux(ctx context.Context, creds Credentials, root string, from []string
 		withDate := *crit
 		withDate.Since = since
 		if _, err := c.Select(b.name, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+			if b.name != "INBOX" {
+				continue // un dossier illisible n'empêche pas de lire le reste
+			}
 			return nil, fmt.Errorf("impossible d'ouvrir %s : %w", b.name, err)
 		}
 		res, err := c.Search(&withDate, &imap.SearchOptions{ReturnAll: true}).Wait()

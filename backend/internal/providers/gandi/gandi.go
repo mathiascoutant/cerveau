@@ -95,6 +95,9 @@ type Message struct {
 	// AnswersYou : ce mail répond à un message que l'utilisateur a envoyé.
 	// Établi en rapprochant InReplyTo des Message-ID de sa boîte d'envoi.
 	AnswersYou bool `json:"-"`
+	// Dossier : où le mail est rangé quand ce n'est pas la réception
+	// (« CSP »). Vide pour la réception.
+	Dossier string `json:"-"`
 	// Bulk dit que le message porte les en-têtes d'un envoi de masse ou
 	// automatique. C'est un fait posé par l'expéditeur lui-même dans le
 	// message, pas une devinette sur son contenu — d'où sa présence ici, à
@@ -152,7 +155,8 @@ func TestConnection(ctx context.Context, creds Credentials) error {
 	return nil
 }
 
-// Unread renvoie les mails non lus de INBOX, du plus récent au plus ancien.
+// Unread renvoie les mails non lus de la réception et des dossiers suivis
+// (NonLusAussi), du plus récent au plus ancien. Chacun dit son dossier.
 func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = 15
@@ -168,10 +172,32 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 	// mail ordinaire — c'est une dégradation, pas une panne.
 	sent := sentMessageIDs(c)
 
-	if _, err := c.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
-		return nil, fmt.Errorf("impossible d'ouvrir INBOX : %w", err)
+	var out []Message
+	for _, b := range boitesRecues(c) {
+		if b.serveur != "INBOX" && !nonLusSuivis(b.label) {
+			continue
+		}
+		msgs, err := unreadIn(c, b, sent, limit)
+		if err != nil {
+			if b.serveur == "INBOX" {
+				return nil, err
+			}
+			continue // un dossier illisible n'empêche pas de lire la réception
+		}
+		out = append(out, msgs...)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
 
+// unreadIn : les non-lus d'un dossier, au plus `limit`, les plus récents.
+func unreadIn(c *imapclient.Client, b boite, sent map[string]bool, limit int) ([]Message, error) {
+	if _, err := c.Select(b.serveur, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		return nil, fmt.Errorf("impossible d'ouvrir %s : %w", b.label, err)
+	}
 	criteria := &imap.SearchCriteria{NotFlag: []imap.Flag{imap.FlagSeen}}
 	found, err := c.Search(criteria, &imap.SearchOptions{ReturnAll: true}).Wait()
 	if err != nil {
@@ -216,13 +242,23 @@ func Unread(ctx context.Context, creds Credentials, limit int) ([]Message, error
 			Date:       m.Envelope.Date,
 			To:         addressList(m.Envelope.To),
 			Cc:         addressList(m.Envelope.Cc),
+			MessageID:  normalizeMessageID(m.Envelope.MessageID),
 			InReplyTo:  m.Envelope.InReplyTo,
 			AnswersYou: answersYou(m.Envelope.InReplyTo, sent),
 			Bulk:       isBulk(m.FindBodySection(headers)),
+			Dossier:    dossierDit(b),
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
 	return out, nil
+}
+
+// dossierDit : le dossier d'un message pour celui qui l'écoute — vide pour
+// la réception, qui va sans dire.
+func dossierDit(b boite) string {
+	if b.serveur == "INBOX" {
+		return ""
+	}
+	return b.label
 }
 
 // UnreadCount ne compte que, sans rapatrier les enveloppes.

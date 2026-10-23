@@ -55,6 +55,8 @@ var mailTools = map[string]bool{
 	"lire_mail":             true,
 	"mails_envoyes":         true,
 	"chercher_mails":        true,
+	"dossiers_mail":         true,
+	"parcourir_dossier":     true,
 	"preparer_reponse_mail": true,
 }
 

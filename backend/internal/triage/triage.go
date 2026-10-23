@@ -60,12 +60,17 @@ type Item struct {
 	// Adresse : celle de l'expéditeur d'un mail. C'est par elle qu'on sait
 	// qui il est pour l'utilisateur — un prénom ne suffit pas.
 	Adresse string
+	// Ref : de quoi rouvrir le message (le Message-ID d'un mail). Vide quand
+	// la messagerie n'en donne pas.
+	Ref string
 }
 
 // Mail est ce que le tri a besoin de savoir d'un mail. Volontairement plus
 // pauvre que le message IMAP : ce paquet ne doit dépendre d'aucun fournisseur,
 // c'est ce qui le rend testable sans boîte mail.
 type Mail struct {
+	// Ref : le Message-ID, pour rouvrir le mail et en lire le contenu.
+	Ref     string
 	De      string
 	Adresse string
 	Objet   string
@@ -200,6 +205,7 @@ func Mails(mails []Mail, moi string) []Item {
 			Motif:   motif,
 			Fil:     m.DansUnFil,
 			Adresse: strings.ToLower(strings.TrimSpace(m.Adresse)),
+			Ref:     m.Ref,
 		})
 	}
 	return out

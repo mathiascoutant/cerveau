@@ -3,8 +3,10 @@ package gandi
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
@@ -67,6 +69,25 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 	}
 
 	chosen, all, err := pick(c, nums, query)
+	var none *noMatchError
+	if errors.As(err, &none) {
+		// Rien dans la réception : le mail est peut-être rangé (CSP,
+		// archives…). On le cherche dans les dossiers, puis on l'ouvre par
+		// son identifiant, fil compris.
+		id, err := chercherDansLesDossiers(c, query, unreadOnly)
+		if err != nil {
+			return Message{}, err
+		}
+		_ = c.Logout().Wait()
+		f, err := ReadByID(ctx, creds, id)
+		if err != nil {
+			return Message{}, err
+		}
+		if f.Folder != FolderInbox {
+			f.Message.Dossier = f.Folder
+		}
+		return f.Message, nil
+	}
 	if err != nil {
 		return Message{}, err
 	}
@@ -100,6 +121,53 @@ func Read(ctx context.Context, creds Credentials, query string, unreadOnly bool)
 		}
 	}
 	return msg, nil
+}
+
+// chercherDansLesDossiers retrouve, hors de la réception, le mail le plus
+// récent de cet expéditeur — ou, à défaut, dont l'objet contient la demande.
+// Rend son Message-ID. Deux expéditeurs différents : on demande lequel.
+func chercherDansLesDossiers(c *imapclient.Client, query string, unreadOnly bool) (string, error) {
+	var boxes []boite
+	for _, b := range boitesRecues(c) {
+		if b.serveur != "INBOX" {
+			boxes = append(boxes, b)
+		}
+	}
+	for _, q := range []SearchQuery{{Sender: query}, {Subject: query}} {
+		var hits []Found
+		for _, b := range boxes {
+			found, err := scanFolder(c, b.serveur, b.label, q)
+			if err != nil {
+				continue
+			}
+			for _, f := range found {
+				if f.MessageID != "" && !f.Draft && (!unreadOnly || !f.Seen) {
+					hits = append(hits, f)
+				}
+			}
+		}
+		if len(hits) == 0 {
+			continue
+		}
+		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Date.After(hits[j].Date) })
+		if q.Sender != "" {
+			var senders []string
+			seen := map[string]bool{}
+			for _, h := range hits {
+				if key := senderKey(h.Message); !seen[key] {
+					seen[key] = true
+					if len(senders) < maxAmbiguousSenders {
+						senders = append(senders, describeSender(h.Message))
+					}
+				}
+			}
+			if len(senders) > 1 {
+				return "", &AmbiguousSenderError{Query: query, Senders: senders}
+			}
+		}
+		return hits[0].MessageID, nil
+	}
+	return "", &noMatchError{query: query}
 }
 
 // readThread rapatrie les messages précédents de même objet.
@@ -314,7 +382,14 @@ func pick(c *imapclient.Client, nums []uint32, query string) (candidate, []candi
 	if c, ok := closestSender(list, query); ok {
 		return c, list, nil
 	}
-	return candidate{}, nil, fmt.Errorf("aucun mail récent ne correspond à %q", query)
+	return candidate{}, nil, &noMatchError{query: query}
+}
+
+// noMatchError : rien dans la fenêtre inspectée ne correspond à la demande.
+type noMatchError struct{ query string }
+
+func (e *noMatchError) Error() string {
+	return fmt.Sprintf("aucun mail récent ne correspond à %q", e.query)
 }
 
 // closestSender rend l'expéditeur le plus proche phonétiquement, à condition

@@ -450,6 +450,7 @@ func triageMails(mails []gandi.Message) []triage.Mail {
 // sinon Raoul annonce une urgence qu'il décrit ensuite comme une simple copie.
 func toTriageMail(m gandi.Message) triage.Mail {
 	return triage.Mail{
+		Ref:        m.MessageID,
 		De:         m.From,
 		Adresse:    m.FromAddr,
 		Objet:      m.Subject,
