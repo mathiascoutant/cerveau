@@ -156,6 +156,9 @@ type Config struct {
 	VoixIngenieur   string
 	VoixResponsable string
 	VoixPilote      string
+	// VoixGratuiteURL : le service des voix Microsoft (deploy/voix), celles
+	// de Cerveau HQ. Vide : HQ lit avec les voix du navigateur.
+	VoixGratuiteURL string
 	// Le modèle de l'équipe et le raisonnement de chacun. Vides : le modèle
 	// fort, en medium pour l'ingénieur et low pour la responsable.
 	EquipeModele      string
@@ -229,6 +232,7 @@ func Load() (Config, error) {
 		VoixIngenieur:         env("ELEVENLABS_VOICE_INGENIEUR", ""),
 		VoixResponsable:       env("ELEVENLABS_VOICE_RESPONSABLE", ""),
 		VoixPilote:            env("ELEVENLABS_VOICE_PILOTE", ""),
+		VoixGratuiteURL:       env("VOIX_GRATUITE_URL", ""),
 		EquipeModele:          env("OPENAI_EQUIPE_MODEL", ""),
 		EffortIngenieur:       env("OPENAI_INGENIEUR_EFFORT", ""),
 		EffortResponsable:     env("OPENAI_RESPONSABLE_EFFORT", ""),

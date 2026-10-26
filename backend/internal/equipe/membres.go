@@ -51,6 +51,9 @@ type Membre struct {
 	// Voix : l'identifiant de sa voix ElevenLabs. Non exposé : l'app reçoit
 	// le son, pas le réglage.
 	Voix string `json:"-"`
+	// VoixGratuite : sa voix neuronale Microsoft (deploy/voix), celle de
+	// Cerveau HQ — humaine, sans quota.
+	VoixGratuite string `json:"-"`
 	// Presentation : ce qu'il fait, en une phrase — pour l'app et pour Raoul.
 	Presentation string `json:"presentation"`
 	// Quand : ce pour quoi on le fait venir. C'est ce qui apprend à Raoul à
@@ -87,6 +90,14 @@ const (
 	VoixPilote      = "cjVigY5qzO86Huf0OWal" // Eric, doux et posé
 )
 
+// Les voix gratuites de Cerveau HQ : celles de Microsoft Edge, choisies pour
+// le ton — Hugo détendu et expressif.
+const (
+	VoixGratuitePilote      = "fr-FR-RemyMultilingualNeural"
+	VoixGratuiteResponsable = "fr-FR-VivienneMultilingualNeural"
+	VoixGratuiteIngenieur   = "fr-FR-HenriNeural"
+)
+
 // Voix : les voix configurées, vides pour garder les défauts.
 type Voix struct {
 	Raoul       string
@@ -116,6 +127,7 @@ func Roster(v Voix) []Membre {
 			Equipe: EquipeDirection, Superieur: IDRaoul, Pilote: true,
 			Couleur:      "#FFD166",
 			Voix:         pick(v.Pilote, VoixPilote),
+			VoixGratuite: VoixGratuitePilote,
 			Presentation: "Il pilote toute l'équipe : il répartit ton travail entre les agents, fait circuler l'information de l'un à l'autre et te rend compte.",
 			Quand:        "les demandes qui touchent plusieurs sujets ou plusieurs agents, l'avancement d'une fonctionnalité ou d'un projet, tout ce qu'il faut coordonner",
 			Bonjour:      "Bonsoir, c'est Hugo, le responsable de l'équipe. Dis-moi ce que tu veux qu'on fasse : je répartis le travail entre les agents, je fais circuler l'information, et je te rends compte.",
@@ -125,6 +137,7 @@ func Roster(v Voix) []Membre {
 			Equipe: EquipeInformatique, Superieur: IDPilote, Espace: "perso",
 			Couleur:      "#F39BD0",
 			Voix:         pick(v.Responsable, VoixResponsable),
+			VoixGratuite: VoixGratuiteResponsable,
 			Presentation: "Elle a la vue d'ensemble de tes projets perso, arbitre les priorités et confie les enquêtes à l'ingénieur.",
 			Quand:        "la vue d'ensemble de ses projets perso, les priorités, ce qu'il faudrait faire et dans quel ordre, l'état général de l'infrastructure",
 			Bonjour:      "Bonjour, c'est Claire, ta responsable informatique. Je garde la vue d'ensemble sur tes projets, je te dis ce qui presse et dans quel ordre, et je confie les enquêtes à Léo.",
@@ -134,6 +147,7 @@ func Roster(v Voix) []Membre {
 			Equipe: EquipeInformatique, Superieur: IDResponsable, Espace: "perso",
 			Couleur:      "#6EE7B7",
 			Voix:         pick(v.Ingenieur, VoixIngenieur),
+			VoixGratuite: VoixGratuiteIngenieur,
 			Presentation: "Il connaît le code, le VPS, les bases et la CI de tes projets, et diagnostique ce qui ne va pas.",
 			Quand:        "tout ce qui demande de creuser : une panne, une lenteur, un déploiement raté, une question sur le code, une base de données, le VPS",
 			Bonjour:      "Salut, c'est Léo, ton ingénieur logiciel. Je connais le code, le VPS, les bases et la CI de tes projets : quand quelque chose cloche, c'est moi qui regarde.",

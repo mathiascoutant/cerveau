@@ -27,6 +27,9 @@ services:
       - ./projets.json:/config/projets.json:ro
       - ./connaissances:/config/connaissances:ro
       - ./sonde_ed25519:/config/sonde_ed25519:ro
+      # La clé de l'atelier, attachée sur l'hôte au seul programme atelier.py
+      # (même propriétaire et mêmes droits que celle de la sonde).
+      - ./atelier_ed25519:/config/atelier_ed25519:ro
 
     # La sonde tourne sur l'hôte : le conteneur la joint en SSH par la
     # passerelle Docker.
@@ -41,6 +44,12 @@ services:
       EQUIPE_AMORCE: /config/connaissances
       SONDE_SSH: ubuntu@host.docker.internal:22
       SONDE_CLE: /config/sonde_ed25519
+      # L'atelier : Claude Code sur l'hôte, qui fait les tâches confiées aux
+      # agents. Voir deploy/atelier/atelier.py.
+      ATELIER_SSH: atelier@host.docker.internal:22
+      ATELIER_CLE: /config/atelier_ed25519
+      # Les voix gratuites de Cerveau HQ : le service voix ci-dessous.
+      VOIX_GRATUITE_URL: http://voix:8080
       # SONDE_CLE_HOTE (la clé publique ed25519 de l'hôte) et les jetons
       # GitHub vont dans le .env.
 
@@ -49,6 +58,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Les voix neuronales de Microsoft Edge pour Cerveau HQ (deploy/voix) :
+  # gratuites, sans clé. Joint par l'API seule, sur le réseau du compose —
+  # aucun port publié. Mise à jour : docker compose build voix.
+  voix:
+    build: ./voix
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 volumes:
   whatsapp:

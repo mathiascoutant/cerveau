@@ -177,7 +177,20 @@ func (s *Server) prepareSpeech(userID bson.ObjectID, text string) string {
 // prepareSpeechAs fait de même avec la voix d'un membre de l'équipe : on doit
 // savoir qui parle sans regarder l'écran.
 func (s *Server) prepareSpeechAs(userID bson.ObjectID, text, voice string) string {
-	if !s.tts.Enabled() {
+	return s.prepareSpeechWith(s.tts, userID, text, voice)
+}
+
+// synthetiseur : ElevenLabs (*tts.Client) ou les voix gratuites (*tts.Edge).
+type synthetiseur interface {
+	speechSynth
+	voicedSynth
+	Enabled() bool
+}
+
+// prepareSpeechWith prépare la lecture avec ce synthétiseur-là : celui de
+// Cerveau HQ parle même quand l'app est aux voix du téléphone.
+func (s *Server) prepareSpeechWith(synth synthetiseur, userID bson.ObjectID, text, voice string) string {
+	if !synth.Enabled() {
 		return ""
 	}
 	text = strings.TrimSpace(text)
@@ -194,7 +207,7 @@ func (s *Server) prepareSpeechAs(userID bson.ObjectID, text, voice string) strin
 		return ""
 	}
 	if entry, ok := s.speech.lookup(id); ok {
-		entry.synthesize(s.tts)
+		entry.synthesize(synth)
 	}
 	return "/api/v1/speech/" + id
 }

@@ -30,6 +30,10 @@ type Server struct {
 	engine *assistant.Engine
 	stt    *stt.Client
 	tts    *tts.Client
+	// voixHQ : les voix gratuites de Cerveau HQ (Microsoft Edge, par le
+	// service deploy/voix). VOIX=appareil vaut pour l'app ; à l'ordinateur,
+	// l'équipe garde une voix humaine.
+	voixHQ *tts.Edge
 	// wa tient les sessions WhatsApp : contrairement aux autres sources, on ne
 	// l'interroge pas à la demande — c'est une connexion permanente qui reçoit
 	// les messages au fil de l'eau, et le serveur la porte de bout en bout.
@@ -88,9 +92,10 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		engine: assistant.New(cfg.OpenAIAPIKey, cfg.OpenAIModel, cfg.OpenAIEffort).
 			WithFast(cfg.OpenAIFastModel, cfg.OpenAIFastEffort).
 			WithDeep(cfg.OpenAIDeepModel, cfg.OpenAIDeepEffort),
-		csp: newCSPCache(),
-		stt: stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
-		tts: tts.New(elevenLabsKey(cfg), cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
+		csp:    newCSPCache(),
+		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
+		tts:    tts.New(elevenLabsKey(cfg), cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
+		voixHQ: tts.NewEdge(cfg.VoixGratuiteURL, ""),
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),

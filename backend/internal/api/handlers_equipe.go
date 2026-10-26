@@ -14,6 +14,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/httpx"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
+	"github.com/mathiascoutant/cerveau/backend/internal/tts"
 )
 
 // L'espace perso, côté app : l'écran Projets et l'écran Équipe.
@@ -122,11 +123,20 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
 		return
 	}
-	// Sans ElevenLabs (VOIX=appareil, ou quota épuisé), l'app de l'iPhone
-	// attend un 501 pour parler avec la voix du téléphone : elle n'envoie pas
-	// de corps. Cerveau HQ en envoie un, et lit lui-même le texte rendu avec
-	// une voix du navigateur.
-	if !s.tts.Enabled() && sansCorps {
+	// L'app de l'iPhone n'envoie pas de corps : elle parle avec ElevenLabs,
+	// et sans lui (VOIX=appareil, ou quota épuisé) elle attend un 501 pour
+	// prendre la voix du téléphone. Cerveau HQ en envoie un, et parle avec les
+	// voix gratuites de Microsoft ; sans elles, il lit lui-même le texte rendu
+	// avec une voix du navigateur.
+	var synth synthetiseur = s.tts
+	voix := s.voiceOf(m.ID)
+	if !sansCorps {
+		synth, voix = s.voixHQ, m.VoixGratuite
+		if voix == "" {
+			synth = tts.NewEdge("", "")
+		}
+	}
+	if !synth.Enabled() && sansCorps {
 		httpx.Error(w, http.StatusNotImplemented, "synthèse vocale non configurée")
 		return
 	}
@@ -138,11 +148,11 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 	if text == "" {
 		text = "Salut, c'est " + m.Nom + ", " + strings.ToLower(m.Role) + "."
 	}
-	if !s.tts.Enabled() {
+	if !synth.Enabled() {
 		httpx.JSON(w, http.StatusOK, map[string]any{"texte": text})
 		return
 	}
-	url := s.prepareSpeechAs(user.ID, text, s.voiceOf(m.ID))
+	url := s.prepareSpeechWith(synth, user.ID, text, voix)
 	if url == "" {
 		httpx.Error(w, http.StatusInternalServerError, "impossible de préparer la lecture")
 		return

@@ -17,11 +17,12 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/tts"
 )
 
-// Cerveau HQ fait parler Hugo : sa présentation sans texte, sinon le texte
-// donné — une de ses réponses, ou ce qu'on veut lui faire dire. La veille,
-// qui ne parle pas, n'a pas de voix à prêter.
+// L'app fait entendre la présentation de Hugo avec ElevenLabs ; Cerveau HQ le
+// fait parler avec sa voix gratuite (Rémy) : sa présentation sans texte,
+// sinon le texte donné — une de ses réponses, ou ce qu'on veut lui faire
+// dire. La veille, qui ne parle pas, n'a pas de voix à prêter.
 func TestVoixMembre(t *testing.T) {
-	srv := NewServer(config.Config{ElevenLabsAPIKey: "test", VoixPilote: "voix-de-hugo"}, nil, nil, nil)
+	srv := NewServer(config.Config{ElevenLabsAPIKey: "test", VoixPilote: "voix-de-hugo", VoixGratuiteURL: "http://voix.invalid"}, nil, nil, nil)
 	srv.equipe = equipe.New(nil, nil, nil, equipe.Config{Voix: equipe.Voix{Pilote: srv.cfg.VoixPilote}})
 	user := &store.User{ID: bson.NewObjectID()}
 
@@ -52,19 +53,26 @@ func TestVoixMembre(t *testing.T) {
 	if e := ticket(call(equipe.IDPilote, "")); !strings.HasPrefix(e.text, "Bonsoir, c'est Hugo") || e.voice != "voix-de-hugo" {
 		t.Errorf("présentation de Hugo inattendue : %q avec %q", e.text, e.voice)
 	}
-	if e := ticket(call(equipe.IDPilote, `{"texte":"Tout est en ordre."}`)); e.text != "Tout est en ordre." || e.voice != "voix-de-hugo" {
-		t.Errorf("Hugo devait dire le texte donné : %q avec %q", e.text, e.voice)
+	if e := ticket(call(equipe.IDPilote, `{"texte":"Tout est en ordre."}`)); e.text != "Tout est en ordre." || e.voice != equipe.VoixGratuitePilote {
+		t.Errorf("Hugo devait dire le texte donné avec Rémy : %q avec %q", e.text, e.voice)
 	}
 	if rec := call(equipe.IDVeilleMail, ""); rec.Code != http.StatusNotFound {
 		t.Errorf("la veille n'a pas de voix : statut %d", rec.Code)
 	}
 
-	// VOIX=appareil : pas de son serveur. L'app, sans corps, reçoit son 501
-	// et parle avec l'iPhone ; HQ reçoit le texte et le lit dans le navigateur.
+	// VOIX=appareil : l'app, sans corps, reçoit son 501 et parle avec
+	// l'iPhone ; HQ garde la voix de Rémy.
 	srv.tts = tts.New("", "", "", "")
 	if rec := call(equipe.IDPilote, ""); rec.Code != http.StatusNotImplemented {
 		t.Errorf("l'app attend un 501 sans voix serveur : statut %d", rec.Code)
 	}
+	if e := ticket(call(equipe.IDPilote, `{"texte":"Je m'en occupe."}`)); e.voice != equipe.VoixGratuitePilote {
+		t.Errorf("HQ doit garder la voix de Rémy : %q", e.voice)
+	}
+
+	// Sans le service des voix gratuites, HQ reçoit le texte et le lit dans
+	// le navigateur.
+	srv.voixHQ = tts.NewEdge("", "")
 	rec := call(equipe.IDPilote, `{"texte":""}`)
 	var out struct{ URL, Texte string }
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
