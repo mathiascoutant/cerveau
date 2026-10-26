@@ -119,7 +119,7 @@ func (s *Server) hqAgents(ctx context.Context, user *store.User) ([]hqAgent, err
 		}
 		a := hqAgent{
 			ID: m.ID, Nom: m.Nom, Role: m.Role, Equipe: m.Equipe, Superieur: m.Superieur, Espace: m.Espace,
-			Couleur: m.Couleur, Presentation: m.Presentation, Voix: m.Voix != "" && s.tts.Enabled(),
+			Couleur: m.Couleur, Presentation: m.Presentation, Voix: m.Voix != "",
 			Actif: true, Statut: hqDisponible,
 			Outils: s.equipe.Outils(m),
 		}
@@ -361,7 +361,9 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 	return s.runs.enqueueRun(user.ID, m.ID, demande, opts, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
 		var res assistant.Result
 		var err error
-		if s.atelier != nil {
+		if reply, ok := s.piloteRepond(ctx, user, m, demande, lr.Etape); ok {
+			res = assistant.Result{Reply: reply, Agent: m.ID}
+		} else if s.atelier != nil {
 			res, err = s.atelier.Run(ctx, atelier.Tache{
 				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation,
 				Demande: demande, Consigne: consigne,

@@ -14,6 +14,7 @@ import (
 	"github.com/mathiascoutant/cerveau/backend/internal/config"
 	"github.com/mathiascoutant/cerveau/backend/internal/equipe"
 	"github.com/mathiascoutant/cerveau/backend/internal/store"
+	"github.com/mathiascoutant/cerveau/backend/internal/tts"
 )
 
 // Cerveau HQ fait parler Hugo : sa présentation sans texte, sinon le texte
@@ -56,5 +57,18 @@ func TestVoixMembre(t *testing.T) {
 	}
 	if rec := call(equipe.IDVeilleMail, ""); rec.Code != http.StatusNotFound {
 		t.Errorf("la veille n'a pas de voix : statut %d", rec.Code)
+	}
+
+	// VOIX=appareil : pas de son serveur. L'app, sans corps, reçoit son 501
+	// et parle avec l'iPhone ; HQ reçoit le texte et le lit dans le navigateur.
+	srv.tts = tts.New("", "", "", "")
+	if rec := call(equipe.IDPilote, ""); rec.Code != http.StatusNotImplemented {
+		t.Errorf("l'app attend un 501 sans voix serveur : statut %d", rec.Code)
+	}
+	rec := call(equipe.IDPilote, `{"texte":""}`)
+	var out struct{ URL, Texte string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusOK || out.URL != "" || !strings.HasPrefix(out.Texte, "Bonsoir, c'est Hugo") {
+		t.Errorf("HQ attend le texte seul : %d %+v", rec.Code, out)
 	}
 }

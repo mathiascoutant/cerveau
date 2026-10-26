@@ -54,6 +54,9 @@ type Server struct {
 	atelier *atelier.Client
 	// trieur : Claude par l'API, qui range les mails pro qui arrivent.
 	trieur *tri.Trieur
+	// direct : Hugo répond lui-même, sans l'atelier, à ce qui ne demande pas
+	// l'équipe (pilote_rapide.go). Nil sans clé Claude.
+	direct *piloteDirect
 	// triDossiers : les comptes dont les dossiers du tri ont été vérifiés
 	// depuis le lancement.
 	triDossiers sync.Map
@@ -95,6 +98,7 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		runs:    newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
 		atelier: newAtelier(cfg),
 		trieur:  tri.New(cfg.AnthropicAPIKey, cfg.TriModele),
+		direct:  newPiloteDirect(cfg.AnthropicAPIKey, cfg.PiloteModele),
 	}
 }
 

@@ -101,6 +101,9 @@ type Config struct {
 	// tri. TriModele : le modèle du tri (claude-haiku-5-5 par défaut).
 	AnthropicAPIKey string
 	TriModele       string
+	// PiloteModele : celui des réponses directes de Hugo (claude-haiku-5-5
+	// par défaut), avant l'atelier.
+	PiloteModele string
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -205,6 +208,7 @@ func Load() (Config, error) {
 		VeilleMinutes:         envInt("VEILLE_MINUTES"),
 		AnthropicAPIKey:       env("ANTHROPIC_API_KEY", ""),
 		TriModele:             env("TRI_MODELE", ""),
+		PiloteModele:          env("PILOTE_MODELE", ""),
 		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),

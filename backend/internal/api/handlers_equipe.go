@@ -103,10 +103,6 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotImplemented, persoDisabled)
 		return
 	}
-	if !s.tts.Enabled() {
-		httpx.Error(w, http.StatusNotImplemented, "synthèse vocale non configurée")
-		return
-	}
 	m, ok := s.equipe.Membre(chi.URLParam(r, "id"))
 	if !ok {
 		httpx.Error(w, http.StatusNotFound, "membre inconnu")
@@ -120,8 +116,18 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Texte string `json:"texte"`
 	}
-	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+	err := httpx.Decode(r, &req)
+	sansCorps := errors.Is(err, io.EOF)
+	if err != nil && !sansCorps {
 		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
+		return
+	}
+	// Sans ElevenLabs (VOIX=appareil, ou quota épuisé), l'app de l'iPhone
+	// attend un 501 pour parler avec la voix du téléphone : elle n'envoie pas
+	// de corps. Cerveau HQ en envoie un, et lit lui-même le texte rendu avec
+	// une voix du navigateur.
+	if !s.tts.Enabled() && sansCorps {
+		httpx.Error(w, http.StatusNotImplemented, "synthèse vocale non configurée")
 		return
 	}
 	user := userFrom(r.Context())
@@ -131,6 +137,10 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 	}
 	if text == "" {
 		text = "Salut, c'est " + m.Nom + ", " + strings.ToLower(m.Role) + "."
+	}
+	if !s.tts.Enabled() {
+		httpx.JSON(w, http.StatusOK, map[string]any{"texte": text})
+		return
 	}
 	url := s.prepareSpeechAs(user.ID, text, s.voiceOf(m.ID))
 	if url == "" {
