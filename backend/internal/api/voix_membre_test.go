@@ -50,7 +50,7 @@ func TestVoixMembre(t *testing.T) {
 		return entry
 	}
 
-	if e := ticket(call(equipe.IDPilote, "")); !strings.HasPrefix(e.text, "Bonsoir, c'est Hugo") || e.voice != "voix-de-hugo" {
+	if e := ticket(call(equipe.IDPilote, "")); !strings.HasPrefix(e.text, "Salut, c'est Hugo") || e.voice != "voix-de-hugo" {
 		t.Errorf("présentation de Hugo inattendue : %q avec %q", e.text, e.voice)
 	}
 	if e := ticket(call(equipe.IDPilote, `{"texte":"Tout est en ordre."}`)); e.text != "Tout est en ordre." || e.voice != equipe.VoixGratuitePilote {
@@ -76,7 +76,7 @@ func TestVoixMembre(t *testing.T) {
 	rec := call(equipe.IDPilote, `{"texte":""}`)
 	var out struct{ URL, Texte string }
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if rec.Code != http.StatusOK || out.URL != "" || !strings.HasPrefix(out.Texte, "Bonsoir, c'est Hugo") {
+	if rec.Code != http.StatusOK || out.URL != "" || !strings.HasPrefix(out.Texte, "Salut, c'est Hugo") {
 		t.Errorf("HQ attend le texte seul : %d %+v", rec.Code, out)
 	}
 }

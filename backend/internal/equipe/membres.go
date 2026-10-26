@@ -130,7 +130,7 @@ func Roster(v Voix) []Membre {
 			VoixGratuite: VoixGratuitePilote,
 			Presentation: "Il pilote toute l'équipe : il répartit ton travail entre les agents, fait circuler l'information de l'un à l'autre et te rend compte.",
 			Quand:        "les demandes qui touchent plusieurs sujets ou plusieurs agents, l'avancement d'une fonctionnalité ou d'un projet, tout ce qu'il faut coordonner",
-			Bonjour:      "Bonsoir, c'est Hugo, le responsable de l'équipe. Dis-moi ce que tu veux qu'on fasse : je répartis le travail entre les agents, je fais circuler l'information, et je te rends compte.",
+			Bonjour:      "Salut, c'est Hugo ! Je pilote l'équipe : dis-moi ce qu'il te faut, et je m'en occupe.",
 		},
 		{
 			ID: IDResponsable, Nom: "Claire", Role: "Responsable informatique",
