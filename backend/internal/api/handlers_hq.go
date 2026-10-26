@@ -84,20 +84,22 @@ func tacheView(r store.AgentRun, etape string, etapes []store.RunStep) hqTache {
 }
 
 type hqAgent struct {
-	ID           string         `json:"id"`
-	Nom          string         `json:"nom"`
-	Role         string         `json:"role"`
-	Equipe       string         `json:"equipe,omitempty"`
-	Superieur    string         `json:"superieur,omitempty"`
-	Espace       string         `json:"espace,omitempty"`
-	Couleur      string         `json:"couleur"`
-	Presentation string         `json:"presentation"`
-	Actif        bool           `json:"actif"`
-	Statut       string         `json:"statut"`
-	Depuis       *time.Time     `json:"depuis,omitempty"`
-	Tache        *hqTache       `json:"tache,omitempty"`
-	EnAttente    int            `json:"en_attente,omitempty"`
-	Outils       []equipe.Outil `json:"outils"`
+	ID           string `json:"id"`
+	Nom          string `json:"nom"`
+	Role         string `json:"role"`
+	Equipe       string `json:"equipe,omitempty"`
+	Superieur    string `json:"superieur,omitempty"`
+	Espace       string `json:"espace,omitempty"`
+	Couleur      string `json:"couleur"`
+	Presentation string `json:"presentation"`
+	// Voix : il parle — HQ peut faire entendre ses réponses.
+	Voix      bool           `json:"voix,omitempty"`
+	Actif     bool           `json:"actif"`
+	Statut    string         `json:"statut"`
+	Depuis    *time.Time     `json:"depuis,omitempty"`
+	Tache     *hqTache       `json:"tache,omitempty"`
+	EnAttente int            `json:"en_attente,omitempty"`
+	Outils    []equipe.Outil `json:"outils"`
 }
 
 // hqAgents rend les agents de l'utilisateur avec leur état réel.
@@ -117,7 +119,8 @@ func (s *Server) hqAgents(ctx context.Context, user *store.User) ([]hqAgent, err
 		}
 		a := hqAgent{
 			ID: m.ID, Nom: m.Nom, Role: m.Role, Equipe: m.Equipe, Superieur: m.Superieur, Espace: m.Espace,
-			Couleur: m.Couleur, Presentation: m.Presentation, Actif: true, Statut: hqDisponible,
+			Couleur: m.Couleur, Presentation: m.Presentation, Voix: m.Voix != "" && s.tts.Enabled(),
+			Actif: true, Statut: hqDisponible,
 			Outils: s.equipe.Outils(m),
 		}
 		if a.Outils == nil {

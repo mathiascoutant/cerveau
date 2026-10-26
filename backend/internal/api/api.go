@@ -68,7 +68,7 @@ func (s *Server) WithPerso(p *projets.Service) *Server {
 	}
 	s.projets = p
 	s.equipe = equipe.New(s.engine, p, s.store, equipe.Config{
-		Voix:              equipe.Voix{Raoul: s.tts.VoiceID(), Ingenieur: s.cfg.VoixIngenieur, Responsable: s.cfg.VoixResponsable},
+		Voix:              equipe.Voix{Raoul: s.tts.VoiceID(), Ingenieur: s.cfg.VoixIngenieur, Responsable: s.cfg.VoixResponsable, Pilote: s.cfg.VoixPilote},
 		Modele:            s.cfg.EquipeModele,
 		EffortIngenieur:   s.cfg.EffortIngenieur,
 		EffortResponsable: s.cfg.EffortResponsable,

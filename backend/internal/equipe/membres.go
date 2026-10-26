@@ -76,9 +76,15 @@ type Membre struct {
 // compte payant, ELEVENLABS_VOICE_INGENIEUR et ELEVENLABS_VOICE_RESPONSABLE
 // prennent n'importe quelle voix — David Vautrin (bts16wA7hWMfnlEIHuRo) est
 // française et irait très bien à l'ingénieur.
+//
+// Hugo devait avoir une voix créée par Voice Design, dans l'ambiance d'un
+// assistant qui parle doucement le soir ; l'API la refuse au compte gratuit.
+// Eric, la plus douce des voix « premade », la tient en attendant :
+// ELEVENLABS_VOICE_PILOTE prend la voix créée depuis le site d'ElevenLabs.
 const (
 	VoixIngenieur   = "iP95p4xoKVk53GoZ742B" // Chris, simple et direct
 	VoixResponsable = "XrExE9yKIg1WjnnlVkGX" // Matilda, posée et professionnelle
+	VoixPilote      = "cjVigY5qzO86Huf0OWal" // Eric, doux et posé
 )
 
 // Voix : les voix configurées, vides pour garder les défauts.
@@ -86,6 +92,7 @@ type Voix struct {
 	Raoul       string
 	Ingenieur   string
 	Responsable string
+	Pilote      string
 }
 
 // Roster rend les membres, du sommet vers le terrain.
@@ -108,8 +115,10 @@ func Roster(v Voix) []Membre {
 			ID: IDPilote, Nom: "Hugo", Role: "Responsable de l'équipe",
 			Equipe: EquipeDirection, Superieur: IDRaoul, Pilote: true,
 			Couleur:      "#FFD166",
+			Voix:         pick(v.Pilote, VoixPilote),
 			Presentation: "Il pilote toute l'équipe : il répartit ton travail entre les agents, fait circuler l'information de l'un à l'autre et te rend compte.",
 			Quand:        "les demandes qui touchent plusieurs sujets ou plusieurs agents, l'avancement d'une fonctionnalité ou d'un projet, tout ce qu'il faut coordonner",
+			Bonjour:      "Bonsoir, c'est Hugo, le responsable de l'équipe. Dis-moi ce que tu veux qu'on fasse : je répartis le travail entre les agents, je fais circuler l'information, et je te rends compte.",
 		},
 		{
 			ID: IDResponsable, Nom: "Claire", Role: "Responsable informatique",

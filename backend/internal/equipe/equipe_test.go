@@ -78,11 +78,15 @@ func TestCollegues(t *testing.T) {
 	if strings.Join(ids, ",") != "raoul,responsable_info" {
 		t.Fatalf("l'ingénieur rend la parole à Raoul ou à la responsable : %v", ids)
 	}
-	// Ceux qui parlent ont une voix ; la veille ne parle pas, elle prévient.
+	// Ceux qui parlent ont une voix, Hugo compris ; la veille ne parle pas,
+	// elle prévient.
 	for _, m := range roster {
-		if m.ID != IDRaoul && m.Veille == "" && !m.Pilote && m.Voix == "" {
+		if m.ID != IDRaoul && m.Veille == "" && m.Voix == "" {
 			t.Errorf("%s n'a pas de voix", m.ID)
 		}
+	}
+	if hugo := membreDe(Roster(Voix{Pilote: "voix-creee"}), IDPilote); hugo.Voix != "voix-creee" {
+		t.Errorf("ELEVENLABS_VOICE_PILOTE doit remplacer la voix de Hugo : %q", hugo.Voix)
 	}
 	for _, src := range []string{"mail", "slack", "whatsapp"} {
 		if _, ok := VeilleDe(roster, src); !ok {

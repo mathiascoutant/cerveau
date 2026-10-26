@@ -152,6 +152,7 @@ type Config struct {
 	// Les voix de l'équipe. Vides : celles par défaut (equipe/membres.go).
 	VoixIngenieur   string
 	VoixResponsable string
+	VoixPilote      string
 	// Le modèle de l'équipe et le raisonnement de chacun. Vides : le modèle
 	// fort, en medium pour l'ingénieur et low pour la responsable.
 	EquipeModele      string
@@ -223,6 +224,7 @@ func Load() (Config, error) {
 		EquipeAmorce:          env("EQUIPE_AMORCE", ""),
 		VoixIngenieur:         env("ELEVENLABS_VOICE_INGENIEUR", ""),
 		VoixResponsable:       env("ELEVENLABS_VOICE_RESPONSABLE", ""),
+		VoixPilote:            env("ELEVENLABS_VOICE_PILOTE", ""),
 		EquipeModele:          env("OPENAI_EQUIPE_MODEL", ""),
 		EffortIngenieur:       env("OPENAI_INGENIEUR_EFFORT", ""),
 		EffortResponsable:     env("OPENAI_RESPONSABLE_EFFORT", ""),

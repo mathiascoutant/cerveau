@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -94,7 +95,9 @@ func (s *Server) handleInterlocuteur(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleVoixMembre fait entendre la voix d'un membre : une phrase de
-// présentation, pour savoir qui on entendra.
+// présentation, pour savoir qui on entendra — ou, si le corps porte un texte,
+// ce texte-là : Cerveau HQ fait ainsi lire à Hugo sa réponse, ou ce qu'on veut
+// lui faire dire.
 func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 	if s.equipe == nil {
 		httpx.Error(w, http.StatusNotImplemented, persoDisabled)
@@ -109,8 +112,23 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusNotFound, "membre inconnu")
 		return
 	}
+	if m.Voix == "" {
+		httpx.Error(w, http.StatusNotFound, m.Nom+" n'a pas de voix")
+		return
+	}
+	// Un corps vide est permis : c'est la présentation qu'on veut entendre.
+	var req struct {
+		Texte string `json:"texte"`
+	}
+	if err := httpx.Decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.Error(w, http.StatusBadRequest, "corps de requête invalide")
+		return
+	}
 	user := userFrom(r.Context())
-	text := m.Bonjour
+	text := strings.TrimSpace(req.Texte)
+	if text == "" {
+		text = m.Bonjour
+	}
 	if text == "" {
 		text = "Salut, c'est " + m.Nom + ", " + strings.ToLower(m.Role) + "."
 	}
