@@ -201,6 +201,10 @@ type runOpts struct {
 	// SansReponseDirecte : Hugo ne répond pas lui-même, la tâche part à
 	// l'atelier (l'étude d'un projet).
 	SansReponseDirecte bool
+	// SansPlace : la tâche ne prend pas de place du serveur. Le responsable
+	// qui pilote par l'API (pilote_api.go) ne fait tourner aucun Claude Code
+	// et passe son temps à attendre l'équipe : il lui laisse les places.
+	SansPlace bool
 }
 
 // enqueue accepte une tâche du bâtiment pour un agent et la met en file.
@@ -250,13 +254,15 @@ func (o *orchestre) enqueueRun(user bson.ObjectID, agent, demande string, opts r
 			return
 		}
 		defer func() { <-agentSlot }()
-		select {
-		case o.global <- struct{}{}:
-		case <-runCtx.Done():
-			lr.Fin(assistant.Result{}, context.Canceled)
-			return
+		if !opts.SansPlace {
+			select {
+			case o.global <- struct{}{}:
+			case <-runCtx.Done():
+				lr.Fin(assistant.Result{}, context.Canceled)
+				return
+			}
+			defer func() { <-o.global }()
 		}
-		defer func() { <-o.global }()
 
 		lr.mu.Lock()
 		now := time.Now()

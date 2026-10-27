@@ -358,16 +358,32 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 	if s.atelier != nil && opts.Limit == 0 {
 		opts.Limit = time.Duration(max(s.cfg.AtelierDureeMax, 60)) * time.Minute
 	}
+	// Hugo pilote par l'API : il ne fait tourner aucun Claude Code, et
+	// laisse ses places à l'équipe qu'il attend. L'étude d'un projet reste à
+	// l'atelier, où il lit lui-même les dépôts.
+	parAPI := m.Pilote && s.pilotage != nil && !opts.SansReponseDirecte
+	opts.SansPlace = parAPI
 	return s.runs.enqueueRun(user.ID, m.ID, demande, opts, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
 		var res assistant.Result
 		var err error
-		reply, direct := "", false
+		fait := false
 		if !opts.SansReponseDirecte {
-			reply, direct = s.piloteRepond(ctx, user, m, demande, lr.Etape)
+			if reply, ok := s.piloteRepond(ctx, user, m, demande, lr.Etape); ok {
+				res, fait = assistant.Result{Reply: reply, Agent: m.ID}, true
+			}
 		}
-		if direct {
-			res = assistant.Result{Reply: reply, Agent: m.ID}
-		} else if s.atelier != nil {
+		if !fait && parAPI {
+			res, err = s.piloterParAPI(ctx, user, m, demande, lr)
+			// Rien n'a encore été confié : l'atelier peut reprendre la demande.
+			fait = !errors.Is(err, errPiloteRepli) || s.atelier == nil
+			if !fait {
+				slog.Warn("pilotage par l'API, repli sur l'atelier", "err", err)
+			}
+		}
+		switch {
+		case fait:
+			// Hugo a répondu, lui-même ou après avoir fait travailler l'équipe.
+		case s.atelier != nil:
 			// Chaque tâche connaît les projets de l'équipe, et l'atelier
 			// clone leurs dépôts : un agent peut travailler sur n'importe
 			// lequel.
@@ -376,7 +392,7 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 				Demande: demande, Consigne: joinConsignes(s.consigneProjets(ctx), consigne),
 				Depots: s.depotsConnus(ctx),
 			}, lr.Etape)
-		} else {
+		default:
 			res, err = s.equipe.Ask(ctx, m.ID, equipe.Demande{
 				Text: demande, History: s.history(ctx, user, m.ID), Now: time.Now(), Timezone: tz,
 				UserName: s.userName(user), CacheKey: "raoul:" + user.ID.Hex(),

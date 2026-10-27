@@ -98,6 +98,9 @@ func (c *Client) Run(ctx context.Context, t Tache, emit assistant.Emitter) (assi
 	if err := sess.Start("atelier"); err != nil {
 		return assistant.Result{}, fmt.Errorf("atelier : %w", err)
 	}
+	r := newReader(emit)
+	r.debut = time.Now()
+	r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts"})
 	line, _ := json.Marshal(t)
 	if _, err := stdin.Write(append(line, '\n')); err != nil {
 		return assistant.Result{}, fmt.Errorf("atelier : %w", err)
@@ -110,7 +113,6 @@ func (c *Client) Run(ctx context.Context, t Tache, emit assistant.Emitter) (assi
 	})
 	defer stop()
 
-	r := newReader(emit)
 	sc2 := bufio.NewScanner(stdout)
 	sc2.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc2.Scan() {
@@ -180,6 +182,10 @@ type reader struct {
 	open    map[string]opened
 	result  *assistant.Result
 	failure string
+	// debut : quand la tâche est partie ; la préparation des dépôts dure
+	// jusqu'à ce que l'atelier se dise prêt.
+	debut time.Time
+	pret  bool
 }
 
 func newReader(emit assistant.Emitter) *reader {
@@ -227,8 +233,11 @@ func (r *reader) line(b []byte) {
 	case "atelier":
 		switch l.Event {
 		case "pret":
-			r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts"})
-			r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts", Ms: 1})
+			r.pret = true
+			if r.debut.IsZero() {
+				r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts"})
+			}
+			r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts", Ms: max(1, time.Since(r.debut).Milliseconds())})
 		case "erreur":
 			var msg string
 			_ = json.Unmarshal(l.Message, &msg)
@@ -286,6 +295,9 @@ func (r *reader) line(b []byte) {
 
 // closeOpen clôt les étapes restées ouvertes (tâche interrompue).
 func (r *reader) closeOpen() {
+	if !r.debut.IsZero() && !r.pret {
+		r.emit(assistant.Event{Type: "status", Tool: "atelier", Label: "Préparation des dépôts", Ms: max(1, time.Since(r.debut).Milliseconds()), Err: "interrompu"})
+	}
 	for id, o := range r.open {
 		r.emit(assistant.Event{Type: "status", Tool: o.tool, Ms: max(1, time.Since(o.start).Milliseconds()), Err: "interrompu"})
 		delete(r.open, id)

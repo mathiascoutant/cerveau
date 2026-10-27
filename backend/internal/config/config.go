@@ -104,6 +104,13 @@ type Config struct {
 	// PiloteModele : celui des réponses directes de Hugo (claude-haiku-5-5
 	// par défaut), avant l'atelier.
 	PiloteModele string
+	// PiloteAPI : Hugo pilote l'équipe par l'API Claude plutôt que dans
+	// l'atelier (pilote_api.go) — « non » le renvoie à l'atelier.
+	// PiloteAPIModele et PiloteAPIEffort : claude-opus-5-5 en effort high
+	// par défaut, comme dans l'atelier.
+	PiloteAPI       bool
+	PiloteAPIModele string
+	PiloteAPIEffort string
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -212,6 +219,9 @@ func Load() (Config, error) {
 		AnthropicAPIKey:       env("ANTHROPIC_API_KEY", ""),
 		TriModele:             env("TRI_MODELE", ""),
 		PiloteModele:          env("PILOTE_MODELE", ""),
+		PiloteAPI:             env("PILOTE_API", "oui") != "non",
+		PiloteAPIModele:       env("PILOTE_API_MODELE", ""),
+		PiloteAPIEffort:       env("PILOTE_API_EFFORT", ""),
 		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),

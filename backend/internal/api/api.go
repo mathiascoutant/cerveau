@@ -65,6 +65,9 @@ type Server struct {
 	// direct : Hugo répond lui-même, sans l'atelier, à ce qui ne demande pas
 	// l'équipe (pilote_rapide.go). Nil sans clé Claude.
 	direct *piloteDirect
+	// pilotage : Hugo pilote l'équipe par l'API Claude, sans l'atelier
+	// (pilote_api.go). Nil sans clé Claude ou avec PILOTE_API=non.
+	pilotage *piloteAPI
 	// triDossiers : les comptes dont les dossiers du tri ont été vérifiés
 	// depuis le lancement.
 	triDossiers sync.Map
@@ -104,13 +107,14 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		// écouté pour choisir la voix de Hugo.
 		elevenHQ: tts.New(cfg.ElevenLabsAPIKey, "", "eleven_multilingual_v2", cfg.ElevenLabsLanguage),
 
-		pending: newPendingOAuth(),
-		speech:  newSpeechTickets(),
-		confirm: newConfirmations(),
-		runs:    newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
-		atelier: newAtelier(cfg),
-		trieur:  tri.New(cfg.AnthropicAPIKey, cfg.TriModele),
-		direct:  newPiloteDirect(cfg.AnthropicAPIKey, cfg.PiloteModele),
+		pending:  newPendingOAuth(),
+		speech:   newSpeechTickets(),
+		confirm:  newConfirmations(),
+		runs:     newOrchestre(st, cfg.AgentsConcurrence, cfg.AgentsBudgetJour),
+		atelier:  newAtelier(cfg),
+		trieur:   tri.New(cfg.AnthropicAPIKey, cfg.TriModele),
+		direct:   newPiloteDirect(cfg.AnthropicAPIKey, cfg.PiloteModele),
+		pilotage: newPiloteAPI(cfg),
 	}
 }
 

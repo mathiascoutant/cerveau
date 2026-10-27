@@ -32,6 +32,12 @@ const (
 	// suiviMaxAttente : une seule attente reste sous le délai d'écriture du
 	// serveur HTTP (2 min) ; le responsable rappelle suivre_tache en boucle.
 	suiviMaxAttente = 90 * time.Second
+	// suiviMaxAttenteAPI : sur l'API (pilote_api.go), rien ne coupe
+	// l'attente ; chaque rappel coûte un tour du modèle, alors il attend
+	// davantage.
+	suiviMaxAttenteAPI = 10 * time.Minute
+	// suiviPas : l'état d'une tâche confiée est relu à ce rythme.
+	suiviPas = 500 * time.Millisecond
 )
 
 // consignePilote : ce que le responsable sait de son équipe et de sa façon
@@ -39,6 +45,21 @@ const (
 func (s *Server) consignePilote(moi equipe.Membre) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "TU PILOTES L'ÉQUIPE. Tu es %s, responsable de l'équipe d'agents de Mathias. Ton équipe :\n", moi.Nom)
+	b.WriteString(s.equipeDuPilote(moi))
+	fmt.Fprintf(&b, `
+Comment tu travailles :
+1. Découpe la demande et confie chaque partie à l'agent compétent avec l'outil confier_a_un_agent : son identifiant, et une consigne complète et autonome (le contexte, ce que tu attends, sous quelle forme). Tu peux confier plusieurs tâches en même temps.
+2. Suis chaque tâche avec suivre_tache, en le rappelant jusqu'à ce qu'elle soit terminée (il attend jusqu'à 90 secondes à chaque appel). Ne t'arrête pas avant d'avoir toutes les réponses.
+3. Fais circuler l'information. Si un agent dit qu'il lui manque quelque chose — une documentation, un échange, une décision —, demande-le à l'agent qui peut le trouver (la veille des mails pour un document reçu par mail, celle de Slack ou de WhatsApp pour une discussion), puis renvoie une tâche au premier agent avec ce qu'il lui manquait.
+4. Tu ne fais pas toi-même le travail d'un spécialiste : tu peux seulement vérifier rapidement un point. %d délégations au plus par demande.
+5. Ta réponse finale va à Mathias : ce qui en ressort, en trois phrases au plus, puis qui a fait quoi, en quelques mots. Cette règle remplace la règle 7.`, piloteMaxDelegations)
+	return b.String()
+}
+
+// equipeDuPilote : les agents que le responsable peut solliciter, une ligne
+// chacun.
+func (s *Server) equipeDuPilote(moi equipe.Membre) string {
+	var b strings.Builder
 	for _, m := range s.equipe.Candidats() {
 		if m.ID == moi.ID {
 			continue
@@ -49,13 +70,6 @@ func (s *Server) consignePilote(moi equipe.Membre) string {
 		}
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, `
-Comment tu travailles :
-1. Découpe la demande et confie chaque partie à l'agent compétent avec l'outil confier_a_un_agent : son identifiant, et une consigne complète et autonome (le contexte, ce que tu attends, sous quelle forme). Tu peux confier plusieurs tâches en même temps.
-2. Suis chaque tâche avec suivre_tache, en le rappelant jusqu'à ce qu'elle soit terminée (il attend jusqu'à 90 secondes à chaque appel). Ne t'arrête pas avant d'avoir toutes les réponses.
-3. Fais circuler l'information. Si un agent dit qu'il lui manque quelque chose — une documentation, un échange, une décision —, demande-le à l'agent qui peut le trouver (la veille des mails pour un document reçu par mail, celle de Slack ou de WhatsApp pour une discussion), puis renvoie une tâche au premier agent avec ce qu'il lui manquait.
-4. Tu ne fais pas toi-même le travail d'un spécialiste : tu peux seulement vérifier rapidement un point. %d délégations au plus par demande.
-5. Ta réponse finale va à Mathias : ce qui en ressort, en trois phrases au plus, puis qui a fait quoi, en quelques mots. Cette règle remplace la règle 7.`, piloteMaxDelegations)
 	return b.String()
 }
 
@@ -69,8 +83,9 @@ func consigneDeleguee(pilote string) string {
 
 // -- Les outils du responsable, prêtés par le serveur MCP ----------------------
 
-// piloteTools : les outils de délégation, décrits pour MCP.
-func (s *Server) piloteTools(moi equipe.Membre) []assistant.ToolSpec {
+// piloteTools : les outils de délégation. attente : ce que suivre_tache
+// attend au plus d'un appel (suiviMaxAttente par MCP, davantage sur l'API).
+func (s *Server) piloteTools(moi equipe.Membre, attente time.Duration) []assistant.ToolSpec {
 	var ids []any
 	for _, m := range s.equipe.Candidats() {
 		if m.ID != moi.ID {
@@ -92,13 +107,14 @@ func (s *Server) piloteTools(moi equipe.Membre) []assistant.ToolSpec {
 			},
 		},
 		{
-			Name:        "suivre_tache",
-			Description: "Attend qu'une tâche confiée avance (jusqu'à 90 secondes) et rend son état ; une fois terminée, sa réponse. Rappelle-le tant qu'elle n'est pas finie.",
+			Name: "suivre_tache",
+			Description: fmt.Sprintf("Attend qu'une tâche confiée se termine (jusqu'à %s) et rend son état ; une fois terminée, sa réponse. "+
+				"Rappelle-le tant qu'elle n'est pas finie. Pour plusieurs tâches, appelle-le pour chacune dans le même tour.", duree(attente)),
 			Schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"tache":    map[string]any{"type": "string", "description": "L'identifiant rendu par confier_a_un_agent."},
-					"attendre": map[string]any{"type": "integer", "description": "Secondes d'attente au plus (90 par défaut et au maximum)."},
+					"attendre": map[string]any{"type": "integer", "description": fmt.Sprintf("Secondes d'attente au plus (%d par défaut et au maximum).", int(attente.Seconds()))},
 				},
 				"required": []any{"tache"},
 			},
@@ -136,8 +152,9 @@ func (s *Server) agentDuRun(r *http.Request, user *store.User) (runSnapshot, equ
 	return snap, m, true
 }
 
-// piloteCall exécute un outil du responsable et rend son texte.
-func (s *Server) piloteCall(ctx context.Context, user *store.User, caller runSnapshot, moi equipe.Membre, name, args string) (string, error) {
+// piloteCall exécute un outil du responsable et rend son texte. attente
+// borne une attente de suivre_tache.
+func (s *Server) piloteCall(ctx context.Context, user *store.User, caller runSnapshot, moi equipe.Membre, name, args string, attente time.Duration) (string, error) {
 	switch name {
 	case "confier_a_un_agent":
 		var in struct {
@@ -175,7 +192,7 @@ func (s *Server) piloteCall(ctx context.Context, user *store.User, caller runSna
 		if err != nil {
 			return "", fmt.Errorf("identifiant de tâche invalide")
 		}
-		wait := suiviMaxAttente
+		wait := attente
 		if in.Attendre > 0 && time.Duration(in.Attendre)*time.Second < wait {
 			wait = time.Duration(in.Attendre) * time.Second
 		}
@@ -205,13 +222,21 @@ func (s *Server) piloteCall(ctx context.Context, user *store.User, caller runSna
 				return string(raw), nil
 			}
 			select {
-			case <-time.After(2 * time.Second):
+			case <-time.After(suiviPas):
 			case <-ctx.Done():
 				return "", ctx.Err()
 			}
 		}
 	}
 	return "", fmt.Errorf("outil inconnu : %s", name)
+}
+
+// duree : « 90 secondes », « 10 minutes ».
+func duree(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%d secondes", int(d.Seconds()))
 }
 
 // runState : l'état d'une exécution, vivante ou terminée.

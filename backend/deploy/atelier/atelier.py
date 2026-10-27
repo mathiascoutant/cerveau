@@ -41,6 +41,7 @@ CLAUDE = HOME / ".local" / "bin" / "claude"
 SECRETS = HOME / "atelier" / "secrets.env"  # jetons des outils (600), jamais dans la consigne
 MCP = HOME / "atelier" / "mcp.json"
 GARDER_JOURS = 7
+FRAIS_S = 120  # un dépôt mis à jour depuis moins longtemps ne l'est pas de nouveau
 
 
 def emit(obj):
@@ -102,30 +103,50 @@ def fusionner(configures, connus):
 
 def synchroniser(depots):
     """Clone ce qui manque, met à jour le reste. Les clones de ~/depots ne
-    sont jamais modifiés à la main : on les remet sur la branche distante."""
+    sont jamais modifiés à la main : on les remet sur la branche distante.
+
+    Tous les dépôts en même temps (un par un, il fallait 14 secondes pour 13
+    dépôts avant chaque tâche), et un dépôt mis à jour il y a moins de
+    FRAIS_S secondes ne l'est pas de nouveau : les agents qu'un responsable
+    lance juste après lui démarrent tout de suite."""
     DEPOTS.mkdir(exist_ok=True)
-    # Deux tâches simultanées ne mettent pas à jour les clones en même temps.
-    verrou = open(HOME / "atelier" / ".synchro.lock", "w")
-    fcntl.flock(verrou, fcntl.LOCK_EX)
-    prets, erreurs = [], []
-    for depot in depots:
+    verrous = HOME / "atelier" / "verrous"
+    verrous.mkdir(exist_ok=True)
+    resultats = {}
+
+    def un(depot):
         dest = DEPOTS / nom(depot)
-        try:
-            if not (dest / ".git").exists():
-                r = git("clone", "--quiet", "--", url(depot), str(dest), timeout=300)
-            else:
-                r = git("fetch", "--quiet", "--prune", "origin", cwd=dest)
+        frais = verrous / f"{nom(depot)}.frais"
+        # Deux tâches simultanées ne mettent pas à jour le même clone en même temps.
+        with open(verrous / f"{nom(depot)}.lock", "w") as verrou:
+            fcntl.flock(verrou, fcntl.LOCK_EX)
+            try:
+                if (dest / ".git").exists() and frais.exists() and time.time() - frais.stat().st_mtime < FRAIS_S:
+                    resultats[depot] = None
+                    return
+                if not (dest / ".git").exists():
+                    r = git("clone", "--quiet", "--", url(depot), str(dest), timeout=300)
+                else:
+                    r = git("fetch", "--quiet", "--prune", "origin", cwd=dest)
+                    if r.returncode == 0:
+                        head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=dest).stdout.strip() or "origin/main"
+                        git("checkout", "--quiet", "--detach", head, cwd=dest)
+                        git("worktree", "prune", cwd=dest)
                 if r.returncode == 0:
-                    head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=dest).stdout.strip() or "origin/main"
-                    git("checkout", "--quiet", "--detach", head, cwd=dest)
-                    git("worktree", "prune", cwd=dest)
-            if r.returncode == 0:
-                prets.append(depot)
-            else:
-                erreurs.append(f"{depot} : {r.stderr.strip()[:200]}")
-        except subprocess.TimeoutExpired:
-            erreurs.append(f"{depot} : délai dépassé")
-    verrou.close()
+                    frais.touch()
+                    resultats[depot] = None
+                else:
+                    resultats[depot] = r.stderr.strip()[:200]
+            except subprocess.TimeoutExpired:
+                resultats[depot] = "délai dépassé"
+
+    fils = [threading.Thread(target=un, args=(d,)) for d in depots]
+    for f in fils:
+        f.start()
+    for f in fils:
+        f.join()
+    prets = [d for d in depots if resultats.get(d, "") is None]
+    erreurs = [f"{d} : {resultats.get(d) or 'échec'}" for d in depots if resultats.get(d, "") is not None]
     return prets, erreurs
 
 

@@ -31,7 +31,7 @@ func TestConsignePilote(t *testing.T) {
 	if strings.Contains(c, `"raoul"`) || strings.Contains(c, `"responsable")`) {
 		t.Error("ni Raoul ni lui-même parmi ceux à qui il délègue")
 	}
-	tools := s.piloteTools(moi)
+	tools := s.piloteTools(moi, suiviMaxAttente)
 	enum := tools[0].Schema["properties"].(map[string]any)["agent"].(map[string]any)["enum"].([]any)
 	for _, id := range enum {
 		if id == equipe.IDPilote || id == equipe.IDRaoul {
