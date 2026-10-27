@@ -92,6 +92,9 @@ func TestCatalogueDesProjets(t *testing.T) {
 	}
 
 	pxsky, _ := srv.projetDuCatalogue(ctx, "px-sky")
+	if pxsky.Resume == nil || pxsky.Resume.Texte != "API Go et front React." || pxsky.Resume.Auteur != equipe.IDIngenieur {
+		t.Errorf("la vue d'ensemble devait servir de résumé : %+v", pxsky.Resume)
+	}
 	if pxsky.Etat != projetQuestion || pxsky.Ouvertes != 1 || len(pxsky.Sujets) != 1 || pxsky.Questions[0].Auteur != "Léo" {
 		t.Fatalf("étude mal suivie : %+v", pxsky)
 	}

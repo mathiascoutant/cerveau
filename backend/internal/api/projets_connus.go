@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -53,6 +54,15 @@ type projetVue struct {
 	Ouvertes  int                    `json:"questions_ouvertes"`
 	Etat      string                 `json:"etat"`
 	Etude     *hqTache               `json:"etude,omitempty"`
+	// Resume : ce que l'équipe a compris du projet — sa fiche « Vue
+	// d'ensemble », que HQ montre en tête du projet.
+	Resume *resumeProjet `json:"resume,omitempty"`
+}
+
+type resumeProjet struct {
+	Texte  string    `json:"texte"`
+	Auteur string    `json:"auteur,omitempty"`
+	Maj    time.Time `json:"maj"`
 }
 
 // catalogue rend les projets connus, ceux du registre d'abord.
@@ -69,8 +79,12 @@ func (s *Server) catalogue(ctx context.Context) ([]projetVue, error) {
 		return nil, err
 	}
 	sujets := map[string][]string{}
+	resumes := map[string]*resumeProjet{}
 	for _, f := range fiches {
 		sujets[f.Projet] = append(sujets[f.Projet], f.Sujet)
+		if fuzzy.Normalize(f.Sujet) == "vue d ensemble" && resumes[f.Projet] == nil {
+			resumes[f.Projet] = &resumeProjet{Texte: f.Contenu, Auteur: f.Auteur, Maj: f.UpdatedAt}
+		}
 	}
 	extra := map[string]store.ProjetConnu{}
 	for _, p := range ajoutes {
@@ -102,6 +116,7 @@ func (s *Server) catalogue(ctx context.Context) ([]projetVue, error) {
 	for i := range out {
 		v := &out[i]
 		v.Sujets = sujets[v.ID]
+		v.Resume = resumes[v.ID]
 		sort.Strings(v.Sujets)
 		if v.Sujets == nil {
 			v.Sujets = []string{}
