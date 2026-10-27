@@ -176,23 +176,31 @@ Ignore les remerciements, les « ok », les informations de routine, les notific
 
 Une affaire = UN sujet, un seul bloc que tu fais vivre : tu ne signales jamais deux fois la même discussion. Un nouveau message qui continue un sujet déjà ouvert (S1, S2…) s'y rattache — champ "sujet" — même s'il ne demande rien de plus : il fait avancer l'affaire. Le titre et le résumé que tu rends alors REMPLACENT les anciens : ils disent où en est TOUTE l'affaire, ce qu'on savait déjà compris.
 
-Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne"}]}.
+Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "taches": [{"titre": "<une action à l'infinitif>", "echeance": "AAAA-MM-JJ ou vide"}], "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne"}]}.
 "resume" : va droit au fond — ce qui est dit, demandé, décidé, livré, les chiffres, les dates, les noms de fichiers. Mathias voit déjà le titre et le lieu : ne redis jamais qui écrit, que c'est une réponse, ni l'objet du mail. Bon : « La v7.2 corrige les deux doublons ; Jonata attend la validation pour lancer l'import vendredi. » Mauvais : « Olivier répond sur le sujet Condor 1126 ; c'est une réponse à un échange en cours. » Si tu n'as vraiment que l'objet, dis en quelques mots ce qu'il annonce — jamais que le contenu manque.
 Une réponse se résume PAR RAPPORT à ce à quoi elle répond (« il répond à ce message de… », les messages d'avant) : la question, la demande, la proposition, et ce qu'on y répond. Bon : « Il répond oui à ta demande : il est dispo samedi matin. » ; « Elle refuse le devis que tu lui as envoyé : trop cher de 15 %%, elle attend une nouvelle offre. » Ce que Mathias a écrit lui-même est marqué « toi ». Si c'est lui qui a écrit en dernier, il a déjà répondu : rien n'est à faire (a_faire vide), dis seulement où en est l'échange.
 Une entrée « de toi » marquée SUIVI n'est pas un message à signaler : c'est Mathias qui a agi dans la discussion d'un sujet ouvert (envoyé le fichier, répondu, proposé un appel…). Rattache-la à ce sujet et mets-le à jour : ce qu'il a fait, et "a_faire" vide si c'est réglé.
+"taches" : ce qui entre dans sa liste à faire — une tâche par action distincte que le sujet attend de lui, à l'infinitif, assez précise pour se comprendre seule dans la liste (quoi, pour quel client ou quel dossier, avec qui). Bon, pour un mail qui livre des fichiers et attend un retour : « Vérifier les images livrées pour Azul 1226 » et « Répondre à Satish sur la livraison Azul 1226 ». "echeance" seulement si le message fixe un jour (calcule-le d'après la date du jour donnée en tête), sinon vide. Aucune tâche quand "a_faire" est vide, ni pour une action déjà dans les « tâches inscrites » d'un sujet ouvert, même dite autrement.
 "echanges" : qui a dit quoi dans les NOUVEAUX messages, une ligne par prise de parole qui compte, dans l'ordre — par exemple Adélaïde dit à Sarah que le chiffre est faux, puis Sarah lui répond qu'elle a raison. L'essentiel, pas une recopie. Mathias s'écrit « toi ».
 Regroupe dans un même sujet les messages qui parlent de la même chose. Liste vide si rien n'est important et que rien ne continue un sujet ouvert. En français.`
 
 type jugement struct {
 	Sujets []struct {
-		Sujet      string   `json:"sujet"`
-		Messages   []int    `json:"messages"`
-		Titre      string   `json:"titre"`
-		Resume     string   `json:"resume"`
-		AFaire     string   `json:"a_faire"`
-		Echanges   []parole `json:"echanges"`
-		Importance string   `json:"importance"`
+		Sujet      string       `json:"sujet"`
+		Messages   []int        `json:"messages"`
+		Titre      string       `json:"titre"`
+		Resume     string       `json:"resume"`
+		AFaire     string       `json:"a_faire"`
+		Taches     []tacheJugee `json:"taches"`
+		Echanges   []parole     `json:"echanges"`
+		Importance string       `json:"importance"`
 	} `json:"sujets"`
+}
+
+// tacheJugee : une action que le jugement inscrit dans la liste à faire.
+type tacheJugee struct {
+	Titre    string `json:"titre"`
+	Echeance string `json:"echeance"`
 }
 
 type parole struct {
@@ -303,9 +311,22 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		}
 	}
 
+	// Les tâches déjà tirées des sujets ouverts : le jugement ne les redonne
+	// pas, et le code les écarte s'il le fait quand même.
+	ids := make([]bson.ObjectID, len(ouverts))
+	for i, o := range ouverts {
+		ids[i] = o.ID
+	}
+	inscrites, err := s.store.TodosDesSujets(ctx, user.ID, ids)
+	if err != nil {
+		slog.Warn("veille : tâches des sujets illisibles", "err", err)
+		inscrites = map[bson.ObjectID][]store.Todo{}
+	}
+
 	tb := s.toolbox(user)
 	dir := tb.annuaire(ctx)
 	var b strings.Builder
+	fmt.Fprintf(&b, "AUJOURD'HUI : %s\n\n", time.Now().In(tb.location()).Format("Monday 2006-01-02"))
 	if len(ouverts) > 0 {
 		b.WriteString("SUJETS DÉJÀ OUVERTS :\n")
 		for i, o := range ouverts {
@@ -320,6 +341,13 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 					lignes = append(lignes, e.Qui+" : "+e.Quoi)
 				}
 				fmt.Fprintf(&b, "    derniers échanges : %s\n", strings.Join(lignes, " ; "))
+			}
+			if ts := inscrites[o.ID]; len(ts) > 0 {
+				var lignes []string
+				for _, t := range ts {
+					lignes = append(lignes, t.Title)
+				}
+				fmt.Fprintf(&b, "    tâches inscrites : %s\n", strings.Join(lignes, " ; "))
 			}
 		}
 		b.WriteString("\nNOUVEAUX MESSAGES :\n")
@@ -370,28 +398,31 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	}
 
 	var titres []string
+	nbTaches := 0
 	couverts := map[int]bool{}
 	// noter range un sujet : il fait avancer un sujet ouvert (même numéro
-	// rendu par le jugement, ou même discussion), ou il en ouvre un.
-	noter := func(cible int, n store.Notification) {
+	// rendu par le jugement, ou même discussion), ou il en ouvre un. Il rend
+	// l'identifiant du sujet, faux si rien n'a pu être écrit.
+	noter := func(cible int, n store.Notification) (bson.ObjectID, bool) {
 		if cible >= 0 && cible < len(ouverts) {
 			if err := s.store.MettreAJourSujet(ctx, ouverts[cible].ID, n); err != nil {
 				slog.Warn("veille : sujet non mis à jour", "err", err)
-				return
+				return bson.ObjectID{}, false
 			}
 			titres = append(titres, n.Titre+" (mis à jour)")
-			return
+			return ouverts[cible].ID, true
 		}
 		ins, err := s.store.InsertNotification(ctx, n)
 		if err != nil {
 			slog.Warn("veille : notification non enregistrée", "err", err)
-			return
+			return bson.ObjectID{}, false
 		}
 		ouverts = append(ouverts, ins)
 		if n.Fil != "" {
 			parFil[n.Fil] = len(ouverts) - 1
 		}
 		titres = append(titres, n.Titre)
+		return ins.ID, true
 	}
 
 	for _, suj := range j.Sujets {
@@ -405,6 +436,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		}
 		var refs []string
 		var fil, lieu string
+		var premier *triage.Item
 		var quand time.Time
 		for _, n := range suj.Messages {
 			if n >= 1 && n <= len(neufs) {
@@ -417,6 +449,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 				refs = append(refs, ref)
 				if fil == "" {
 					fil, lieu = filDe(it), lieuDe(it)
+					premier = &neufs[n-1]
 				}
 				if it.Quand.After(quand) {
 					quand = it.Quand
@@ -438,11 +471,16 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		} else if k, ok := parFil[fil]; ok {
 			cible = k
 		}
-		noter(cible, store.Notification{
+		n := store.Notification{
 			UserID: user.ID, Agent: agent.ID, Source: source, Titre: titre,
 			Resume: strings.TrimSpace(suj.Resume), AFaire: strings.TrimSpace(suj.AFaire), Importance: importance,
 			Messages: refs, Run: run.ID().Hex(), Fil: fil, Lieu: lieu, Echanges: echanges,
-		})
+		}
+		id, ok := noter(cible, n)
+		// Ce que le sujet attend de Mathias entre dans sa liste à faire.
+		if ok && n.AFaire != "" && len(suj.Taches) > 0 {
+			nbTaches += s.inscrireTaches(ctx, tb, id, n, premier, suj.Taches, inscrites[id])
+		}
 	}
 	// Un message privé non lu est toujours signalé, même si le jugement l'a
 	// laissé de côté : quelqu'un attend une réponse de Mathias.
@@ -470,8 +508,61 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	if len(titres) > 0 {
 		reply = fmt.Sprintf("%d sujet%s : %s.", len(titres), plural(len(titres), "s", ""), strings.Join(titres, " ; "))
 	}
+	if nbTaches > 0 {
+		reply += fmt.Sprintf(" %d tâche%s inscrite%s.", nbTaches, plural(nbTaches, "s", ""), plural(nbTaches, "s", ""))
+	}
 	run.Fin(assistant.Result{Reply: reply}, nil)
 	return nil
+}
+
+// inscrireTaches met dans la liste à faire les tâches qu'un sujet attend de
+// Mathias, sans redonner celles qui en sont déjà sorties (même cochées). Une
+// tâche garde le sujet d'où elle vient, et le message qui l'a fait naître :
+// « mail de Satish » se relit sans rouvrir la boîte. Rend combien sont
+// inscrites.
+func (s *Server) inscrireTaches(ctx context.Context, tb *userToolbox, sujet bson.ObjectID, n store.Notification, premier *triage.Item, taches []tacheJugee, deja []store.Todo) int {
+	vues := map[string]bool{}
+	for _, t := range deja {
+		vues[cleTache(t.Title)] = true
+	}
+	var src *store.TodoSource
+	if premier != nil {
+		src = &store.TodoSource{Origine: origin(*premier), De: premier.De, Titre: n.Lieu}
+	}
+	note := n.AFaire
+	if n.Resume != "" {
+		note += " " + n.Resume
+	}
+	inscrites := 0
+	for _, t := range taches {
+		titre := strings.TrimSpace(t.Titre)
+		cle := cleTache(titre)
+		if cle == "" || vues[cle] {
+			continue
+		}
+		vues[cle] = true
+		todo := store.Todo{
+			UserID: tb.user.ID, Title: titre, Note: truncateRunes(strings.TrimSpace(note), 400),
+			Source: src, Sujet: &sujet,
+		}
+		// Une échéance illisible laisse la tâche sans jour plutôt que de la
+		// perdre.
+		if due, timed, err := assistant.ParseDue(t.Echeance, tb.location()); err == nil && !due.IsZero() {
+			todo.Due, todo.Timed = &due, timed
+		}
+		if _, err := s.store.SaveTodo(ctx, todo); err != nil {
+			slog.Warn("veille : tâche non inscrite", "titre", titre, "err", err)
+			continue
+		}
+		inscrites++
+	}
+	return inscrites
+}
+
+// cleTache : un titre de tâche ramené à ce qui le distingue, pour ne pas
+// inscrire deux fois la même à la casse ou aux espaces près.
+func cleTache(titre string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimRight(strings.TrimSpace(titre), ".!"))), " ")
 }
 
 // veilleMailsLus : les nouveaux mails dont la veille lit le contenu à chaque

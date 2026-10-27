@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,5 +106,53 @@ func TestFilDe(t *testing.T) {
 	s2 := triage.Item{Source: "slack", Titre: "#APEX", Apercu: "deux"}
 	if filDe(s1) != filDe(s2) || filDe(s1) == filDe(a) {
 		t.Fatal("même canal, même fil ; une autre messagerie, un autre fil")
+	}
+}
+
+// Une tâche redite à la casse, aux espaces ou au point près reste la même.
+func TestCleTache(t *testing.T) {
+	if cleTache("Répondre à  Satish.") != cleTache("répondre à Satish") {
+		t.Fatal("même tâche attendue")
+	}
+	if cleTache("Vérifier les images Azul 1226") == cleTache("Répondre à Satish") || cleTache("  ") != "" {
+		t.Fatal("deux tâches distinctes ; un titre vide n'en fait pas une")
+	}
+}
+
+// Le jugement rend ses tâches avec chaque sujet ; la consigne reste un
+// format valide malgré les %% qu'elle contient.
+func TestJugementTaches(t *testing.T) {
+	var j jugement
+	raw := `{"sujets":[{"sujet":"","messages":[1],"titre":"Azul 1226 : grille V1.0 et images livrées","resume":"r","a_faire":"Vérifier les images puis répondre.","taches":[{"titre":"Vérifier les images livrées pour Azul 1226","echeance":""},{"titre":"Répondre à Satish","echeance":"2026-10-29"}],"importance":"haute"}]}`
+	if err := json.Unmarshal([]byte(raw), &j); err != nil || len(j.Sujets) != 1 || len(j.Sujets[0].Taches) != 2 || j.Sujets[0].Taches[1].Echeance != "2026-10-29" {
+		t.Fatalf("tâches du jugement mal lues : %+v %v", j, err)
+	}
+	if c := fmt.Sprintf(veilleConsigne, "mails pro"); strings.Contains(c, "%!") || !strings.Contains(c, `"taches"`) {
+		t.Fatal("consigne mal formée")
+	}
+}
+
+// Les tâches d'un sujet se relisent par lui, cochées comprises ; les autres
+// tâches n'en font pas partie.
+func TestTodosDesSujets(t *testing.T) {
+	st := runsStore(t)
+	ctx := context.Background()
+	user, sujet := bson.NewObjectID(), bson.NewObjectID()
+	for _, titre := range []string{"Vérifier les images", "Répondre à Satish"} {
+		if _, err := st.SaveTodo(ctx, store.Todo{UserID: user, Title: titre, Sujet: &sujet}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.SaveTodo(ctx, store.Todo{UserID: user, Title: "Dictée à la main"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.TodosDesSujets(ctx, user, []bson.ObjectID{sujet})
+	if err != nil || len(got[sujet]) != 2 {
+		t.Fatalf("deux tâches attendues pour le sujet : %+v %v", got, err)
+	}
+	// Et elles sont bien dans la liste « toutes ».
+	all, err := st.Todos(ctx, user, store.TodoQuery{Undated: true})
+	if err != nil || len(all) != 3 {
+		t.Fatalf("liste complète : %d %v", len(all), err)
 	}
 }

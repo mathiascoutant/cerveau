@@ -285,12 +285,15 @@ type Todo struct {
 	// pour que « pas encore daté » se distingue de l'an 1 côté app.
 	Due *time.Time `bson:"due,omitempty" json:"due,omitempty"`
 	// Timed : une heure précise a été donnée, pas seulement un jour.
-	Timed     bool        `bson:"timed,omitempty" json:"timed,omitempty"`
-	Done      bool        `bson:"done" json:"done"`
-	DoneAt    *time.Time  `bson:"done_at,omitempty" json:"done_at,omitempty"`
-	Source    *TodoSource `bson:"source,omitempty" json:"source,omitempty"`
-	CreatedAt time.Time   `bson:"created_at" json:"created_at"`
-	UpdatedAt time.Time   `bson:"updated_at" json:"updated_at"`
+	Timed  bool        `bson:"timed,omitempty" json:"timed,omitempty"`
+	Done   bool        `bson:"done" json:"done"`
+	DoneAt *time.Time  `bson:"done_at,omitempty" json:"done_at,omitempty"`
+	Source *TodoSource `bson:"source,omitempty" json:"source,omitempty"`
+	// Sujet : le sujet de veille d'où la veille a tiré la tâche. C'est par
+	// lui qu'un sujet qui avance ne réinscrit pas ce qui est déjà noté.
+	Sujet     *bson.ObjectID `bson:"sujet,omitempty" json:"-"`
+	CreatedAt time.Time      `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time      `bson:"updated_at" json:"updated_at"`
 }
 
 // TodoSource : le message d'où sort la tâche, recopié pour l'affichage.
