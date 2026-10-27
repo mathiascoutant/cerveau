@@ -13,10 +13,10 @@ import (
 
 // La liste à faire vue par l'assistant.
 //
-// Elle ne se déduit d'aucune source : c'est la seule chose de Raoul que
-// l'utilisateur écrit lui-même, en dictant. D'où la règle qui traverse ce
-// fichier — on ne devine rien à sa place, ni le jour d'une tâche, ni laquelle
-// il désigne quand deux se ressemblent.
+// L'utilisateur l'écrit lui-même, en dictant ; seule la veille y inscrit
+// aussi ce qu'un message lui demande (veille.go, inscrireTaches). D'où la
+// règle qui traverse ce fichier — on ne devine rien à sa place, ni le jour
+// d'une tâche, ni laquelle il désigne quand deux se ressemblent.
 
 // Combien de tâches cochées restent visibles. Assez pour que la liste garde une
 // trace de la journée, pas assez pour qu'elle devienne un journal.

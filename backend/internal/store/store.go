@@ -133,6 +133,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		{s.digests(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: unique()}},
 		{s.emailDrafts(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}},
 		{s.todos(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "done", Value: 1}, {Key: "due", Value: 1}}}},
+		{s.todos(), mongo.IndexModel{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "sujet", Value: 1}}}},
 		// Unique sur la clé : c'est cet index qui fait qu'un deuxième « Cyril »
 		// remplace le premier au lieu de s'ajouter à côté.
 		{s.facts(), mongo.IndexModel{
@@ -925,6 +926,30 @@ func (s *Store) Todos(ctx context.Context, userID bson.ObjectID, q TodoQuery) ([
 		}
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
+	return out, nil
+}
+
+// TodosDesSujets : les tâches que la veille a tirées de ces sujets, cochées
+// comprises — une tâche faite ne doit pas revenir quand le sujet avance.
+func (s *Store) TodosDesSujets(ctx context.Context, userID bson.ObjectID, sujets []bson.ObjectID) (map[bson.ObjectID][]Todo, error) {
+	out := map[bson.ObjectID][]Todo{}
+	if len(sujets) == 0 {
+		return out, nil
+	}
+	cur, err := s.todos().Find(ctx, bson.M{"user_id": userID, "sujet": bson.M{"$in": sujets}},
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	var todos []Todo
+	if err := cur.All(ctx, &todos); err != nil {
+		return nil, err
+	}
+	for _, t := range todos {
+		if t.Sujet != nil {
+			out[*t.Sujet] = append(out[*t.Sujet], t)
+		}
+	}
 	return out, nil
 }
 
