@@ -141,7 +141,7 @@ def nettoyer():
             pass
 
 
-def consigne(tache, depots, erreurs, regles, cfg_outils=()):
+def consigne(tache, depots, erreurs, regles, cfg_outils=(), libre=False):
     lignes = "\n".join(f"- ~/depots/{nom(d)} : {url(d)}" for d in depots)
     manquants = ("\nDépôts indisponibles pour l'instant :\n" + "\n".join(f"- {e}" for e in erreurs)) if erreurs else ""
     court = tache["run"][-6:]
@@ -157,7 +157,7 @@ Règles :
 1. Si la tâche demande seulement une information ou un avis, lis et réponds, sans rien modifier.
 2. Pour modifier du code, travaille dans un worktree créé dans le dossier courant, sur une branche neuve :
    git -C ~/depots/<dépôt> worktree add ./<dépôt> -b agent/{court}-<sujet-court> origin/<branche de base>
-   La branche de base est celle où vit le code concerné (souvent main, parfois dev : regarde le dépôt).
+   La branche de base est celle où vit le code concerné (souvent main, parfois dev : regarde le dépôt).{branche_existante(libre)}
 3. Fais des commits clairs, en français. Lance les tests, le lint ou la compilation du projet quand ils existent.
 4. {regles}
 5. Pour attendre qu'un job ou un traitement se termine, fais une seule commande Bash au premier plan qui boucle (une lecture toutes les 30 secondes, avec un délai de commande assez long) et s'arrête d'elle-même quand c'est fini. Jamais de commande en arrière-plan ni de surveillance à relancer plus tard : personne ne te réveillera.
@@ -169,9 +169,30 @@ Règles :
    - Pour une modification de code : ce qui est corrigé, le lien de la branche, et ce qu'il doit vérifier, en trois lignes au plus."""
 
 
+def branche_existante(libre):
+    if not libre:
+        return ""
+    return """
+   Quand Mathias désigne la branche (« pousse sur dev », « corrige-le directement sur main »), travaille sur elle :
+   git -C ~/depots/<dépôt> worktree add --detach ./<dépôt> origin/<branche>, puis git push origin HEAD:<branche>.
+   Pour aligner une branche sur une autre (« aligne main sur dev »), pas besoin de worktree :
+   git -C ~/depots/<dépôt> push origin origin/<source>:<cible> — une avance rapide ; si elle est refusée, fusionne dans un worktree."""
+
+
 def regles_push(cfg):
     if cfg.get("pousser") == "aucun":
         return "Ne pousse rien : laisse les commits en local et dis-le dans ta réponse."
+    if cfg.get("pousser") == "libre":
+        # Mathias l'a voulu le 27/10/2026 : ce sont ses dépôts, l'agent fait ce
+        # qu'il demande — pousser sur main, fusionner, supprimer — jusqu'au bout.
+        return ("Ce sont les dépôts de Mathias : fais ce qu'il demande, jusqu'au bout et toi-même — pousser sur main, dev "
+                "ou une branche existante, aligner ou fusionner des branches, supprimer une fonctionnalité, créer ou "
+                "supprimer une branche. Sans consigne sur la branche, pousse une branche neuve et donne le lien de la "
+                "demande de fusion (celui qu'affiche git push, sinon https://github.com/<propriétaire>/<dépôt>/compare/<base>...<branche>?expand=1 "
+                "pour GitHub, ou https://<hôte>/<propriétaire>/<dépôt>/compare/<base>...<branche> pour Gitea). "
+                "Avant de pousser sur main ou dev, lance les tests ou la compilation s'ils existent. Pas de --force ni de "
+                "réécriture d'un historique déjà poussé, sauf s'il le demande en ces termes. Dans ta réponse, dis "
+                "exactement ce qui a été poussé et où (branche, nombre de commits).")
     return ("Pousse ta branche (git push -u origin <branche>), jamais sur main, master, dev ni une branche existante, "
             "jamais de --force. Donne ensuite le lien pour ouvrir la demande de fusion : celui qu'affiche git push "
             "s'il y en a un, sinon https://github.com/<propriétaire>/<dépôt>/compare/<base>...<branche>?expand=1 "
@@ -260,7 +281,7 @@ def main():
         "--disallowedTools", "Monitor",
         "--add-dir", str(DEPOTS),
         *(["--mcp-config", str(MCP)] if MCP.exists() else []),
-        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", []))
+        "--append-system-prompt", consigne(tache, depots, erreurs, regles_push(cfg), cfg.get("outils", []), cfg.get("pousser") == "libre")
         + (("\n\n" + str(tache["consigne"])) if tache.get("consigne") else ""),
     ]
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
