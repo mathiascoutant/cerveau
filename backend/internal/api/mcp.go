@@ -18,7 +18,10 @@ import (
 // Claude Code, qui fait les tâches des agents sur le VPS, parle MCP. Ce point
 // d'entrée lui prête ce que Raoul sait lire — mails pro et perso, Slack,
 // WhatsApp, agenda, tâches, tickets — pour le compte de Mathias, et rien
-// d'autre : aucun outil n'écrit (voir assistant/lecture.go). Il n'existe que si
+// d'autre : aucun outil n'écrit chez Mathias (voir assistant/lecture.go). Les
+// seules écritures sont celles du savoir de l'équipe — ses fiches, les
+// questions qu'elle lui pose, les projets que Hugo ajoute (projets_connus.go),
+// réservées à un agent en plein travail. Il n'existe que si
 // ATELIER_MCP_TOKEN et ATELIER_MCP_EMAIL sont donnés ; le jeton est propre à
 // l'atelier, distinct de toute session d'appareil.
 //
@@ -74,15 +77,20 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": "cerveau", "version": "1"},
 			"instructions": "Les outils de lecture de Raoul, l'assistant de Mathias : ses mails (pro et perso), Slack, WhatsApp, " +
-				"son agenda, ses tâches et ses tickets. Lecture seule : rien n'est envoyé ni modifié.",
+				"son agenda, ses tâches et ses tickets. Lecture seule : rien n'est envoyé ni modifié. " +
+				"S'y ajoutent les projets que connaît l'équipe et leurs fiches, qu'elle enrichit en travaillant.",
 		}, nil)
 	case "ping":
 		writeRPC(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
 		tools := assistant.ReadToolSpecs(s.sources(r.Context(), user))
-		// Le responsable, en plein travail, a aussi de quoi déléguer.
-		if _, moi, ok := s.pilote(r, user); ok {
-			tools = append(tools, s.piloteTools(moi)...)
+		// Un agent en plein travail a aussi les projets de l'équipe et leurs
+		// fiches ; le responsable, de quoi déléguer.
+		if _, moi, ok := s.agentDuRun(r, user); ok {
+			tools = append(tools, s.outilsProjets(moi)...)
+			if moi.Pilote {
+				tools = append(tools, s.piloteTools(moi)...)
+			}
 		}
 		writeRPC(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
@@ -107,6 +115,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			out, err = s.piloteCall(r.Context(), user, caller, moi, p.Name, args)
+		} else if estOutilProjets(p.Name) {
+			_, moi, ok := s.agentDuRun(r, user)
+			if !ok {
+				writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "réservé aux agents en plein travail"}}, "isError": true}, nil)
+				return
+			}
+			out, err = s.appelOutilProjets(r.Context(), moi, p.Name, args)
 		} else {
 			ctx, cancel := context.WithTimeout(r.Context(), mcpToolTimeout)
 			defer cancel()

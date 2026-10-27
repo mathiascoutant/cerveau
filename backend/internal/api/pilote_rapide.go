@@ -117,6 +117,16 @@ func (s *Server) consignePiloteDirect(ctx context.Context, user *store.User, moi
 		}
 		b.WriteString("\n")
 	}
+	if projets, err := s.catalogue(ctx); err == nil && len(projets) > 0 {
+		b.WriteString("\nLes projets que tu connais :\n")
+		for _, p := range projets {
+			fmt.Fprintf(&b, "- %s : %s", p.Nom, libelleEtat(p))
+			if p.Description != "" {
+				fmt.Fprintf(&b, ". %s", clipTo(p.Description, 140))
+			}
+			b.WriteString("\n")
+		}
+	}
 	if hist := s.history(ctx, user, moi.ID); len(hist) > 0 {
 		b.WriteString("\nVos derniers échanges (les plus anciens d'abord) :\n")
 		for _, t := range hist[max(0, len(hist)-6):] {
@@ -127,8 +137,8 @@ func (s *Server) consignePiloteDirect(ctx context.Context, user *store.User, moi
 Nous sommes le %s.
 
 Tu reçois un message de %s. Deux cas :
-- Tu peux y répondre avec ce qui est écrit ici, sans rien chercher : une salutation, une question sur toi ou sur l'équipe, qui fait quoi, qui est occupé, une suite simple de vos derniers échanges. Alors repondre = true, et reponse = ta réponse.
-- Il faut chercher, lire, vérifier ou faire travailler quelqu'un : un projet, du code, un serveur, des mails, Slack, WhatsApp, une fonctionnalité, un chiffre que tu n'as pas ici, une tâche à confier. Alors repondre = false et reponse = "" : la demande part à l'atelier, où tu pilotes l'équipe avec tes outils.
+- Tu peux y répondre avec ce qui est écrit ici, sans rien chercher : une salutation, une question sur toi ou sur l'équipe, qui fait quoi, qui est occupé, quels projets tu connais et où en est l'équipe avec eux, une suite simple de vos derniers échanges. Alors repondre = true, et reponse = ta réponse.
+- Il faut chercher, lire, vérifier ou faire travailler quelqu'un : le contenu d'un projet, un projet qu'il te donne, du code, un serveur, des mails, Slack, WhatsApp, une fonctionnalité, un chiffre que tu n'as pas ici, une tâche à confier. Alors repondre = false et reponse = "" : la demande part à l'atelier, où tu pilotes l'équipe avec tes outils.
 Dans le doute, repondre = false. N'invente jamais un état ou un résultat.
 
 Comment tu parles — ta réponse est lue à voix haute, comme si vous étiez face à face :
@@ -144,6 +154,19 @@ Exemples :
 « qui bosse en ce moment ? » → « Léo est sur le souci du serveur, les autres sont dispo. »`,
 		time.Now().In(s.location(user)).Format("02/01/2006 15:04"), s.userName(user))
 	return b.String()
+}
+
+// libelleEtat : où en est l'équipe avec un projet, en mots.
+func libelleEtat(p projetVue) string {
+	switch p.Etat {
+	case projetEnEtude:
+		return "l'équipe l'étudie en ce moment"
+	case projetQuestion:
+		return fmt.Sprintf("étudié, %d question(s) l'attendent dans HQ", p.Ouvertes)
+	case projetConnu:
+		return fmt.Sprintf("connu (%d fiches)", len(p.Sujets))
+	}
+	return "pas encore étudié"
 }
 
 func clipTo(s string, n int) string {

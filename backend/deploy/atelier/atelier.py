@@ -76,6 +76,30 @@ def nom(depot):
     return depot.rstrip("/").split("/")[-1].removesuffix(".git")
 
 
+DEPOT_RE = re.compile(r"^(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+                      r"|[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+:[A-Za-z0-9_./-]+"
+                      r"|(?:ssh|https)://[A-Za-z0-9_.@:-]+/[A-Za-z0-9_./-]+)$")
+
+
+def fusionner(configures, connus):
+    """Les dépôts de la configuration, puis ceux des projets que connaît
+    l'équipe (envoyés avec la tâche). Un dépôt connu dont le nom de clone est
+    déjà pris par un autre est écarté, pas écrasé."""
+    depots, noms, erreurs = list(configures), {nom(d) for d in configures}, []
+    for d in connus or []:
+        d = str(d).strip()
+        if d in depots:
+            continue
+        if not DEPOT_RE.match(d) or d.startswith("-"):
+            erreurs.append(f"{d} : adresse refusée")
+        elif nom(d) in noms:
+            erreurs.append(f"{d} : un autre dépôt s'appelle déjà {nom(d)}")
+        else:
+            depots.append(d)
+            noms.add(nom(d))
+    return depots, erreurs
+
+
 def synchroniser(depots):
     """Clone ce qui manque, met à jour le reste. Les clones de ~/depots ne
     sont jamais modifiés à la main : on les remet sur la branche distante."""
@@ -88,7 +112,7 @@ def synchroniser(depots):
         dest = DEPOTS / nom(depot)
         try:
             if not (dest / ".git").exists():
-                r = git("clone", "--quiet", url(depot), str(dest), timeout=300)
+                r = git("clone", "--quiet", "--", url(depot), str(dest), timeout=300)
             else:
                 r = git("fetch", "--quiet", "--prune", "origin", cwd=dest)
                 if r.returncode == 0:
@@ -218,7 +242,9 @@ def main():
         juger(tache, cfg)
         return
     nettoyer()
-    depots, erreurs = synchroniser(cfg.get("depots", []))
+    a_cloner, refuses = fusionner(cfg.get("depots", []), tache.get("depots"))
+    depots, erreurs = synchroniser(a_cloner)
+    erreurs = refuses + erreurs
     dossier = TRAVAIL / run
     dossier.mkdir(parents=True, exist_ok=True)
     emit({"type": "atelier", "event": "pret", "depots": depots, "erreurs": erreurs,

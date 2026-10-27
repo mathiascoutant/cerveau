@@ -40,6 +40,9 @@ type Tache struct {
 	// veille). Consigne : ce qu'on attend, ajouté aux instructions.
 	Mode     string `json:"mode,omitempty"`
 	Consigne string `json:"consigne,omitempty"`
+	// Depots : ceux des projets que connaît l'équipe, clonés en plus de
+	// ceux de la configuration de l'atelier.
+	Depots []string `json:"depots,omitempty"`
 }
 
 // Client joint l'atelier. Une connexion par tâche : elles durent des minutes,

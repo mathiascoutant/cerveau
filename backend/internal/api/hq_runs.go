@@ -198,6 +198,9 @@ type runOpts struct {
 	Parent      *bson.ObjectID
 	Affectation string
 	Limit       time.Duration
+	// SansReponseDirecte : Hugo ne répond pas lui-même, la tâche part à
+	// l'atelier (l'étude d'un projet).
+	SansReponseDirecte bool
 }
 
 // enqueue accepte une tâche du bâtiment pour un agent et la met en file.

@@ -126,6 +126,17 @@ func (s *Store) RunByID(ctx context.Context, userID, id bson.ObjectID) (AgentRun
 	return out, err
 }
 
+// RunByIDAny rend une exécution sans regarder son compte : l'étude d'un
+// projet, qui appartient au serveur et pas à un compte.
+func (s *Store) RunByIDAny(ctx context.Context, id bson.ObjectID) (AgentRun, error) {
+	var out AgentRun
+	err := s.agentRuns().FindOne(ctx, bson.M{"_id": id}).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return AgentRun{}, ErrNotFound
+	}
+	return out, err
+}
+
 // RunsOfAgent rend les dernières exécutions d'un agent, de la plus récente à
 // la plus ancienne.
 func (s *Store) RunsOfAgent(ctx context.Context, userID bson.ObjectID, agent string, limit int64) ([]AgentRun, error) {

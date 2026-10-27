@@ -157,6 +157,9 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	if err := s.ensureConnaissanceIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureProjetConnuIndexes(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureEchangeIndexes(ctx); err != nil {
 		return err
 	}

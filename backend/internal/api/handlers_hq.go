@@ -361,12 +361,20 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 	return s.runs.enqueueRun(user.ID, m.ID, demande, opts, func(ctx context.Context, lr *liveRun) (assistant.Result, error) {
 		var res assistant.Result
 		var err error
-		if reply, ok := s.piloteRepond(ctx, user, m, demande, lr.Etape); ok {
+		reply, direct := "", false
+		if !opts.SansReponseDirecte {
+			reply, direct = s.piloteRepond(ctx, user, m, demande, lr.Etape)
+		}
+		if direct {
 			res = assistant.Result{Reply: reply, Agent: m.ID}
 		} else if s.atelier != nil {
+			// Chaque tâche connaît les projets de l'équipe, et l'atelier
+			// clone leurs dépôts : un agent peut travailler sur n'importe
+			// lequel.
 			res, err = s.atelier.Run(ctx, atelier.Tache{
 				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation,
-				Demande: demande, Consigne: consigne,
+				Demande: demande, Consigne: joinConsignes(s.consigneProjets(ctx), consigne),
+				Depots: s.depotsConnus(ctx),
 			}, lr.Etape)
 		} else {
 			res, err = s.equipe.Ask(ctx, m.ID, equipe.Demande{
@@ -387,6 +395,16 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 		}
 		return res, err
 	})
+}
+
+func joinConsignes(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func (s *Server) handleHQTask(w http.ResponseWriter, r *http.Request) {

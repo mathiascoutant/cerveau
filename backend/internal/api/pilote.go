@@ -109,6 +109,17 @@ func (s *Server) piloteTools(moi equipe.Membre) []assistant.ToolSpec {
 // pilote : l'agent qui appelle le serveur MCP, si c'est le responsable en
 // plein travail pour cet utilisateur.
 func (s *Server) pilote(r *http.Request, user *store.User) (runSnapshot, equipe.Membre, bool) {
+	snap, m, ok := s.agentDuRun(r, user)
+	if !ok || !m.Pilote {
+		return runSnapshot{}, equipe.Membre{}, false
+	}
+	return snap, m, true
+}
+
+// agentDuRun : l'agent qui appelle le serveur MCP, quand une de ses tâches
+// pour cet utilisateur est en cours (l'atelier pose son identifiant dans
+// l'en-tête X-Cerveau-Run).
+func (s *Server) agentDuRun(r *http.Request, user *store.User) (runSnapshot, equipe.Membre, bool) {
 	raw := strings.TrimSpace(r.Header.Get("X-Cerveau-Run"))
 	id, err := bson.ObjectIDFromHex(raw)
 	if err != nil || s.equipe == nil {
@@ -119,7 +130,7 @@ func (s *Server) pilote(r *http.Request, user *store.User) (runSnapshot, equipe.
 		return runSnapshot{}, equipe.Membre{}, false
 	}
 	m, ok := s.equipe.Membre(snap.Run.Agent)
-	if !ok || !m.Pilote {
+	if !ok {
 		return runSnapshot{}, equipe.Membre{}, false
 	}
 	return snap, m, true
