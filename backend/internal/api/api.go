@@ -34,6 +34,10 @@ type Server struct {
 	// service deploy/voix). VOIX=appareil vaut pour l'app ; à l'ordinateur,
 	// l'équipe garde une voix humaine.
 	voixHQ *tts.Edge
+	// elevenHQ : ElevenLabs pour HQ, même quand l'app reste aux voix du
+	// téléphone. Seul Hugo s'en sert, avec voixHQ en relais quand le crédit
+	// gratuit est épuisé.
+	elevenHQ *tts.Client
 	// wa tient les sessions WhatsApp : contrairement aux autres sources, on ne
 	// l'interroge pas à la demande — c'est une connexion permanente qui reçoit
 	// les messages au fil de l'eau, et le serveur la porte de bout en bout.
@@ -96,6 +100,9 @@ func NewServer(cfg config.Config, st *store.Store, cipher *cryptoutil.Cipher, wa
 		stt:    stt.New(cfg.STTBaseURL, cfg.STTAPIKey, cfg.STTModel),
 		tts:    tts.New(elevenLabsKey(cfg), cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, cfg.ElevenLabsLanguage),
 		voixHQ: tts.NewEdge(cfg.VoixGratuiteURL, ""),
+		// multilingual v2 : le plus naturel en français, celui que Mathias a
+		// écouté pour choisir la voix de Hugo.
+		elevenHQ: tts.New(cfg.ElevenLabsAPIKey, "", "eleven_multilingual_v2", cfg.ElevenLabsLanguage),
 
 		pending: newPendingOAuth(),
 		speech:  newSpeechTickets(),

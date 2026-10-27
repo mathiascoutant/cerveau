@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -126,15 +127,12 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 	// L'app de l'iPhone n'envoie pas de corps : elle parle avec ElevenLabs,
 	// et sans lui (VOIX=appareil, ou quota épuisé) elle attend un 501 pour
 	// prendre la voix du téléphone. Cerveau HQ en envoie un, et parle avec les
-	// voix gratuites de Microsoft ; sans elles, il lit lui-même le texte rendu
-	// avec une voix du navigateur.
+	// voix gratuites de Microsoft — Hugo d'abord avec sa voix ElevenLabs ;
+	// sans elles, il lit lui-même le texte rendu avec une voix du navigateur.
 	var synth synthetiseur = s.tts
 	voix := s.voiceOf(m.ID)
 	if !sansCorps {
-		synth, voix = s.voixHQ, m.VoixGratuite
-		if voix == "" {
-			synth = tts.NewEdge("", "")
-		}
+		synth, voix = s.voixDeHQ(m), ""
 	}
 	if !synth.Enabled() && sansCorps {
 		httpx.Error(w, http.StatusNotImplemented, "synthèse vocale non configurée")
@@ -158,6 +156,57 @@ func (s *Server) handleVoixMembre(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"url": url, "texte": text})
+}
+
+// voixDeHQ : la voix d'un membre dans HQ. Hugo parle avec sa voix
+// ElevenLabs, la plus naturelle, et passe à sa voix Microsoft quand le crédit
+// gratuit est épuisé ou qu'ElevenLabs refuse ; les autres, avec leur voix
+// Microsoft.
+func (s *Server) voixDeHQ(m equipe.Membre) synthetiseur {
+	var gratuite synthetiseur = s.voixHQ
+	if m.VoixGratuite == "" {
+		gratuite = tts.NewEdge("", "")
+	}
+	if !m.Pilote || s.elevenHQ == nil {
+		return voixFixe{gratuite, m.VoixGratuite}
+	}
+	return voixEnRelais{
+		premiere: voixFixe{s.elevenHQ, s.voiceOf(m.ID)},
+		relais:   voixFixe{gratuite, m.VoixGratuite},
+	}
+}
+
+// voixFixe : un synthétiseur et la voix qu'il prend, quelle que soit celle
+// qu'on lui demande.
+type voixFixe struct {
+	synth synthetiseur
+	voix  string
+}
+
+func (v voixFixe) Enabled() bool { return v.synth.Enabled() }
+func (v voixFixe) Speak(ctx context.Context, text string) (io.ReadCloser, error) {
+	return v.synth.SpeakWith(ctx, v.voix, text)
+}
+func (v voixFixe) SpeakWith(ctx context.Context, _, text string) (io.ReadCloser, error) {
+	return v.Speak(ctx, text)
+}
+
+// voixEnRelais : la première voix, et la seconde quand la première se tait.
+type voixEnRelais struct{ premiere, relais voixFixe }
+
+func (v voixEnRelais) Enabled() bool { return v.premiere.Enabled() || v.relais.Enabled() }
+func (v voixEnRelais) Speak(ctx context.Context, text string) (io.ReadCloser, error) {
+	if v.premiere.Enabled() {
+		rc, err := v.premiere.Speak(ctx, text)
+		if err == nil {
+			return rc, nil
+		}
+		slog.Warn("voix de HQ : relais", "err", err)
+	}
+	return v.relais.Speak(ctx, text)
+}
+func (v voixEnRelais) SpeakWith(ctx context.Context, _, text string) (io.ReadCloser, error) {
+	return v.Speak(ctx, text)
 }
 
 // handleConnaissances rend ce que l'équipe sait, projet par projet.

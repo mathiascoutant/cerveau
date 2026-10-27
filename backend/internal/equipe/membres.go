@@ -52,7 +52,8 @@ type Membre struct {
 	// le son, pas le réglage.
 	Voix string `json:"-"`
 	// VoixGratuite : sa voix neuronale Microsoft (deploy/voix), celle de
-	// Cerveau HQ — humaine, sans quota.
+	// Cerveau HQ — humaine, sans quota. Pour Hugo, HQ prend d'abord sa voix
+	// ElevenLabs, et celle-ci en relais.
 	VoixGratuite string `json:"-"`
 	// Presentation : ce qu'il fait, en une phrase — pour l'app et pour Raoul.
 	Presentation string `json:"presentation"`
@@ -80,20 +81,20 @@ type Membre struct {
 // prennent n'importe quelle voix — David Vautrin (bts16wA7hWMfnlEIHuRo) est
 // française et irait très bien à l'ingénieur.
 //
-// Hugo devait avoir une voix créée par Voice Design, dans l'ambiance d'un
-// assistant qui parle doucement le soir ; l'API la refuse au compte gratuit.
-// Eric, la plus douce des voix « premade », la tient en attendant :
-// ELEVENLABS_VOICE_PILOTE prend la voix créée depuis le site d'ElevenLabs.
+// Hugo : Will, jeune et détendu, choisi à l'oreille par Mathias parmi neuf
+// voix gratuites (Eric, puis Rémy, sonnaient trop posés ou trop robotiques).
+// ELEVENLABS_VOICE_PILOTE le remplace.
 const (
 	VoixIngenieur   = "iP95p4xoKVk53GoZ742B" // Chris, simple et direct
 	VoixResponsable = "XrExE9yKIg1WjnnlVkGX" // Matilda, posée et professionnelle
-	VoixPilote      = "cjVigY5qzO86Huf0OWal" // Eric, doux et posé
+	VoixPilote      = "bIHbv24MWmeRgasZH58o" // Will, jeune et détendu
 )
 
-// Les voix gratuites de Cerveau HQ : celles de Microsoft Edge, choisies pour
-// le ton — Hugo détendu et expressif.
+// Les voix gratuites de Cerveau HQ : celles de Microsoft Edge, sans quota.
+// Pour Hugo, c'est le relais de Will quand le crédit ElevenLabs est épuisé :
+// Andrew, une voix multilingue chaleureuse, plus vivante que Rémy.
 const (
-	VoixGratuitePilote      = "fr-FR-RemyMultilingualNeural"
+	VoixGratuitePilote      = "en-US-AndrewMultilingualNeural"
 	VoixGratuiteResponsable = "fr-FR-VivienneMultilingualNeural"
 	VoixGratuiteIngenieur   = "fr-FR-HenriNeural"
 )
