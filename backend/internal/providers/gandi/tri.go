@@ -99,6 +99,9 @@ func Arrivees(ctx context.Context, creds Credentials, validity, apres uint32, li
 				To:       addressList(m.Envelope.To),
 				Cc:       addressList(m.Envelope.Cc),
 				Bulk:     isBulk(m.FindBodySection(headers)),
+				// Pour retrouver le mail une fois rangé : son UID change de
+				// dossier, pas son Message-ID.
+				MessageID: normalizeMessageID(m.Envelope.MessageID),
 			},
 			PiecesJointes: piecesJointes(m.BodyStructure),
 		}

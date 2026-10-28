@@ -97,6 +97,9 @@ func (s *Server) trier(ctx context.Context, user *store.User, agent equipe.Membr
 			return err
 		}
 	}
+	// Un mail de cycle qui apporte son Excel : l'équipe propose de lancer le
+	// process CSP (csp.go). Mathias décide dans HQ.
+	s.proposerApresTri(user, mailsDuTri(arrivees, decisions))
 	dernier := etat.DernierUID
 	for _, a := range arrivees {
 		dernier = max(dernier, a.UID)

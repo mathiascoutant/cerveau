@@ -295,6 +295,27 @@ def panneau(tache, cfg):
     os._exit(0)
 
 
+def import_csp(tache):
+    """Le process CSP d'une airline, lancé après le clic de Mathias dans HQ :
+    l'Excel du mail passe à pxsky-lancer-import-csp, qui seul a les accès."""
+    import base64
+    try:
+        fichier = base64.b64decode(str(tache.get("fichier", "")), validate=True)
+    except ValueError:
+        fail("Excel illisible")
+    args = [str(tache.get(k, "")).strip() for k in ("nom", "projet", "cycle", "mode_import")]
+    debut = time.time()
+    try:
+        r = subprocess.run(["sudo", "-n", "/usr/local/bin/pxsky-lancer-import-csp", *args], input=fichier,
+                           capture_output=True, timeout=180)
+        code, sortie, erreurs = r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        code, sortie, erreurs = -1, "", "pxsky n'a pas répondu en 3 minutes"
+    emit({"type": "atelier", "event": "donnees", "code": code, "ms": int((time.time() - debut) * 1000),
+          "sortie": sortie[:PANNEAU_SORTIE_MAX], "stderr": erreurs[-3000:]})
+    os._exit(0)
+
+
 def main():
     ligne = sys.stdin.readline()
     if not ligne:
@@ -317,6 +338,9 @@ def main():
         return
     if tache.get("mode") == "panneau":
         panneau(tache, cfg)
+        return
+    if tache.get("mode") == "import-csp":
+        import_csp(tache)
         return
     nettoyer()
     a_cloner, refuses = fusionner(cfg.get("depots", []), tache.get("depots"))

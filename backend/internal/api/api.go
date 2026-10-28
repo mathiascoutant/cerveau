@@ -76,6 +76,8 @@ type Server struct {
 	// panneauxReleves : le dernier relevé de chaque panneau de HQ
 	// (panneaux.go).
 	panneauxReleves releves
+	// cspSuivi : où en sont les imports CSP lancés depuis HQ (csp.go).
+	cspSuivi suiviCSP
 }
 
 // WithPerso branche le suivi des projets et l'équipe technique qui va avec.
@@ -261,6 +263,10 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/hq/projets/{id}/etudier", s.handleHQEtudierProjet)
 			r.Post("/hq/projets/{id}/questions/{qid}", s.handleHQRepondreQuestion)
 			r.Post("/hq/projets/{id}/panneaux", s.handleHQDemanderPanneau)
+			r.Get("/hq/csp", s.handleHQPropositionsCSP)
+			r.Post("/hq/csp/chercher", s.handleHQChercherCSP)
+			r.Post("/hq/csp/{id}/lancer", s.handleHQLancerCSP)
+			r.Post("/hq/csp/{id}/ignorer", s.handleHQIgnorerCSP)
 			r.Get("/hq/panneaux", s.handleHQPanneaux)
 			r.Get("/hq/panneaux/{id}", s.handleHQPanneau)
 			r.Get("/hq/panneaux/{id}/donnees", s.handleHQDonneesPanneau)

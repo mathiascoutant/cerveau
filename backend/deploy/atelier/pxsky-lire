@@ -11,11 +11,17 @@ Usage : sudo pxsky-lire <chemin> [clé=valeur ...]
   ex. : sudo pxsky-lire sky/exec/pools
         sudo pxsky-lire sky/exec/jobs activity=contentmanager.csp-build
 
-Une seule écriture existe, sous un autre nom (le même programme, installé
-deux fois) : relancer un import CSP.
-  sudo pxsky-relancer-import-csp <jobId>
-Elle fait POST /core/api/v1/contentmanager/csp-excel/jobs/<jobId>/relaunch, et
-rien d'autre ; chaque relance est notée dans /var/log/atelier-pxsky.log.
+Deux écritures existent, chacune sous son propre nom (le même programme,
+installé trois fois) :
+- relancer un import CSP :
+    sudo pxsky-relancer-import-csp <jobId>
+  POST /core/api/v1/contentmanager/csp-excel/jobs/<jobId>/relaunch ;
+- lancer le process CSP d'une airline avec un Excel, lu sur l'entrée
+  standard (root n'ouvre aucun chemin donné par l'atelier) :
+    sudo pxsky-lancer-import-csp <nom.xlsx> <projectId> <cycle AAAA-MM> <full|check> < fichier.xlsx
+  POST /core/api/v1/contentmanager/csp-excel/upload, le formulaire de l'écran
+  « Import CSP » de pxsky. Cerveau ne l'appelle qu'après le clic de Mathias.
+Rien d'autre ; chaque écriture est notée dans /var/log/atelier-pxsky.log.
 """
 
 import base64
@@ -25,6 +31,7 @@ import os
 import re
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -70,14 +77,14 @@ def secrets():
         erreur(f"identifiants pxsky incomplets : {e.args[0]} manquant")
 
 
-def requete(url, data=None, jeton=None, methode=None):
+def requete(url, data=None, jeton=None, methode=None, type_contenu="application/json", delai=25):
     req = urllib.request.Request(url, data=data, method=methode or ("POST" if data else "GET"))
     req.add_header("Accept", "application/json")
     if data:
-        req.add_header("Content-Type", "application/json")
+        req.add_header("Content-Type", type_contenu)
     if jeton:
         req.add_header("Authorization", f"Bearer {jeton}")
-    return urllib.request.urlopen(req, timeout=25)
+    return urllib.request.urlopen(req, timeout=delai)
 
 
 def connexion(base, user, mdp):
@@ -123,15 +130,16 @@ def session_perimee(e, detail):
     return e.code == 401 or (e.code == 500 and re.search(r"token is (expired|invalid)|invalid token", detail, re.I))
 
 
-def appeler(base, user, mdp, url, methode="GET"):
+def appeler(base, user, mdp, url, methode="GET", corps=None, type_contenu="application/json"):
     """Fait l'appel avec le jeton en cache ; se reconnecte une fois s'il a expiré."""
     jeton = jeton_cache()
     for essai in range(2):
         if not jeton:
             jeton = connexion(base, user, mdp)
         try:
-            data = b"" if methode == "POST" else None
-            with requete(url, data=data, jeton=jeton, methode=methode) as r:
+            data = corps if corps is not None else (b"" if methode == "POST" else None)
+            with requete(url, data=data, jeton=jeton, methode=methode, type_contenu=type_contenu,
+                         delai=120 if corps else 25) as r:
                 return r.status, r.read(MAX_SORTIE + 1).decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             detail = e.read(500).decode("utf-8", "replace")
@@ -168,7 +176,59 @@ def relancer_import(job):
     afficher(corps)
 
 
+PROJET_OK = re.compile(r"^[a-f0-9]{24}$")
+CYCLE_OK = re.compile(r"^20\d\d-(0[1-9]|1[0-2])$")
+NOM_OK = re.compile(r"^[^/\\\x00-\x1f]{1,200}\.xlsx?$", re.I)
+EXCEL_MAX = 40_000_000
+
+
+def journal(ligne):
+    try:
+        with open(JOURNAL, "a", encoding="utf-8") as j:
+            j.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} {ligne}\n")
+    except OSError:
+        pass
+
+
+def lancer_import(nom, projet, cycle, mode):
+    """La seconde écriture : créer le process CSP d'un cycle avec un Excel,
+    comme l'écran « Import CSP » de pxsky."""
+    if not NOM_OK.match(nom):
+        erreur("nom de fichier invalide (un .xlsx, sans chemin)")
+    if not PROJET_OK.match(projet):
+        erreur("identifiant de projet pxsky invalide")
+    if not CYCLE_OK.match(cycle):
+        erreur("cycle invalide : AAAA-MM attendu (ex. 2026-12)")
+    if mode not in ("full", "check"):
+        erreur("mode : full ou check")
+    fichier = sys.stdin.buffer.read(EXCEL_MAX + 1)
+    if len(fichier) > EXCEL_MAX:
+        erreur("Excel trop lourd")
+    if not fichier.startswith(b"PK") and not fichier.startswith(b"\xd0\xcf\x11\xe0"):
+        erreur("ce n'est pas un fichier Excel")
+    sep = uuid.uuid4().hex
+    parties = []
+    for cle, val in (("projectId", projet), ("cycle", cycle), ("mode", mode)):
+        parties.append(f'--{sep}\r\nContent-Disposition: form-data; name="{cle}"\r\n\r\n{val}\r\n'.encode())
+    nom_entete = nom.replace('"', "'")
+    parties.append(f'--{sep}\r\nContent-Disposition: form-data; name="file"; filename="{nom_entete}"\r\n'
+                   f"Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n".encode()
+                   + fichier + b"\r\n")
+    parties.append(f"--{sep}--\r\n".encode())
+    base, user, mdp = secrets()
+    journal(f"lancement import CSP {nom} projet={projet} cycle={cycle} mode={mode} ({len(fichier)} octets)")
+    statut, corps = appeler(base, user, mdp, f"{base}{API}contentmanager/csp-excel/upload", methode="POST",
+                            corps=b"".join(parties), type_contenu=f"multipart/form-data; boundary={sep}")
+    journal(f"lancement import CSP {nom} -> HTTP {statut} {corps[:200]}")
+    afficher(corps)
+
+
 def main():
+    if os.path.basename(sys.argv[0]) == "pxsky-lancer-import-csp":
+        if len(sys.argv) != 5:
+            erreur("usage : pxsky-lancer-import-csp <nom.xlsx> <projectId> <cycle> <full|check> < fichier.xlsx")
+        lancer_import(sys.argv[1].strip(), sys.argv[2].strip(), sys.argv[3].strip(), sys.argv[4].strip())
+        return
     if os.path.basename(sys.argv[0]) == "pxsky-relancer-import-csp":
         if len(sys.argv) != 2:
             erreur("usage : pxsky-relancer-import-csp <jobId>")

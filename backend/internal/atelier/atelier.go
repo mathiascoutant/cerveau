@@ -14,6 +14,7 @@ package atelier
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,6 +151,20 @@ type Donnees struct {
 // Panneau lance le script d'un panneau de HQ dans l'atelier, sans Claude, et
 // rend ce qu'il a imprimé. run nomme le relevé (il sert de nom de fichier).
 func (c *Client) Panneau(ctx context.Context, run, script string) (Donnees, error) {
+	return c.direct(ctx, map[string]string{"run": run, "mode": "panneau", "demande": "panneau", "script": script})
+}
+
+// ImportCSP lance le process CSP d'une airline dans pxsky avec cet Excel
+// (mode full ou check). Rend la réponse de pxsky.
+func (c *Client) ImportCSP(ctx context.Context, run, nom, projet, cycle, mode string, excel []byte) (Donnees, error) {
+	return c.direct(ctx, map[string]string{
+		"run": run, "mode": "import-csp", "demande": "import CSP", "nom": nom, "projet": projet,
+		"cycle": cycle, "mode_import": mode, "fichier": base64.StdEncoding.EncodeToString(excel),
+	})
+}
+
+// direct : un travail de l'atelier sans Claude, qui rend une seule réponse.
+func (c *Client) direct(ctx context.Context, tache map[string]string) (Donnees, error) {
 	d := net.Dialer{Timeout: c.cfg.Timeout}
 	raw, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
@@ -169,7 +184,7 @@ func (c *Client) Panneau(ctx context.Context, run, script string) (Donnees, erro
 		return Donnees{}, fmt.Errorf("session atelier : %w", err)
 	}
 	defer sess.Close()
-	line, _ := json.Marshal(map[string]string{"run": run, "mode": "panneau", "demande": "panneau", "script": script})
+	line, _ := json.Marshal(tache)
 	sess.Stdin = strings.NewReader(string(line) + "\n")
 	var stderr strings.Builder
 	sess.Stderr = &limited{w: &stderr, n: 4000}

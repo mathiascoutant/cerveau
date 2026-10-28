@@ -167,6 +167,9 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	if err := s.ensurePanneauIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensurePropositionCSPIndexes(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureEchangeIndexes(ctx); err != nil {
 		return err
 	}
