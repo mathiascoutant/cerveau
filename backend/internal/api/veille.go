@@ -289,6 +289,9 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	} else {
 		s.lireConversationsNeuves(ctx, user, source, neufs)
 	}
+	// Les suivis viennent après les messages neufs : à partir de cet
+	// indice, ce sont les messages de Mathias lui-même.
+	debutSuivis := len(neufs)
 	neufs = append(neufs, suivis...)
 	nouvellesCles = append(nouvellesCles, clesSuivis...)
 
@@ -403,14 +406,22 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	// noter range un sujet : il fait avancer un sujet ouvert (même numéro
 	// rendu par le jugement, ou même discussion), ou il en ouvre un. Il rend
 	// l'identifiant du sujet, faux si rien n'a pu être écrit.
-	noter := func(cible int, n store.Notification) (bson.ObjectID, bool) {
+	noter := func(cible int, n store.Notification, discret bool) (bson.ObjectID, bool) {
 		if cible >= 0 && cible < len(ouverts) {
-			if err := s.store.MettreAJourSujet(ctx, ouverts[cible].ID, n); err != nil {
+			if err := s.store.MettreAJourSujet(ctx, ouverts[cible].ID, n, discret); err != nil {
 				slog.Warn("veille : sujet non mis à jour", "err", err)
 				return bson.ObjectID{}, false
 			}
-			titres = append(titres, n.Titre+" (mis à jour)")
+			if discret {
+				titres = append(titres, n.Titre+" (mis à jour en silence : c'est toi qui as écrit)")
+			} else {
+				titres = append(titres, n.Titre+" (mis à jour)")
+			}
 			return ouverts[cible].ID, true
+		}
+		if discret {
+			// Pas de nouveau sujet fait des seuls messages de Mathias.
+			return bson.ObjectID{}, false
 		}
 		ins, err := s.store.InsertNotification(ctx, n)
 		if err != nil {
@@ -438,8 +449,13 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		var fil, lieu string
 		var premier *triage.Item
 		var quand time.Time
+		// Discret : le sujet n'avance que par ce que Mathias a écrit.
+		discret := len(suj.Messages) > 0
 		for _, n := range suj.Messages {
 			if n >= 1 && n <= len(neufs) {
+				if n-1 < debutSuivis {
+					discret = false
+				}
 				couverts[n-1] = true
 				it := neufs[n-1]
 				ref := origin(it) + " · " + it.De
@@ -476,7 +492,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 			Resume: strings.TrimSpace(suj.Resume), AFaire: strings.TrimSpace(suj.AFaire), Importance: importance,
 			Messages: refs, Run: run.ID().Hex(), Fil: fil, Lieu: lieu, Echanges: echanges,
 		}
-		id, ok := noter(cible, n)
+		id, ok := noter(cible, n, discret)
 		// Ce que le sujet attend de Mathias entre dans sa liste à faire.
 		if ok && n.AFaire != "" && len(suj.Taches) > 0 {
 			nbTaches += s.inscrireTaches(ctx, tb, id, n, premier, suj.Taches, inscrites[id])
@@ -502,7 +518,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 			cible = k
 			n.Titre, n.Resume, n.AFaire, n.Importance = ouverts[k].Titre, ouverts[k].Resume, ouverts[k].AFaire, ouverts[k].Importance
 		}
-		noter(cible, n)
+		noter(cible, n, false)
 	}
 	reply := "Rien d'important."
 	if len(titres) > 0 {
@@ -781,7 +797,7 @@ func (s *Server) sujetsSuivis(ctx context.Context, user *store.User, agent, sour
 		}
 		var dernier time.Time
 		for _, l := range lignes {
-			if l.toi && l.quand.After(o.MisAJour) && l.quand.After(dernier) {
+			if l.toi && l.quand.After(o.DernierPoint()) && l.quand.After(dernier) {
 				dernier = l.quand
 			}
 		}

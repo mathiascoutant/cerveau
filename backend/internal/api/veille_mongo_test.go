@@ -185,3 +185,36 @@ func TestCarteDeTache(t *testing.T) {
 		t.Fatalf("échéance lointaine, normale : %+v", c)
 	}
 }
+
+// Ce que Mathias écrit lui-même met le sujet à jour en silence : il reste lu
+// et ne remonte pas. Un message d'un autre le rend de nouveau non lu.
+func TestSujetMisAJourEnSilence(t *testing.T) {
+	st := runsStore(t)
+	ctx := context.Background()
+	user := bson.NewObjectID()
+	n, err := st.InsertNotification(ctx, store.Notification{UserID: user, Agent: "veille_slack", Source: "slack", Titre: "Accès PXPlane", AFaire: "Envoyer le lien", Importance: "moyenne"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarquerNotificationsLues(ctx, user, &n.ID); err != nil {
+		t.Fatal(err)
+	}
+	avant, _, _ := st.Notifications(ctx, user)
+	n.Resume, n.AFaire = "Tu as envoyé le lien, c'est réglé.", ""
+	if err := st.MettreAJourSujet(ctx, n.ID, n, true); err != nil {
+		t.Fatal(err)
+	}
+	list, nonLues, _ := st.Notifications(ctx, user)
+	if nonLues != 0 || list[0].LueAt == nil || !list[0].MisAJour.Equal(avant[0].MisAJour) || list[0].Resume != n.Resume {
+		t.Fatalf("en silence : non lues %d, lue %v, maj %v → %v, résumé %q", nonLues, list[0].LueAt, avant[0].MisAJour, list[0].MisAJour, list[0].Resume)
+	}
+	if list[0].DernierPoint().Before(time.Now().Add(-time.Minute)) {
+		t.Fatal("le point du sujet doit avancer, même en silence")
+	}
+	if err := st.MettreAJourSujet(ctx, n.ID, n, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, nonLues, _ = st.Notifications(ctx, user); nonLues != 1 {
+		t.Fatalf("un message d'un autre rend le sujet non lu : %d", nonLues)
+	}
+}

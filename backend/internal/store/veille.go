@@ -50,6 +50,17 @@ type Notification struct {
 	CreatedAt time.Time       `bson:"created_at" json:"creee"`
 	MisAJour  time.Time       `bson:"maj,omitempty" json:"maj,omitzero"`
 	LueAt     *time.Time      `bson:"lue_at,omitempty" json:"lue,omitempty"`
+	// PointAt : le dernier point fait sur le sujet, y compris en silence
+	// (ce que Mathias y a écrit lui-même). Le suivi repart de là.
+	PointAt time.Time `bson:"point_at,omitempty" json:"-"`
+}
+
+// DernierPoint : depuis quand le sujet est à jour.
+func (n Notification) DernierPoint() time.Time {
+	if n.PointAt.After(n.MisAJour) {
+		return n.PointAt
+	}
+	return n.MisAJour
 }
 
 // PriseDeParole : qui a dit quoi, dans un sujet de veille.
@@ -189,15 +200,26 @@ func (s *Store) SujetsOuverts(ctx context.Context, userID bson.ObjectID, agent s
 
 // MettreAJourSujet fait avancer un sujet : nouveau titre et résumé, échanges
 // ajoutés à la suite, et il redevient non lu — il y a du neuf.
-func (s *Store) MettreAJourSujet(ctx context.Context, id bson.ObjectID, n Notification) error {
-	set := bson.M{"titre": n.Titre, "resume": n.Resume, "importance": n.Importance, "a_faire": n.AFaire, "maj": time.Now()}
+//
+// En silence (discret), quand seul Mathias y a écrit : le sujet est mis à
+// jour (« c'est réglé ») sans redevenir non lu ni remonter en tête — ce
+// qu'il a écrit lui-même n'a rien à lui apprendre.
+func (s *Store) MettreAJourSujet(ctx context.Context, id bson.ObjectID, n Notification, discret bool) error {
+	now := time.Now()
+	set := bson.M{"titre": n.Titre, "resume": n.Resume, "importance": n.Importance, "a_faire": n.AFaire, "point_at": now}
+	if !discret {
+		set["maj"] = now
+	}
 	if n.Lieu != "" {
 		set["lieu"] = n.Lieu
 	}
 	if n.Run != "" {
 		set["run"] = n.Run
 	}
-	update := bson.M{"$set": set, "$unset": bson.M{"lue_at": ""}}
+	update := bson.M{"$set": set}
+	if !discret {
+		update["$unset"] = bson.M{"lue_at": ""}
+	}
 	push := bson.M{}
 	if len(n.Echanges) > 0 {
 		push["echanges"] = bson.M{"$each": n.Echanges, "$slice": -maxEchanges}
