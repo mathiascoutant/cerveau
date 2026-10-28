@@ -18,11 +18,13 @@ Elle fait POST /core/api/v1/contentmanager/csp-excel/jobs/<jobId>/relaunch, et
 rien d'autre ; chaque relance est notée dans /var/log/atelier-pxsky.log.
 """
 
+import base64
 import datetime
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -96,11 +98,29 @@ def connexion(base, user, mdp):
     return jeton
 
 
+def expire(jeton, marge=60):
+    """Le jeton est un JWT : on lit sa date d'expiration plutôt que d'attendre
+    le refus de pxsky."""
+    try:
+        charge = jeton.split(".")[1]
+        exp = json.loads(base64.urlsafe_b64decode(charge + "=" * (-len(charge) % 4))).get("exp")
+        return bool(exp) and exp - marge < time.time()
+    except (IndexError, ValueError):
+        return False
+
+
 def jeton_cache():
     try:
-        return open(CACHE).read().strip() or None
+        jeton = open(CACHE).read().strip() or None
     except OSError:
         return None
+    return None if jeton and expire(jeton) else jeton
+
+
+def session_perimee(e, detail):
+    """pxsky refuse un jeton périmé en 401, ou en 500 avec « token is
+    expired » : dans les deux cas, on se reconnecte."""
+    return e.code == 401 or (e.code == 500 and re.search(r"token is (expired|invalid)|invalid token", detail, re.I))
 
 
 def appeler(base, user, mdp, url, methode="GET"):
@@ -114,10 +134,10 @@ def appeler(base, user, mdp, url, methode="GET"):
             with requete(url, data=data, jeton=jeton, methode=methode) as r:
                 return r.status, r.read(MAX_SORTIE + 1).decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
-            if e.code == 401 and essai == 0:
+            detail = e.read(500).decode("utf-8", "replace")
+            if session_perimee(e, detail) and essai == 0:
                 jeton = None  # session expirée : on se reconnecte une fois
                 continue
-            detail = e.read(500).decode("utf-8", "replace")
             erreur(f"HTTP {e.code} : {detail}")
         except urllib.error.URLError as e:
             erreur(f"pxsky injoignable : {e.reason}")
