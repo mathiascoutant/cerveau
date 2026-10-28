@@ -73,6 +73,9 @@ type Server struct {
 	triDossiers sync.Map
 	// veilleSlackAt : la dernière relève Slack de la veille (voir veille.go).
 	veilleSlackAt time.Time
+	// panneauxReleves : le dernier relevé de chaque panneau de HQ
+	// (panneaux.go).
+	panneauxReleves releves
 }
 
 // WithPerso branche le suivi des projets et l'équipe technique qui va avec.
@@ -257,6 +260,12 @@ func (s *Server) Routes() http.Handler {
 			r.Delete("/hq/projets/{id}", s.handleHQOublierProjet)
 			r.Post("/hq/projets/{id}/etudier", s.handleHQEtudierProjet)
 			r.Post("/hq/projets/{id}/questions/{qid}", s.handleHQRepondreQuestion)
+			r.Post("/hq/projets/{id}/panneaux", s.handleHQDemanderPanneau)
+			r.Get("/hq/panneaux", s.handleHQPanneaux)
+			r.Get("/hq/panneaux/{id}", s.handleHQPanneau)
+			r.Get("/hq/panneaux/{id}/donnees", s.handleHQDonneesPanneau)
+			r.Patch("/hq/panneaux/{id}", s.handleHQModifierPanneau)
+			r.Delete("/hq/panneaux/{id}", s.handleHQSupprimerPanneau)
 			r.Get("/hq/cartes", s.handleHQCartes)
 			r.Post("/hq/cartes", s.handleHQCreerCarte)
 			r.Patch("/hq/cartes/{id}", s.handleHQModifierCarte)

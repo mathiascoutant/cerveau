@@ -139,6 +139,71 @@ func (c *Client) Run(ctx context.Context, t Tache, emit assistant.Emitter) (assi
 	return *r.result, nil
 }
 
+// Donnees : ce qu'a rendu le script d'un panneau.
+type Donnees struct {
+	Code   int    `json:"code"`
+	Ms     int64  `json:"ms"`
+	Sortie string `json:"sortie"`
+	Stderr string `json:"stderr"`
+}
+
+// Panneau lance le script d'un panneau de HQ dans l'atelier, sans Claude, et
+// rend ce qu'il a imprimé. run nomme le relevé (il sert de nom de fichier).
+func (c *Client) Panneau(ctx context.Context, run, script string) (Donnees, error) {
+	d := net.Dialer{Timeout: c.cfg.Timeout}
+	raw, err := d.DialContext(ctx, "tcp", c.addr)
+	if err != nil {
+		return Donnees{}, fmt.Errorf("atelier injoignable : %w", err)
+	}
+	sc, chans, reqs, err := ssh.NewClientConn(raw, c.addr, c.cfg)
+	if err != nil {
+		_ = raw.Close()
+		return Donnees{}, fmt.Errorf("connexion à l'atelier refusée : %w", err)
+	}
+	conn := ssh.NewClient(sc, chans, reqs)
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	sess, err := conn.NewSession()
+	if err != nil {
+		return Donnees{}, fmt.Errorf("session atelier : %w", err)
+	}
+	defer sess.Close()
+	line, _ := json.Marshal(map[string]string{"run": run, "mode": "panneau", "demande": "panneau", "script": script})
+	sess.Stdin = strings.NewReader(string(line) + "\n")
+	var stderr strings.Builder
+	sess.Stderr = &limited{w: &stderr, n: 4000}
+	out, err := sess.Output("atelier")
+	if ctx.Err() != nil {
+		return Donnees{}, ctx.Err()
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		var ev struct {
+			Type    string `json:"type"`
+			Event   string `json:"event"`
+			Message string `json:"message"`
+			Donnees
+		}
+		if json.Unmarshal([]byte(l), &ev) != nil || ev.Type != "atelier" {
+			continue
+		}
+		switch ev.Event {
+		case "donnees":
+			return ev.Donnees, nil
+		case "erreur":
+			return Donnees{}, errors.New("atelier : " + ev.Message)
+		}
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" && err != nil {
+		msg = err.Error()
+	}
+	if msg == "" {
+		msg = "l'atelier n'a rien rendu"
+	}
+	return Donnees{}, errors.New("atelier : " + msg)
+}
+
 // Classify : un jugement court par Claude, sur l'abonnement — même forme que
 // le classement du moteur, pour pouvoir le remplacer.
 func (c *Client) Classify(ctx context.Context, instructions, input string) (string, error) {

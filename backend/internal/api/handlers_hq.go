@@ -389,7 +389,7 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 			// lequel.
 			res, err = s.atelier.Run(ctx, atelier.Tache{
 				Run: lr.ID().Hex(), Agent: m.ID, Nom: m.Nom, Role: m.Role, Presentation: m.Presentation,
-				Demande: demande, Consigne: joinConsignes(s.consigneProjets(ctx), consigne),
+				Demande: demande, Consigne: joinConsignes(s.consigneProjets(ctx), consignePanneaux(m), consigne),
 				Depots: s.depotsConnus(ctx),
 			}, lr.Etape)
 		default:

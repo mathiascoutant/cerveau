@@ -263,6 +263,38 @@ def juger(tache, cfg):
     os._exit(code)
 
 
+PANNEAU_DELAI_S = 40
+PANNEAU_SORTIE_MAX = 4_000_000
+
+
+def panneau(tache, cfg):
+    """Les données d'un panneau de HQ : le script que l'ingénieur a écrit,
+    lancé tel quel, sans Claude ni dépôts. Il imprime du JSON ; HQ le
+    vérifie et le dessine. Rien n'est gardé entre deux relevés."""
+    script = str(tache.get("script", ""))
+    if not script.strip():
+        fail("panneau sans script")
+    dossier = TRAVAIL / "panneaux"
+    dossier.mkdir(parents=True, exist_ok=True)
+    fichier = dossier / f"{tache['run']}.py"
+    fichier.write_text(script)
+    env = {"PATH": f"{HOME / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin", "HOME": str(HOME),
+           "LANG": "C.UTF-8", "PYTHONIOENCODING": "utf-8"}
+    delai = int(cfg.get("panneau_delai_s", PANNEAU_DELAI_S))
+    debut = time.time()
+    try:
+        r = subprocess.run(["python3", "-I", str(fichier)], cwd=dossier, env=env, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=delai, start_new_session=True)
+        code, sortie, erreurs = r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired as e:
+        code, sortie, erreurs = -1, "", f"le script a dépassé {delai} secondes"
+    finally:
+        fichier.unlink(missing_ok=True)
+    emit({"type": "atelier", "event": "donnees", "code": code, "ms": int((time.time() - debut) * 1000),
+          "sortie": sortie[:PANNEAU_SORTIE_MAX], "stderr": erreurs[-3000:]})
+    os._exit(0)
+
+
 def main():
     ligne = sys.stdin.readline()
     if not ligne:
@@ -282,6 +314,9 @@ def main():
         fail("Claude Code n'est pas installé pour l'utilisateur atelier")
     if tache.get("mode") == "jugement":
         juger(tache, cfg)
+        return
+    if tache.get("mode") == "panneau":
+        panneau(tache, cfg)
         return
     nettoyer()
     a_cloner, refuses = fusionner(cfg.get("depots", []), tache.get("depots"))

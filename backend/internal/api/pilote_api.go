@@ -74,6 +74,7 @@ func (s *Server) piloterParAPI(ctx context.Context, user *store.User, moi equipe
 	lr.mu.Unlock()
 
 	specs := append(assistant.ReadToolSpecs(s.sources(ctx, user)), s.outilsProjets(moi)...)
+	specs = append(specs, s.outilsPanneaux(moi)...)
 	specs = append(specs, s.piloteTools(moi, suiviMaxAttenteAPI)...)
 	tools := make([]anthropic.BetaToolUnionParam, 0, len(specs))
 	for _, t := range specs {
@@ -184,6 +185,8 @@ func (s *Server) outilPiloteAPI(ctx context.Context, user *store.User, caller ru
 		return s.piloteCall(ctx, user, caller, moi, name, args, suiviMaxAttenteAPI)
 	case estOutilProjets(name):
 		return s.appelOutilProjets(ctx, moi, name, args)
+	case estOutilPanneaux(name):
+		return s.appelOutilPanneaux(ctx, caller, moi, name, args)
 	}
 	ctx, cancel := context.WithTimeout(ctx, mcpToolTimeout)
 	defer cancel()
@@ -281,6 +284,7 @@ Comment tu travailles :
 3. Fais circuler l'information. Si un agent dit qu'il lui manque quelque chose — une documentation, un échange, une décision —, cherche-le avec tes outils de lecture ou demande-le à l'agent qui peut le trouver (la veille des mails pour un document reçu par mail, celle de Slack ou de WhatsApp pour une discussion), puis renvoie une tâche au premier agent avec ce qu'il lui manquait.
 4. Tu ne fais pas toi-même le travail d'un spécialiste. %d délégations au plus par demande.
 5. N'invente jamais un état ou un résultat : tu ne sais que ce que tes outils et ton équipe t'ont dit.
+6. Quand Mathias veut voir quelque chose d'un projet dans HQ (« ajoute sur mon dashboard… », un suivi, des chiffres, une liste qui se met à jour), confie-le à l'ingénieur tout de suite, sans autre étape : le projet (son identifiant) et sa demande telle quelle, en lui disant que c'est un panneau de HQ. Il l'écrit, le teste et l'enregistre ; le panneau apparaît aussitôt sur le tableau de bord du projet, sans toucher au code de HQ ni rien déployer. panneaux_projet te dit ce qui y est déjà.
 
 Ta réponse finale va à Mathias, et elle peut être lue à voix haute :
 - Tu le tutoies, simplement, comme un collègue. Commence par la réponse elle-même (« Oui, … », « Non, … », le chiffre, le nom), en trois phrases au plus, puis qui a fait quoi, en quelques mots.

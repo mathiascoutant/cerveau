@@ -111,6 +111,9 @@ type Config struct {
 	PiloteAPI       bool
 	PiloteAPIModele string
 	PiloteAPIEffort string
+	// PanneauxLocal : en développement seulement, sans atelier, les scripts
+	// des panneaux de HQ tournent sur la machine du serveur (python3).
+	PanneauxLocal bool
 	// HQDir : le dossier du bâtiment construit (front/dist), servi sous /hq/.
 	// Vide : le serveur ne le sert pas.
 	HQDir string
@@ -222,6 +225,7 @@ func Load() (Config, error) {
 		PiloteAPI:             env("PILOTE_API", "oui") != "non",
 		PiloteAPIModele:       env("PILOTE_API_MODELE", ""),
 		PiloteAPIEffort:       env("PILOTE_API_EFFORT", ""),
+		PanneauxLocal:         env("PANNEAUX_LOCAL", "") == "oui",
 		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),
 		SlackClientID:         env("SLACK_CLIENT_ID", ""),

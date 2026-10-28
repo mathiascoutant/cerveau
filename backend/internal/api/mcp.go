@@ -88,6 +88,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		// fiches ; le responsable, de quoi déléguer.
 		if _, moi, ok := s.agentDuRun(r, user); ok {
 			tools = append(tools, s.outilsProjets(moi)...)
+			tools = append(tools, s.outilsPanneaux(moi)...)
 			if moi.Pilote {
 				tools = append(tools, s.piloteTools(moi, suiviMaxAttente)...)
 			}
@@ -115,6 +116,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			out, err = s.piloteCall(r.Context(), user, caller, moi, p.Name, args, suiviMaxAttente)
+		} else if estOutilPanneaux(p.Name) {
+			caller, moi, ok := s.agentDuRun(r, user)
+			if !ok {
+				writeRPC(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "réservé aux agents en plein travail"}}, "isError": true}, nil)
+				return
+			}
+			out, err = s.appelOutilPanneaux(r.Context(), caller, moi, p.Name, args)
 		} else if estOutilProjets(p.Name) {
 			_, moi, ok := s.agentDuRun(r, user)
 			if !ok {

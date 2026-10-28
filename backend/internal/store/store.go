@@ -164,6 +164,9 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 	if err := s.ensureCarteIndexes(ctx); err != nil {
 		return err
 	}
+	if err := s.ensurePanneauIndexes(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureEchangeIndexes(ctx); err != nil {
 		return err
 	}
