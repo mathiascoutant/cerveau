@@ -156,3 +156,32 @@ func TestTodosDesSujets(t *testing.T) {
 		t.Fatalf("liste complète : %d %v", len(all), err)
 	}
 }
+
+// Une tâche de la veille devient une carte « à faire » sans agent, qui dit
+// d'où elle vient ; ce qui tombe demain est urgent, un sujet important haut.
+func TestCarteDeTache(t *testing.T) {
+	paris, _ := time.LoadLocation("Europe/Paris")
+	maintenant := time.Date(2026, 10, 28, 10, 0, 0, 0, paris)
+	sujet := bson.NewObjectID()
+	n := store.Notification{AFaire: "Corriger les Series name.", Resume: "Xavier confirme.", Importance: "haute", Lieu: "#condor"}
+	premier := &triage.Item{Source: "slack", De: "Xavier", Titre: "#condor"}
+
+	c := carteDeTache("Faire renseigner le Series name", nil, sujet, n, premier, maintenant)
+	if c.Statut != store.CarteAFaire || c.Agent != "" || c.Priorite != store.PrioriteHaute || c.Echeance != nil || c.Sujet == nil || *c.Sujet != sujet {
+		t.Fatalf("carte mal posée : %+v", c)
+	}
+	if c.Description != "Corriger les Series name.\n\nXavier confirme.\n\nVient de : #condor · Xavier" {
+		t.Fatalf("description : %q", c.Description)
+	}
+
+	demain := time.Date(2026, 10, 29, 9, 0, 0, 0, paris)
+	n.Importance = "moyenne"
+	c = carteDeTache("Répondre à Xavier", &demain, sujet, n, premier, maintenant)
+	if c.Priorite != store.PrioriteUrgente || c.Echeance == nil || c.Echeance.Format(time.RFC3339) != "2026-10-29T00:00:00Z" {
+		t.Fatalf("échéance de demain, urgente : %+v %v", c, c.Echeance)
+	}
+	loin := time.Date(2026, 11, 4, 0, 0, 0, 0, paris)
+	if c = carteDeTache("Relancer", &loin, sujet, n, nil, maintenant); c.Priorite != store.PrioriteNormale || strings.Contains(c.Description, "Vient de") {
+		t.Fatalf("échéance lointaine, normale : %+v", c)
+	}
+}

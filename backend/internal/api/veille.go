@@ -518,8 +518,9 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 // inscrireTaches met dans la liste à faire les tâches qu'un sujet attend de
 // Mathias, sans redonner celles qui en sont déjà sorties (même cochées). Une
 // tâche garde le sujet d'où elle vient, et le message qui l'a fait naître :
-// « mail de Satish » se relit sans rouvrir la boîte. Rend combien sont
-// inscrites.
+// « mail de Satish » se relit sans rouvrir la boîte. Chacune est aussi posée
+// en carte « à faire » sur le tableau de HQ, là où Mathias suit son travail.
+// Rend combien sont inscrites.
 func (s *Server) inscrireTaches(ctx context.Context, tb *userToolbox, sujet bson.ObjectID, n store.Notification, premier *triage.Item, taches []tacheJugee, deja []store.Todo) int {
 	vues := map[string]bool{}
 	for _, t := range deja {
@@ -555,8 +556,50 @@ func (s *Server) inscrireTaches(ctx context.Context, tb *userToolbox, sujet bson
 			continue
 		}
 		inscrites++
+		if _, err := s.store.CreerCarte(ctx, carteDeTache(titre, todo.Due, sujet, n, premier, time.Now().In(tb.location()))); err != nil {
+			slog.Warn("veille : carte non posée", "titre", titre, "err", err)
+		}
 	}
 	return inscrites
+}
+
+// carteDeTache : la carte du tableau pour une tâche que la veille tire d'un
+// sujet. Elle n'a pas d'agent : c'est à Mathias de la faire, ou de la confier.
+// Ce qui tombe aujourd'hui ou demain est urgent ; un sujet important rend la
+// carte haute.
+func carteDeTache(titre string, due *time.Time, sujet bson.ObjectID, n store.Notification, premier *triage.Item, maintenant time.Time) store.Carte {
+	var desc []string
+	if n.AFaire != "" {
+		desc = append(desc, n.AFaire)
+	}
+	if n.Resume != "" {
+		desc = append(desc, n.Resume)
+	}
+	if premier != nil {
+		de := origin(*premier) + " · " + premier.De
+		if n.Lieu != "" && n.Lieu != origin(*premier) {
+			de += " · " + n.Lieu
+		}
+		desc = append(desc, "Vient de : "+de)
+	}
+	c := store.Carte{
+		Titre: truncateRunes(titre, 199), Description: truncateRunes(strings.Join(desc, "\n\n"), 7999),
+		Statut: store.CarteAFaire, Priorite: store.PrioriteNormale, Sujet: &sujet,
+	}
+	if n.Importance == "haute" {
+		c.Priorite = store.PrioriteHaute
+	}
+	if due != nil {
+		// Le tableau garde le jour seul, à minuit UTC.
+		l := due.In(maintenant.Location())
+		jour := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, time.UTC)
+		c.Echeance = &jour
+		demain := time.Date(maintenant.Year(), maintenant.Month(), maintenant.Day()+1, 0, 0, 0, 0, time.UTC)
+		if !jour.After(demain) {
+			c.Priorite = store.PrioriteUrgente
+		}
+	}
+	return c
 }
 
 // cleTache : un titre de tâche ramené à ce qui le distingue, pour ne pas

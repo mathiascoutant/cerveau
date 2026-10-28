@@ -56,6 +56,9 @@ type Carte struct {
 	CreatedAt   time.Time      `bson:"created_at" json:"creee"`
 	UpdatedAt   time.Time      `bson:"updated_at" json:"maj"`
 	TermineeLe  *time.Time     `bson:"terminee_le,omitempty" json:"terminee_le,omitempty"`
+	// Sujet : le sujet de veille d'où vient la carte, quand c'est la veille
+	// qui l'a posée pour Mathias.
+	Sujet *bson.ObjectID `bson:"sujet,omitempty" json:"sujet,omitempty"`
 }
 
 func (s *Store) cartes() *mongo.Collection { return s.db.Collection("cartes") }
