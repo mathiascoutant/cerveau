@@ -255,6 +255,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/hq/notifications", s.handleHQNotifications)
 			r.Post("/hq/notifications/lues", s.handleHQNotificationLue)
 			r.Post("/hq/notifications/{id}/lue", s.handleHQNotificationLue)
+			r.Post("/hq/notifications/{id}/diagnostic", s.handleHQDiagnostiquer)
 			r.Get("/hq/projets", s.handleHQProjets)
 			r.Post("/hq/projets", s.handleHQAjouterProjet)
 			r.Get("/hq/projets/{id}", s.handleHQProjet)

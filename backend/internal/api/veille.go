@@ -41,6 +41,8 @@ import (
 // déjà là, pour ne pas réveiller Mathias avec trois jours de messages.
 
 const (
+	// veilleMetierBudget : ce que le jugement reçoit des fiches du métier.
+	veilleMetierBudget  = 5000
 	veilleDefautMinutes = 1
 	// Slack limite les lectures d'historique par minute, pour tout le jeton :
 	// relever chaque minute le faisait refuser (« ratelimited »), et Raoul
@@ -176,12 +178,16 @@ Ignore les remerciements, les « ok », les informations de routine, les notific
 
 Une affaire = UN sujet, un seul bloc que tu fais vivre : tu ne signales jamais deux fois la même discussion. Un nouveau message qui continue un sujet déjà ouvert (S1, S2…) s'y rattache — champ "sujet" — même s'il ne demande rien de plus : il fait avancer l'affaire. Le titre et le résumé que tu rends alors REMPLACENT les anciens : ils disent où en est TOUTE l'affaire, ce qu'on savait déjà compris.
 
-Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "taches": [{"titre": "<une action à l'infinitif>", "echeance": "AAAA-MM-JJ ou vide"}], "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne"}]}.
+Réponds UNIQUEMENT par un objet JSON : {"sujets": [{"sujet": "S1" ou "" pour un nouveau sujet, "messages": [numéros], "titre": "<l'affaire en clair, 8 mots au plus, sans « Re: » ni nom d'expéditeur recopié de l'objet>", "resume": "<l'ESSENTIEL du contenu, deux phrases au plus>", "a_faire": "<ce qu'on attend de Mathias, une phrase ; vide si rien>", "taches": [{"titre": "<une action à l'infinitif>", "echeance": "AAAA-MM-JJ ou vide"}], "echanges": [{"qui": "<prénom>", "a_qui": "<prénom, ou vide>", "quoi": "<ce qu'il a dit, une phrase courte>"}], "importance": "haute" ou "moyenne", "probleme": {"quoi": "<ce qui ne va pas, une phrase ; vide si le sujet ne signale aucun problème>", "pour": "mathias" ou "autre" ou "incertain", "a_qui": "<le prénom de la personne à qui on demande de s'en occuper>", "preuve": "<la phrase du message, recopiée MOT POUR MOT, qui montre à qui on s'adresse>"}}]}.
 "resume" : va droit au fond — ce qui est dit, demandé, décidé, livré, les chiffres, les dates, les noms de fichiers. Mathias voit déjà le titre et le lieu : ne redis jamais qui écrit, que c'est une réponse, ni l'objet du mail. Bon : « La v7.2 corrige les deux doublons ; Jonata attend la validation pour lancer l'import vendredi. » Mauvais : « Olivier répond sur le sujet Condor 1126 ; c'est une réponse à un échange en cours. » Si tu n'as vraiment que l'objet, dis en quelques mots ce qu'il annonce — jamais que le contenu manque.
 Une réponse se résume PAR RAPPORT à ce à quoi elle répond (« il répond à ce message de… », les messages d'avant) : la question, la demande, la proposition, et ce qu'on y répond. Bon : « Il répond oui à ta demande : il est dispo samedi matin. » ; « Elle refuse le devis que tu lui as envoyé : trop cher de 15 %%, elle attend une nouvelle offre. » Ce que Mathias a écrit lui-même est marqué « toi ». Si c'est lui qui a écrit en dernier, il a déjà répondu : rien n'est à faire (a_faire vide), dis seulement où en est l'échange.
 Une entrée « de toi » marquée SUIVI n'est pas un message à signaler : c'est Mathias qui a agi dans la discussion d'un sujet ouvert (envoyé le fichier, répondu, proposé un appel…). Rattache-la à ce sujet et mets-le à jour : ce qu'il a fait, et "a_faire" vide si c'est réglé.
 "taches" : ce qui entre dans sa liste à faire — une tâche par action distincte que le sujet attend de lui, à l'infinitif, assez précise pour se comprendre seule dans la liste (quoi, pour quel client ou quel dossier, avec qui). Bon, pour un mail qui livre des fichiers et attend un retour : « Vérifier les images livrées pour Azul 1226 » et « Répondre à Satish sur la livraison Azul 1226 ». "echeance" seulement si le message fixe un jour (calcule-le d'après la date du jour donnée en tête), sinon vide. Aucune tâche quand "a_faire" est vide, ni pour une action déjà dans les « tâches inscrites » d'un sujet ouvert, même dite autrement.
 "echanges" : qui a dit quoi dans les NOUVEAUX messages, une ligne par prise de parole qui compte, dans l'ordre — par exemple Adélaïde dit à Sarah que le chiffre est faux, puis Sarah lui répond qu'elle a raison. L'essentiel, pas une recopie. Mathias s'écrit « toi ».
+"probleme" : seulement quand un NOUVEAU message dit que quelque chose NE VA PAS — un bug, une erreur, une panne, un import ou une livraison en échec, des données fausses ou manquantes, un process qui a laissé passer quelque chose. Une question, une demande ordinaire, une relance, une information ou un problème déjà réglé n'en sont pas : laisse alors "quoi" vide. Un problème grave pour lequel on s'adresse à quelqu'un d'autre reste un sujet à lui signaler s'il le mérite — mais "pour" doit dire la vérité.
+"pour" dit À QUI on demande de s'en occuper, et tu dois en être certain. "mathias" seulement si le message s'adresse à LUI pour ce problème : on l'interpelle par son prénom ou par une mention, on lui écrit à lui seul, on répond à son message, ou le problème porte sur ce qu'il a lui-même fait, envoyé ou livré. "autre" dès qu'on demande à une autre personne de regarder ou de corriger (« Olivier, peux-tu vérifier ? »), même si Mathias est destinataire avec d'autres, en copie, ou cité pour information : mets alors son prénom dans "a_qui". "incertain" si le message s'adresse à tout un groupe sans désigner personne, ou si tu hésites. Être dans les destinataires ne suffit jamais ; la ligne de chaque mail te dit s'il est seul destinataire ou qui d'autre l'est. Dans le doute, "incertain".
+Un seul cas où un envoi automatique vaut "mathias" : la notification de l'outil de tickets (Tuleap) quand le ticket lui est ASSIGNÉ (« Assigned to … Mathias Coutant ») et qu'il y a quelque chose à corriger — le ticket passe « To correct », ou son bilan relève des anomalies. La preuve est alors la ligne qui le lui assigne. Un ticket assigné à quelqu'un d'autre, ou qui change seulement d'état sans rien à corriger (Testing, Ready, Done), n'est pas un problème pour lui. Toute autre alerte ou notification automatique : jamais.
+"preuve" : la phrase qui montre à qui on s'adresse, recopiée mot pour mot depuis un NOUVEAU message écrit par quelqu'un d'autre que Mathias — pas depuis ce qui est cité plus haut dans le fil.
 Regroupe dans un même sujet les messages qui parlent de la même chose. Liste vide si rien n'est important et que rien ne continue un sujet ouvert. En français.`
 
 type jugement struct {
@@ -194,6 +200,9 @@ type jugement struct {
 		Taches     []tacheJugee `json:"taches"`
 		Echanges   []parole     `json:"echanges"`
 		Importance string       `json:"importance"`
+		// Probleme : ce qui ne va pas, et à qui on demande de s'en occuper
+		// (diagnostic.go).
+		Probleme problemeJuge `json:"probleme"`
 	} `json:"sujets"`
 }
 
@@ -327,61 +336,7 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	}
 
 	tb := s.toolbox(user)
-	dir := tb.annuaire(ctx)
-	var b strings.Builder
-	fmt.Fprintf(&b, "AUJOURD'HUI : %s\n\n", time.Now().In(tb.location()).Format("Monday 2006-01-02"))
-	if len(ouverts) > 0 {
-		b.WriteString("SUJETS DÉJÀ OUVERTS :\n")
-		for i, o := range ouverts {
-			fmt.Fprintf(&b, "[S%d] %s", i+1, o.Titre)
-			if o.Lieu != "" {
-				fmt.Fprintf(&b, " · %s", o.Lieu)
-			}
-			fmt.Fprintf(&b, "\n    où on en est : %s\n", o.Resume)
-			if n := len(o.Echanges); n > 0 {
-				var lignes []string
-				for _, e := range o.Echanges[max(0, n-4):] {
-					lignes = append(lignes, e.Qui+" : "+e.Quoi)
-				}
-				fmt.Fprintf(&b, "    derniers échanges : %s\n", strings.Join(lignes, " ; "))
-			}
-			if ts := inscrites[o.ID]; len(ts) > 0 {
-				var lignes []string
-				for _, t := range ts {
-					lignes = append(lignes, t.Title)
-				}
-				fmt.Fprintf(&b, "    tâches inscrites : %s\n", strings.Join(lignes, " ; "))
-			}
-		}
-		b.WriteString("\nNOUVEAUX MESSAGES :\n")
-	}
-	for i, it := range neufs {
-		id := itemIdentity(dir, it)
-		fmt.Fprintf(&b, "[%d] %s · de %s", i+1, origin(it), it.De)
-		if id.Qui != "" {
-			fmt.Fprintf(&b, " (%s)", id.Qui)
-		}
-		if id.Importance != "" {
-			fmt.Fprintf(&b, " · importance de la personne : %s", id.Importance)
-		}
-		fmt.Fprintf(&b, " · %s · %s\n", tb.when(it.Quand), motif(it.Motif))
-		if i, ok := parFil[filDe(it)]; ok {
-			fmt.Fprintf(&b, "    même discussion que le sujet S%d\n", i+1)
-		}
-		if it.Titre != "" {
-			fmt.Fprintf(&b, "    sujet : %s\n", it.Titre)
-		}
-		if it.Apercu != "" {
-			fmt.Fprintf(&b, "    contenu : %s\n", truncateRunes(it.Apercu, 1800))
-		}
-	}
-	// Le jugement passe par Claude (l'atelier, sur l'abonnement) ; le modèle
-	// rapide du moteur ne sert que si l'atelier n'est pas configuré.
-	judge := s.engine.Classify
-	if s.atelier != nil {
-		judge = s.atelier.Classify
-	}
-	out, err := judge(ctx, fmt.Sprintf(veilleConsigne, label), b.String())
+	out, err := s.jugerVeille(ctx, tb, label, ouverts, inscrites, parFil, neufs)
 	run.Etape(assistant.Event{Type: "status", Tool: "veille", Ms: max(1, time.Since(started).Milliseconds())})
 	if err != nil {
 		run.Fin(assistant.Result{}, err)
@@ -403,6 +358,8 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	var titres []string
 	nbTaches := 0
 	couverts := map[int]bool{}
+	// Les problèmes vus dans cette relève, à passer au contrôle.
+	var remontees []remontee
 	// noter range un sujet : il fait avancer un sujet ouvert (même numéro
 	// rendu par le jugement, ou même discussion), ou il en ouvre un. Il rend
 	// l'identifiant du sujet, faux si rien n'a pu être écrit.
@@ -449,12 +406,15 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 		var fil, lieu string
 		var premier *triage.Item
 		var quand time.Time
+		// desAutres : les messages du sujet que Mathias n'a pas écrits.
+		var desAutres []triage.Item
 		// Discret : le sujet n'avance que par ce que Mathias a écrit.
 		discret := len(suj.Messages) > 0
 		for _, n := range suj.Messages {
 			if n >= 1 && n <= len(neufs) {
 				if n-1 < debutSuivis {
 					discret = false
+					desAutres = append(desAutres, neufs[n-1])
 				}
 				couverts[n-1] = true
 				it := neufs[n-1]
@@ -492,10 +452,18 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 			Resume: strings.TrimSpace(suj.Resume), AFaire: strings.TrimSpace(suj.AFaire), Importance: importance,
 			Messages: refs, Run: run.ID().Hex(), Fil: fil, Lieu: lieu, Echanges: echanges,
 		}
+		var deja *store.Diagnostic
+		if cible >= 0 && cible < len(ouverts) {
+			deja = ouverts[cible].Diagnostic
+		}
 		id, ok := noter(cible, n, discret)
 		// Ce que le sujet attend de Mathias entre dans sa liste à faire.
 		if ok && n.AFaire != "" && len(suj.Taches) > 0 {
 			nbTaches += s.inscrireTaches(ctx, tb, id, n, premier, suj.Taches, inscrites[id])
+		}
+		// Un problème : il passe au contrôle, qui dira s'il est pour Hugo.
+		if ok && !discret && len(desAutres) > 0 && strings.TrimSpace(suj.Probleme.Quoi) != "" {
+			remontees = append(remontees, remontee{sujet: id, n: n, p: suj.Probleme, items: desAutres, deja: deja})
 		}
 	}
 	// Un message privé non lu est toujours signalé, même si le jugement l'a
@@ -527,8 +495,79 @@ func (s *Server) veiller(ctx context.Context, user *store.User, agent equipe.Mem
 	if nbTaches > 0 {
 		reply += fmt.Sprintf(" %d tâche%s inscrite%s.", nbTaches, plural(nbTaches, "s", ""), plural(nbTaches, "s", ""))
 	}
+	if k := len(remontees); k > 0 {
+		reply += fmt.Sprintf(" %d problème%s à contrôler avant de %s passer à Hugo.", k, plural(k, "s", ""), plural(k, "les", "le"))
+	}
 	run.Fin(assistant.Result{Reply: reply}, nil)
+	s.remonter(user, agent, source, remontees)
 	return nil
+}
+
+// jugerVeille donne au jugement ce qu'il lui faut — la date, ce que l'équipe
+// sait du métier, les sujets déjà ouverts, les nouveaux messages — et rend sa
+// réponse brute. L'essai à blanc du diagnostic passe par le même chemin : ce
+// qu'il montre est ce que la veille verrait.
+func (s *Server) jugerVeille(ctx context.Context, tb *userToolbox, label string, ouverts []store.Notification, inscrites map[bson.ObjectID][]store.Todo, parFil map[string]int, neufs []triage.Item) (string, error) {
+	dir := tb.annuaire(ctx)
+	var b strings.Builder
+	fmt.Fprintf(&b, "AUJOURD'HUI : %s\n\n", time.Now().In(tb.location()).Format("Monday 2006-01-02"))
+	// Ce que l'équipe a compris du métier de Mathias : un « import 1226 en
+	// échec » ne se juge pas sans savoir ce qu'est un cycle.
+	if metier := s.savoirMetier(ctx, veilleMetierBudget); metier != "" {
+		b.WriteString("CE QUE L'ÉQUIPE SAIT DU MÉTIER DE MATHIAS (pour comprendre les messages, pas pour en inventer) :\n" + metier + "\n\n")
+	}
+	if len(ouverts) > 0 {
+		b.WriteString("SUJETS DÉJÀ OUVERTS :\n")
+		for i, o := range ouverts {
+			fmt.Fprintf(&b, "[S%d] %s", i+1, o.Titre)
+			if o.Lieu != "" {
+				fmt.Fprintf(&b, " · %s", o.Lieu)
+			}
+			fmt.Fprintf(&b, "\n    où on en est : %s\n", o.Resume)
+			if n := len(o.Echanges); n > 0 {
+				var lignes []string
+				for _, e := range o.Echanges[max(0, n-4):] {
+					lignes = append(lignes, e.Qui+" : "+e.Quoi)
+				}
+				fmt.Fprintf(&b, "    derniers échanges : %s\n", strings.Join(lignes, " ; "))
+			}
+			if ts := inscrites[o.ID]; len(ts) > 0 {
+				var lignes []string
+				for _, t := range ts {
+					lignes = append(lignes, t.Title)
+				}
+				fmt.Fprintf(&b, "    tâches inscrites : %s\n", strings.Join(lignes, " ; "))
+			}
+		}
+		b.WriteString("\nNOUVEAUX MESSAGES :\n")
+	}
+	for i, it := range neufs {
+		id := itemIdentity(dir, it)
+		fmt.Fprintf(&b, "[%d] %s · de %s", i+1, origin(it), it.De)
+		if id.Qui != "" {
+			fmt.Fprintf(&b, " (%s)", id.Qui)
+		}
+		if id.Importance != "" {
+			fmt.Fprintf(&b, " · importance de la personne : %s", id.Importance)
+		}
+		fmt.Fprintf(&b, " · %s · %s\n", tb.when(it.Quand), adresseA(it))
+		if i, ok := parFil[filDe(it)]; ok {
+			fmt.Fprintf(&b, "    même discussion que le sujet S%d\n", i+1)
+		}
+		if it.Titre != "" {
+			fmt.Fprintf(&b, "    sujet : %s\n", it.Titre)
+		}
+		if it.Apercu != "" {
+			fmt.Fprintf(&b, "    contenu : %s\n", truncateRunes(it.Apercu, 1800))
+		}
+	}
+	// Le jugement passe par Claude (l'atelier, sur l'abonnement) ; le modèle
+	// rapide du moteur ne sert que si l'atelier n'est pas configuré.
+	judge := s.engine.Classify
+	if s.atelier != nil {
+		judge = s.atelier.Classify
+	}
+	return judge(ctx, fmt.Sprintf(veilleConsigne, label), b.String())
 }
 
 // inscrireTaches met dans la liste à faire les tâches qu'un sujet attend de
@@ -849,6 +888,7 @@ func (s *Server) handleHQNotifications(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []store.Notification{}
 	}
+	s.reprendreDiagnostics(r.Context(), user, list)
 	httpx.JSON(w, http.StatusOK, map[string]any{"notifications": list, "non_lues": nonLues})
 }
 

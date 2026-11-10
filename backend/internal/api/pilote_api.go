@@ -174,6 +174,40 @@ func (s *Server) piloterParAPI(ctx context.Context, user *store.User, moi equipe
 	return assistant.Result{}, fmt.Errorf("pas de conclusion après %d tours", piloteAPITours)
 }
 
+// juger : un avis de Hugo sans outil ni équipe — lire, trancher, répondre.
+// Le même modèle et le même effort que lorsqu'il pilote : c'est lui qui
+// décide si un problème vaut de mobiliser l'équipe (diagnostic.go).
+func (p *piloteAPI) juger(ctx context.Context, consigne, input string) (string, error) {
+	adaptive := anthropic.BetaThinkingConfigAdaptiveParam{}
+	resp, err := p.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
+		Model:        anthropic.Model(p.modele),
+		MaxTokens:    8000,
+		System:       []anthropic.BetaTextBlockParam{{Text: consigne}},
+		Thinking:     anthropic.BetaThinkingConfigParamUnion{OfAdaptive: &adaptive},
+		OutputConfig: anthropic.BetaOutputConfigParam{Effort: p.effort},
+		Fallbacks:    anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()},
+		Betas:        []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
+		Messages:     []anthropic.BetaMessageParam{anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(input))},
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp.StopReason == anthropic.BetaStopReasonRefusal {
+		return "", errors.New("le modèle a refusé de répondre")
+	}
+	var texte strings.Builder
+	for _, block := range resp.Content {
+		if b, ok := block.AsAny().(anthropic.BetaTextBlock); ok {
+			texte.WriteString(b.Text)
+		}
+	}
+	out := strings.TrimSpace(texte.String())
+	if out == "" {
+		return "", fmt.Errorf("réponse vide (%s)", resp.StopReason)
+	}
+	return out, nil
+}
+
 // outilPiloteAPI exécute un outil de Hugo : déléguer, les projets, ou ce
 // que Raoul sait lire.
 func (s *Server) outilPiloteAPI(ctx context.Context, user *store.User, caller runSnapshot, moi equipe.Membre, name, args string) (string, error) {
@@ -285,6 +319,7 @@ Comment tu travailles :
 4. Tu ne fais pas toi-même le travail d'un spécialiste. %d délégations au plus par demande.
 5. N'invente jamais un état ou un résultat : tu ne sais que ce que tes outils et ton équipe t'ont dit.
 6. Quand Mathias veut voir quelque chose d'un projet dans HQ (« ajoute sur mon dashboard… », un suivi, des chiffres, une liste qui se met à jour), confie-le à l'ingénieur tout de suite, sans autre étape : le projet (son identifiant) et sa demande telle quelle, en lui disant que c'est un panneau de HQ. Il l'écrit, le teste et l'enregistre ; le panneau apparaît aussitôt sur le tableau de bord du projet, sans toucher au code de HQ ni rien déployer. panneaux_projet te dit ce qui y est déjà.
+7. Une demande qui commence par « DIAGNOSTIC » ne vient pas de Mathias en direct : la veille te remonte un problème qui lui est adressé. Suis la méthode qu'elle donne, jusqu'à la cause. Ta réponse finale est alors l'objet JSON qu'elle demande, et rien d'autre : les règles de forme ci-dessous ne s'appliquent pas à elle.
 
 Ta réponse finale va à Mathias, et elle peut être lue à voix haute :
 - Tu le tutoies, simplement, comme un collègue. Commence par la réponse elle-même (« Oui, … », « Non, … », le chiffre, le nom), en trois phrases au plus, puis qui a fait quoi, en quelques mots.

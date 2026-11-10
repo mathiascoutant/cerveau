@@ -63,6 +63,13 @@ type Item struct {
 	// Ref : de quoi rouvrir le message (le Message-ID d'un mail). Vide quand
 	// la messagerie n'en donne pas.
 	Ref string
+	// Adressage : où l'utilisateur se trouve parmi les destinataires d'un
+	// mail — seul, avec d'autres, ou en réponse à son message. Pour : le champ
+	// « À » tel quel. Être destinataire avec quatre autres ne dit pas que
+	// c'est à lui qu'on demande : c'est le texte qui le dira, et il faut au
+	// moins savoir à qui d'autre le mail est écrit.
+	Adressage Adressage
+	Pour      []string
 }
 
 // Mail est ce que le tri a besoin de savoir d'un mail. Volontairement plus
@@ -206,6 +213,10 @@ func Mails(mails []Mail, moi string) []Item {
 			Fil:     m.DansUnFil,
 			Adresse: strings.ToLower(strings.TrimSpace(m.Adresse)),
 			Ref:     m.Ref,
+			// Le même calcul que le filtre ci-dessus : les deux doivent
+			// répondre pareil à « ce mail me vise-t-il ? ».
+			Adressage: Addressing(m, moi),
+			Pour:      m.Pour,
 		})
 	}
 	return out

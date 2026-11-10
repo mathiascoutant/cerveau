@@ -32,6 +32,9 @@ const (
 	RunSourceConversation = "conversation"
 	RunSourceDelegation   = "delegation"
 	RunSourceHQ           = "hq"
+	// RunSourceDiagnostic : l'enquête du responsable sur un problème que la
+	// veille lui a remonté.
+	RunSourceDiagnostic = "diagnostic"
 )
 
 // RunStep : une étape de travail, un outil appelé.

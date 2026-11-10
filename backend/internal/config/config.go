@@ -111,6 +111,13 @@ type Config struct {
 	PiloteAPI       bool
 	PiloteAPIModele string
 	PiloteAPIEffort string
+	// DiagnosticAuto : quand la veille voit un problème adressé à Mathias,
+	// elle le remonte à Hugo, qui enquête et rend son diagnostic
+	// (diagnostic.go) — « non » ne garde que le bouton de HQ.
+	// DiagnosticsJour : enquêtes lancées d'elles-mêmes par jour, au plus (5
+	// par défaut) ; Hugo pilote par l'API, facturée à l'usage.
+	DiagnosticAuto  bool
+	DiagnosticsJour int
 	// PanneauxLocal : en développement seulement, sans atelier, les scripts
 	// des panneaux de HQ tournent sur la machine du serveur (python3).
 	PanneauxLocal bool
@@ -225,6 +232,8 @@ func Load() (Config, error) {
 		PiloteAPI:             env("PILOTE_API", "oui") != "non",
 		PiloteAPIModele:       env("PILOTE_API_MODELE", ""),
 		PiloteAPIEffort:       env("PILOTE_API_EFFORT", ""),
+		DiagnosticAuto:        env("DIAGNOSTIC", "oui") != "non",
+		DiagnosticsJour:       envInt("DIAGNOSTICS_JOUR"),
 		PanneauxLocal:         env("PANNEAUX_LOCAL", "") == "oui",
 		VeilleMinutesSlack:    envInt("VEILLE_MINUTES_SLACK"),
 		WhatsAppSessionDB:     env("WHATSAPP_SESSION_DB", "data/whatsapp.db"),

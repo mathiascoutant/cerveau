@@ -205,6 +205,11 @@ type runOpts struct {
 	// qui pilote par l'API (pilote_api.go) ne fait tourner aucun Claude Code
 	// et passe son temps à attendre l'équipe : il lui laisse les places.
 	SansPlace bool
+	// Enquete : le responsable ne répond pas lui-même en une phrase, mais
+	// il reste sur l'API — un diagnostic se travaille avec l'équipe.
+	Enquete bool
+	// Apres : appelé quand la tâche se termine, avec ce qu'elle a produit.
+	Apres func(res assistant.Result, err error)
 }
 
 // enqueue accepte une tâche du bâtiment pour un agent et la met en file.

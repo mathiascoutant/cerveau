@@ -40,6 +40,48 @@ const (
 	projetConnu    = "connu"
 )
 
+// projetMetier : l'identifiant sous lequel l'équipe range ce qu'elle comprend
+// du travail de Mathias — son vocabulaire, ses process, qui fait quoi.
+const (
+	projetMetier      = "metier"
+	descriptionMetier = "Le travail de Mathias : le vocabulaire, les process, les clients, qui fait quoi. Pas de dépôt : ce qu'il explique, et ce que l'équipe comprend au fil des affaires."
+	// metierBudget : ce qu'une consigne reçoit des fiches du métier, en
+	// caractères. Le reste se lit avec fiches_projet.
+	metierBudget = 8000
+)
+
+// savoirMetier rend les fiches du métier, la « Vue d'ensemble » d'abord, dans
+// la limite de budget caractères. Vide tant que l'équipe n'en a aucune.
+func (s *Server) savoirMetier(ctx context.Context, budget int) string {
+	if s.store == nil {
+		return ""
+	}
+	fiches, err := s.store.Connaissances(ctx, store.ConnaissanceQuery{Equipe: equipe.EquipeInformatique, Projet: projetMetier, Limit: 40})
+	if err != nil || len(fiches) == 0 {
+		return ""
+	}
+	sort.SliceStable(fiches, func(i, j int) bool {
+		return fuzzy.Normalize(fiches[i].Sujet) == "vue d ensemble" && fuzzy.Normalize(fiches[j].Sujet) != "vue d ensemble"
+	})
+	var b strings.Builder
+	var titres []string
+	for _, f := range fiches {
+		contenu := strings.TrimSpace(f.Contenu)
+		if contenu == "" {
+			continue
+		}
+		if b.Len()+len(contenu) > budget {
+			titres = append(titres, f.Sujet)
+			continue
+		}
+		fmt.Fprintf(&b, "· %s — %s\n", f.Sujet, contenu)
+	}
+	if len(titres) > 0 {
+		fmt.Fprintf(&b, "(autres fiches du métier, à lire avec fiches_projet : %s)\n", strings.Join(titres, ", "))
+	}
+	return strings.TrimSpace(b.String())
+}
+
 type projetVue struct {
 	ID          string `json:"id"`
 	Nom         string `json:"nom"`
@@ -105,6 +147,16 @@ func (s *Server) catalogue(ctx context.Context) ([]projetVue, error) {
 			out = append(out, v)
 		}
 	}
+	// Le métier de Mathias est toujours au catalogue : ce n'est pas un dépôt,
+	// c'est ce que l'équipe doit comprendre pour travailler sur les autres.
+	metier := projetVue{ID: projetMetier, Nom: "Le métier de Mathias", Description: descriptionMetier, Origine: "ajoute"}
+	if e, ok := extra[projetMetier]; ok {
+		desc := metier.Description
+		s.completerVue(ctx, &metier, e)
+		metier.Description = desc
+		delete(extra, projetMetier)
+	}
+	out = append(out, metier)
 	for _, p := range ajoutes {
 		if _, ok := extra[p.Slug]; !ok {
 			continue
@@ -396,7 +448,11 @@ func (s *Server) consigneProjets(ctx context.Context) string {
 	}
 	b.WriteString(`Avant de travailler sur un projet, lis ses fiches avec fiches_projet : l'équipe y a rangé ce qu'elle sait.
 Quand tu comprends quelque chose qui vaudra encore dans un mois, range-le avec noter_fiche — une fiche par sujet, réécrite en entier (l'ancien savoir plus le nouveau).
-Si un point compte pour ta tâche et ne se devine ni du code ni des fiches, pose-le à Mathias avec poser_question, puis avance avec l'hypothèse la plus prudente.`)
+Si un point compte pour ta tâche et ne se devine ni du code ni des fiches, pose-le à Mathias avec poser_question, puis avance avec l'hypothèse la plus prudente.
+Le projet « metier » n'a pas de code : c'est le travail de Mathias lui-même. Chaque fois qu'une tâche t'apprend quelque chose de son métier — un mot du métier, un process et ses étapes, qui fait quoi chez lui ou chez un client, une règle, une cause de panne déjà vue —, range-le dans « metier » avec noter_fiche. C'est ainsi que l'équipe finit par le comprendre sans qu'il réexplique. Ce que seul lui peut dire se demande avec poser_question sur « metier ».`)
+	if metier := s.savoirMetier(ctx, metierBudget); metier != "" {
+		b.WriteString("\n\nCE QUE L'ÉQUIPE SAIT DU MÉTIER DE MATHIAS (fiches du projet « metier ») :\n" + metier)
+	}
 	return b.String()
 }
 

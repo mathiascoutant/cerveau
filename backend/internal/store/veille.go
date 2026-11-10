@@ -53,6 +53,56 @@ type Notification struct {
 	// PointAt : le dernier point fait sur le sujet, y compris en silence
 	// (ce que Mathias y a écrit lui-même). Le suivi repart de là.
 	PointAt time.Time `bson:"point_at,omitempty" json:"-"`
+	// Probleme : ce qui ne va pas, quand le sujet signale un problème.
+	Probleme string `bson:"probleme,omitempty" json:"probleme,omitempty"`
+	// Diagnostic : ce que le problème est devenu — écarté (il ne s'adresse
+	// pas à Mathias), à l'enquête chez le responsable, ou diagnostiqué.
+	Diagnostic *Diagnostic `bson:"diagnostic,omitempty" json:"diagnostic,omitempty"`
+}
+
+// États d'un diagnostic.
+const (
+	// DiagnosticEcarte : un problème, mais pas remonté au responsable — on
+	// le demande à quelqu'un d'autre, ou rien n'établit que c'est à Mathias.
+	DiagnosticEcarte  = "ecarte"
+	DiagnosticEnCours = "en_cours"
+	DiagnosticPret    = "pret"
+	DiagnosticEchec   = "echec"
+)
+
+// Diagnostic : l'enquête du responsable sur un problème remonté par la veille.
+type Diagnostic struct {
+	Etat string `bson:"etat" json:"etat"`
+	// Le contrôle : à qui s'adresse le problème, la phrase du message qui
+	// l'établit (recopiée, vérifiée dans le texte), et pourquoi.
+	AQui   string `bson:"a_qui,omitempty" json:"a_qui,omitempty"`
+	Preuve string `bson:"preuve,omitempty" json:"preuve,omitempty"`
+	Raison string `bson:"raison,omitempty" json:"raison,omitempty"`
+	// Demande : c'est Mathias qui l'a demandé, depuis HQ.
+	Demande bool `bson:"demande,omitempty" json:"demande,omitempty"`
+	// Run : la tâche du responsable.
+	Run string `bson:"run,omitempty" json:"run,omitempty"`
+	// Le diagnostic lui-même.
+	Compris     string       `bson:"compris,omitempty" json:"compris,omitempty"`
+	Cause       string       `bson:"cause,omitempty" json:"cause,omitempty"`
+	Constate    string       `bson:"constate,omitempty" json:"constate,omitempty"`
+	Corrections []Correction `bson:"corrections,omitempty" json:"corrections,omitempty"`
+	// Trou : ce qui a laissé passer le problème, et ce qu'il faudrait
+	// changer pour qu'il ne revienne pas.
+	Trou      string `bson:"trou,omitempty" json:"trou,omitempty"`
+	Confiance string `bson:"confiance,omitempty" json:"confiance,omitempty"` // haute, moyenne, faible
+	Manque    string `bson:"manque,omitempty" json:"manque,omitempty"`
+	// Texte : la réponse telle quelle, quand elle n'a pas la forme attendue.
+	Texte  string    `bson:"texte,omitempty" json:"texte,omitempty"`
+	Erreur string    `bson:"erreur,omitempty" json:"erreur,omitempty"`
+	Quand  time.Time `bson:"quand" json:"quand"`
+}
+
+// Correction : une chose à faire pour corriger — et la commande, s'il y en
+// a une. Rien n'est exécuté : c'est Mathias qui décide.
+type Correction struct {
+	Quoi     string `bson:"quoi" json:"quoi"`
+	Commande string `bson:"commande,omitempty" json:"commande,omitempty"`
 }
 
 // DernierPoint : depuis quand le sujet est à jour.
@@ -231,5 +281,79 @@ func (s *Store) MettreAJourSujet(ctx context.Context, id bson.ObjectID, n Notifi
 		update["$push"] = push
 	}
 	_, err := s.notifications().UpdateByID(ctx, id, update)
+	return err
+}
+
+// NotificationByID rend un sujet de la veille.
+func (s *Store) NotificationByID(ctx context.Context, userID, id bson.ObjectID) (Notification, error) {
+	var out Notification
+	err := s.notifications().FindOne(ctx, bson.M{"_id": id, "user_id": userID}).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return Notification{}, ErrNotFound
+	}
+	return out, err
+}
+
+// PoserDiagnostic note sur un sujet le problème et ce qu'il est devenu.
+// Un diagnostic prêt (ou en échec) fait remonter le sujet, non lu : il y a
+// du neuf pour Mathias. Les autres états ne le dérangent pas.
+func (s *Store) PoserDiagnostic(ctx context.Context, id bson.ObjectID, probleme string, d Diagnostic) error {
+	if d.Quand.IsZero() {
+		d.Quand = time.Now()
+	}
+	set := bson.M{"diagnostic": d}
+	if probleme != "" {
+		set["probleme"] = probleme
+	}
+	update := bson.M{"$set": set}
+	if d.Etat == DiagnosticPret || d.Etat == DiagnosticEchec {
+		set["maj"] = d.Quand
+		update["$unset"] = bson.M{"lue_at": ""}
+	}
+	_, err := s.notifications().UpdateByID(ctx, id, update)
+	return err
+}
+
+// ReserverDiagnostic pose un diagnostic « en cours » sur un sujet, sauf s'il
+// en a déjà un en cours ou prêt : deux relèves qui se suivent ne lancent pas
+// deux enquêtes. Rend vrai si la place a été prise.
+func (s *Store) ReserverDiagnostic(ctx context.Context, id bson.ObjectID, probleme string, d Diagnostic, refaire bool) (bool, error) {
+	d.Etat = DiagnosticEnCours
+	if d.Quand.IsZero() {
+		d.Quand = time.Now()
+	}
+	bloquants := bson.A{DiagnosticEnCours}
+	if !refaire {
+		bloquants = append(bloquants, DiagnosticPret)
+	}
+	set := bson.M{"diagnostic": d}
+	if probleme != "" {
+		set["probleme"] = probleme
+	}
+	res, err := s.notifications().UpdateOne(ctx,
+		bson.M{"_id": id, "diagnostic.etat": bson.M{"$nin": bloquants}},
+		bson.M{"$set": set})
+	if err != nil {
+		return false, err
+	}
+	return res.ModifiedCount == 1, nil
+}
+
+// DiagnosticsDepuis compte les enquêtes lancées depuis `depuis` — pour le
+// plafond du jour. Celles que Mathias a demandées lui-même ne comptent pas.
+func (s *Store) DiagnosticsDepuis(ctx context.Context, userID bson.ObjectID, depuis time.Time) (int64, error) {
+	return s.notifications().CountDocuments(ctx, bson.M{
+		"user_id":            userID,
+		"diagnostic.etat":    bson.M{"$in": bson.A{DiagnosticEnCours, DiagnosticPret, DiagnosticEchec}},
+		"diagnostic.demande": bson.M{"$ne": true},
+		"diagnostic.quand":   bson.M{"$gte": depuis},
+	})
+}
+
+// NoterRunDiagnostic rattache au diagnostic en cours la tâche qui le mène.
+func (s *Store) NoterRunDiagnostic(ctx context.Context, id bson.ObjectID, run string) error {
+	_, err := s.notifications().UpdateOne(ctx,
+		bson.M{"_id": id, "diagnostic.etat": DiagnosticEnCours},
+		bson.M{"$set": bson.M{"diagnostic.run": run}})
 	return err
 }

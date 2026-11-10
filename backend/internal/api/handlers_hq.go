@@ -79,7 +79,8 @@ func tacheView(r store.AgentRun, etape string, etapes []store.RunStep) hqTache {
 	if r.StartedAt != nil && r.FinishedAt != nil {
 		t.Duree = r.FinishedAt.Sub(*r.StartedAt).Milliseconds()
 	}
-	t.Annuler = r.Source == store.RunSourceHQ && (r.Statut == store.RunEnAttente || r.Statut == store.RunEnCours)
+	// Une enquête de diagnostic s'annule comme une tâche du bâtiment.
+	t.Annuler = (r.Source == store.RunSourceHQ || r.Source == store.RunSourceDiagnostic) && (r.Statut == store.RunEnAttente || r.Statut == store.RunEnCours)
 	return t
 }
 
@@ -367,7 +368,7 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 		var res assistant.Result
 		var err error
 		fait := false
-		if !opts.SansReponseDirecte {
+		if !opts.SansReponseDirecte && !opts.Enquete {
 			if reply, ok := s.piloteRepond(ctx, user, m, demande, lr.Etape); ok {
 				res, fait = assistant.Result{Reply: reply, Agent: m.ID}, true
 			}
@@ -408,6 +409,9 @@ func (s *Server) launchRun(user *store.User, m equipe.Membre, demande string, op
 			_ = s.store.SaveInteraction(context.WithoutCancel(ctx), store.Interaction{
 				UserID: user.ID, Transcript: demande, Reply: res.Reply, Agent: m.ID,
 			})
+		}
+		if opts.Apres != nil {
+			opts.Apres(res, err)
 		}
 		return res, err
 	})
